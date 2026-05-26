@@ -1,0 +1,42 @@
+# Modelos LLM (gigabytes — não sobem pro GitHub)
+data/models/
+data/llama-bin/
+
+# Banco de memória (dados pessoais do usuário)
+data/memory.db
+data/memory.db-shm
+data/memory.db-wal
+data/vectors/
+
+# Logs e arquivos de runtime
+data/launcher.log
+data/launcher.lock
+data/ui_window.pid
+data/*.log
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Credenciais
+.env
+*.key
+*.pem

@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#02030A">
+<title>CONDOR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.47.0/tabler-icons.min.css" rel="stylesheet">
+<style>
+:root {
+  --font-sans: 'Inter', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --bg-deep: #02030A; --bg-mid: #050610; --bg-soft: #0B0D1C; --bg-pink: #120A14;
+  --violet: #8B7CFF; --violet-soft: #C4B5FD;
+  --cyan: #5EEAD4;
+  --pink: #F472B6; --pink-soft: #F4B5C9;
+  --amber: #FAC775;
+  --text: #E8E9F3; --text-mid: #C8CADD; --text-mute: #8B8FA8;
+  --text-dim: #6B7088; --text-faint: #5A5F78;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{background:#000;color:var(--text);font-family:var(--font-sans);height:100%;overflow:hidden;}
+body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
+
+/* ── Scrollbars invisíveis ──────────────────────────────────────── */
+::-webkit-scrollbar{width:0;height:0;background:transparent;}
+*{scrollbar-width:none;-ms-overflow-style:none;}
+
+/* ── FRAME — ocupa tela toda sem bordas ─────────────────────────── */
+.condor-frame{width:100%;height:100vh;background:radial-gradient(ellipse at center,var(--bg-soft) 0%,var(--bg-mid) 70%,var(--bg-deep) 100%);border-radius:0;border:none;overflow:hidden;position:relative;}
+.condor-frame.is-erros{background:radial-gradient(ellipse at center,var(--bg-pink) 0%,var(--bg-mid) 70%,var(--bg-deep) 100%);border-color:rgba(244,114,182,.15);}
+
+/* ── HUD ────────────────────────────────────────────────────────── */
+.cb{position:absolute;width:24px;height:24px;border:1px solid rgba(94,234,212,.4);z-index:1;}
+.is-erros .cb{border-color:rgba(244,114,182,.35);}
+.cb-tl{top:16px;left:16px;border-right:none;border-bottom:none;border-top-left-radius:4px;}
+.cb-tr{top:16px;right:16px;border-left:none;border-bottom:none;border-top-right-radius:4px;}
+.cb-bl{bottom:16px;left:16px;border-right:none;border-top:none;border-bottom-left-radius:4px;}
+.cb-br{bottom:16px;right:16px;border-left:none;border-top:none;border-bottom-right-radius:4px;}
+.bg-grid{position:absolute;inset:0;width:100%;height:100%;opacity:.08;pointer-events:none;z-index:0;}
+.scan-line{position:absolute;top:50%;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(94,234,212,.4),transparent);animation:scan 8s linear infinite;pointer-events:none;z-index:1;}
+.is-erros .scan-line{background:linear-gradient(90deg,transparent,rgba(244,114,182,.5),transparent);animation-duration:6s;}
+@keyframes scan{0%{transform:translateY(-380px);opacity:0;}50%{opacity:1;}100%{transform:translateY(380px);opacity:0;}}
+.spark{position:absolute;width:2px;height:2px;border-radius:50%;background:var(--cyan);box-shadow:0 0 6px var(--cyan);animation:spk 2s infinite;z-index:1;}
+.is-erros .spark{background:var(--pink);box-shadow:0 0 6px var(--pink);}
+@keyframes spk{0%,100%{opacity:.3;}50%{opacity:1;}}
+
+/* ── NAV ────────────────────────────────────────────────────────── */
+.top-nav{position:absolute;top:0;left:0;right:0;padding:26px 32px 0;display:flex;align-items:center;justify-content:center;gap:8px;z-index:10;}
+.top-tab{padding:6px 14px;font-size:11px;letter-spacing:1.5px;color:var(--text-dim);cursor:pointer;transition:color .3s;text-transform:uppercase;background:transparent;border:none;font-family:inherit;}
+.top-tab:hover{color:var(--violet-soft);}
+.top-tab.active{color:var(--text);position:relative;}
+.top-tab.active::after{content:'';position:absolute;bottom:-8px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--cyan);box-shadow:0 0 10px var(--cyan),0 0 20px var(--cyan);}
+.is-erros .top-tab.active::after{background:var(--pink);box-shadow:0 0 10px var(--pink),0 0 20px var(--pink);}
+.top-div{color:#2A2D3F;margin:0 4px;}
+
+/* ── ERROS BTN ──────────────────────────────────────────────────── */
+.errors-btn{position:absolute;top:22px;right:38px;z-index:10;background:rgba(20,15,25,.7);border:1px solid rgba(244,114,182,.3);color:var(--pink-soft);padding:9px 14px;border-radius:10px;font-size:11px;letter-spacing:1.5px;cursor:pointer;display:flex;align-items:center;gap:8px;backdrop-filter:blur(12px);font-family:inherit;transition:all .2s;}
+.errors-btn:hover{border-color:rgba(244,114,182,.6);box-shadow:0 0 20px rgba(244,114,182,.2);}
+.err-dot{width:6px;height:6px;border-radius:50%;background:var(--pink);box-shadow:0 0 8px var(--pink),0 0 16px var(--pink);animation:spk 1.5s infinite;}
+.err-count{font-size:10px;opacity:.7;background:rgba(244,114,182,.15);padding:2px 6px;border-radius:4px;}
+.back-btn{position:absolute;top:22px;left:38px;z-index:10;background:rgba(20,15,25,.6);border:1px solid rgba(139,124,255,.2);color:var(--violet-soft);padding:7px 12px;border-radius:8px;font-size:10px;letter-spacing:1.5px;cursor:pointer;display:flex;align-items:center;gap:6px;backdrop-filter:blur(12px);font-family:inherit;}
+.diag-badge{position:absolute;top:22px;right:38px;z-index:10;display:flex;align-items:center;gap:8px;padding:9px 14px;background:rgba(20,15,25,.7);border:1px solid rgba(244,114,182,.3);border-radius:10px;backdrop-filter:blur(12px);font-size:11px;color:var(--pink-soft);letter-spacing:1.5px;}
+
+/* ── SCREENS ────────────────────────────────────────────────────── */
+.screen{display:none;position:relative;height:100vh;}
+.screen.active{display:block;}
+
+/* ── CONVERSAÇÃO ────────────────────────────────────────────────── */
+.conv-wrap{position:relative;padding:80px 48px 200px;display:flex;flex-direction:column;gap:16px;height:100vh;overflow-y:auto;scroll-behavior:smooth;}
+.session-mark{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:8px;}
+.session-mark .line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(139,124,255,.2),transparent);max-width:120px;}
+.session-mark .lbl{font-size:9px;color:var(--text-faint);letter-spacing:2.5px;font-family:var(--font-mono);}
+.msg-row{display:flex;}
+.msg-bubble{backdrop-filter:blur(12px);animation:fadeUp .35s ease-out;max-width:540px;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+.msg-user{
+  background:rgba(139,124,255,.07);
+  border:1px solid rgba(139,124,255,.22);
+  border-radius:18px 18px 4px 18px;
+  padding:13px 20px;
+  margin-left:auto;
+}
+.msg-ai{
+  background:rgba(94,234,212,.04);
+  border:1px solid rgba(94,234,212,.16);
+  border-radius:4px 18px 18px 18px;
+  padding:14px 20px;
+}
+.msg-lbl{font-size:9px;letter-spacing:2px;margin-bottom:7px;opacity:.7;}
+.msg-text{
+  font-size:14px;
+  line-height:1.72;
+  color:var(--text);
+  white-space:pre-wrap;
+  word-break:break-word;
+}
+/* Cursor piscando durante streaming */
+.msg-text.streaming::after{
+  content:'▌';
+  display:inline-block;
+  color:var(--cyan);
+  animation:blink .7s step-end infinite;
+  margin-left:2px;
+  font-size:12px;
+}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0;}}
+.typing{display:flex;align-items:center;gap:10px;padding-left:6px;}
+.typing-dot{width:5px;height:5px;border-radius:50%;background:var(--cyan);box-shadow:0 0 6px var(--cyan);animation:tdot 1.4s infinite;}
+.typing-dot:nth-child(2){animation-delay:.2s;}
+.typing-dot:nth-child(3){animation-delay:.4s;}
+@keyframes tdot{0%,80%,100%{opacity:.3;transform:translateY(0);}40%{opacity:1;transform:translateY(-4px);}}
+.typing-lbl{font-size:9px;color:var(--text-faint);letter-spacing:2px;}
+
+/* Voice bar */
+.voice-bar{position:absolute;bottom:0;left:0;right:0;padding:22px 40px 26px;background:linear-gradient(180deg,transparent,rgba(2,3,10,.85) 40%,rgba(2,3,10,.95));backdrop-filter:blur(20px);border-top:1px solid rgba(139,124,255,.1);z-index:5;}
+.voice-row{display:flex;align-items:center;justify-content:space-between;gap:30px;}
+.voice-info{font-size:9px;color:var(--text-faint);letter-spacing:1.5px;line-height:1.6;font-family:var(--font-mono);}
+.voice-info.right{text-align:right;}
+.voice-info .on{color:var(--cyan);}
+.voice-center{display:flex;align-items:center;gap:20px;}
+.waveform{display:flex;align-items:center;gap:3px;height:32px;}
+.wbar{width:3px;background:var(--cyan);border-radius:2px;box-shadow:0 0 4px var(--cyan);}
+.wbar.v{background:var(--violet);box-shadow:0 0 4px var(--violet);}
+.ws{animation:ws 1.2s infinite;}
+.wb{animation:wb 1.2s infinite;}
+@keyframes ws{0%,100%{height:4px;}50%{height:14px;}}
+@keyframes wb{0%,100%{height:8px;}50%{height:28px;}}
+.orb-wrap{position:relative;width:60px;height:60px;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.orb-ring{position:absolute;width:60px;height:60px;border-radius:50%;border:1px solid rgba(94,234,212,.5);animation:rp 2.5s ease-out infinite;}
+.orb-ring.v{border-color:rgba(139,124,255,.5);animation-delay:1.25s;}
+@keyframes rp{0%{transform:scale(1);opacity:.8;}100%{transform:scale(1.6);opacity:0;}}
+.orb-core{position:relative;width:44px;height:44px;border-radius:50%;background:radial-gradient(circle at 35% 30%,var(--cyan) 0%,var(--violet) 60%,#4A3FCC 100%);box-shadow:0 0 20px rgba(94,234,212,.5),inset 0 0 12px rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;transition:box-shadow .3s;}
+.orb-core.active{box-shadow:0 0 40px rgba(94,234,212,.8),inset 0 0 20px rgba(255,255,255,.3);}
+.orb-core i{font-size:18px;color:var(--bg-soft);}
+.voice-hint{text-align:center;margin-top:14px;font-size:9px;color:var(--text-dim);letter-spacing:2.5px;}
+
+/* ── PROJETOS ───────────────────────────────────────────────────── */
+.proj-wrap{position:relative;height:100vh;display:flex;align-items:center;justify-content:center;}
+.proj-glow{position:absolute;width:700px;height:700px;border-radius:50%;background:radial-gradient(circle,rgba(139,124,255,.12) 0%,rgba(94,234,212,.04) 40%,transparent 70%);pointer-events:none;}
+.mem-tag{position:absolute;font-size:10px;color:var(--text-dim);letter-spacing:1px;text-transform:uppercase;animation:mf 6s ease-in-out infinite;pointer-events:none;}
+@keyframes mf{0%,100%{transform:translate(0,0);opacity:.5;}33%{transform:translate(8px,-6px);opacity:.9;}66%{transform:translate(-4px,4px);opacity:.7;}}
+.sphere-wrap{position:relative;width:380px;height:380px;display:flex;align-items:center;justify-content:center;}
+@keyframes orb-r{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+@keyframes orb-l{from{transform:rotate(360deg);}to{transform:rotate(0deg);}}
+@keyframes breath{0%,100%{transform:scale(1);opacity:.92;}50%{transform:scale(1.05);opacity:1;}}
+@keyframes dflow{to{stroke-dashoffset:-40;}}
+.proj-orbiter{position:absolute;top:50%;left:50%;width:0;height:0;}
+.proj-card{background:rgba(15,18,32,.75);border:1px solid rgba(139,124,255,.25);border-radius:10px;padding:9px 13px;backdrop-filter:blur(12px);transform:translate(-50%,-50%);white-space:nowrap;position:relative;}
+.proj-card::before{content:'';position:absolute;top:-1px;left:-1px;right:-1px;bottom:-1px;border-radius:10px;padding:1px;background:linear-gradient(135deg,rgba(94,234,212,.4),transparent 40%,transparent 60%,rgba(139,124,255,.3));-webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;}
+.pc-inner{display:flex;align-items:center;gap:8px;}
+.pc-dot{width:5px;height:5px;border-radius:50%;background:var(--cyan);box-shadow:0 0 6px var(--cyan);}
+.pc-dot.v{background:var(--violet-soft);box-shadow:0 0 6px var(--violet-soft);}
+.pc-lbl{font-size:9px;color:var(--cyan);letter-spacing:1.5px;}
+.pc-lbl.v{color:var(--violet-soft);}
+.pc-title{font-size:12px;color:var(--text);margin-top:2px;}
+@keyframes oa{0%{transform:rotate(0deg) translateX(280px) rotate(0deg);}100%{transform:rotate(360deg) translateX(280px) rotate(-360deg);}}
+@keyframes ob{0%{transform:rotate(90deg) translateX(310px) rotate(-90deg);}100%{transform:rotate(450deg) translateX(310px) rotate(-450deg);}}
+@keyframes oc{0%{transform:rotate(180deg) translateX(290px) rotate(-180deg);}100%{transform:rotate(540deg) translateX(290px) rotate(-540deg);}}
+@keyframes od{0%{transform:rotate(270deg) translateX(300px) rotate(-270deg);}100%{transform:rotate(630deg) translateX(300px) rotate(-630deg);}}
+.ob-a{animation:oa 40s linear infinite;}.ob-b{animation:ob 55s linear infinite;}
+.ob-c{animation:oc 48s linear infinite;}.ob-d{animation:od 62s linear infinite;}
+.listen-block{position:absolute;bottom:100px;left:50%;transform:translateX(-50%);text-align:center;}
+.listen-txt{font-size:10px;color:var(--cyan);letter-spacing:6px;opacity:.8;text-shadow:0 0 10px rgba(94,234,212,.5);}
+.listen-wave{display:flex;align-items:center;justify-content:center;gap:3px;margin-top:16px;height:26px;}
+
+/* ── MEMÓRIA ────────────────────────────────────────────────────── */
+.mem-wrap{position:relative;padding:90px 40px 40px;display:grid;grid-template-columns:1fr 230px;gap:30px;height:100vh;overflow:hidden;}
+.cluster-chips{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;}
+.cc{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:rgba(15,18,32,.6);border:1px solid rgba(139,124,255,.2);border-radius:20px;font-size:10px;color:var(--violet-soft);letter-spacing:1px;backdrop-filter:blur(8px);}
+.cc-dot{width:5px;height:5px;border-radius:50%;}
+.mem-tooltip{position:absolute;background:rgba(15,18,32,.92);border:1px solid rgba(94,234,212,.35);border-radius:8px;padding:8px 12px;backdrop-filter:blur(12px);box-shadow:0 0 30px rgba(94,234,212,.1);}
+.stream-line{padding:8px 14px;border-left:1px solid rgba(94,234,212,.2);margin-left:6px;font-size:11px;color:var(--text-mute);letter-spacing:.3px;position:relative;}
+.stream-line::before{content:'';position:absolute;left:-3.5px;top:14px;width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 6px var(--cyan);}
+.stream-line.vio::before{background:var(--violet);box-shadow:0 0 6px var(--violet);}
+.stream-line.pnk::before{background:var(--pink);box-shadow:0 0 6px var(--pink);}
+.sl-time{color:var(--text-faint);font-family:var(--font-mono);font-size:9px;letter-spacing:1px;}
+
+/* ── ERROS ──────────────────────────────────────────────────────── */
+.err-wrap{position:relative;padding:110px 40px 40px;}
+.err-sec{font-size:10px;color:var(--pink-soft);letter-spacing:3px;margin-bottom:16px;}
+.health-row{display:flex;align-items:center;gap:24px;}
+.heart-wrap{position:relative;width:56px;height:56px;display:flex;align-items:center;justify-content:center;}
+.heart-glow{position:absolute;width:56px;height:56px;border-radius:50%;background:radial-gradient(circle,rgba(244,114,182,.25),transparent 70%);animation:spk 1.4s infinite;}
+.heart-core{position:relative;width:38px;height:38px;border-radius:50%;background:radial-gradient(circle at 35% 30%,var(--pink) 0%,#C2185B 70%,#4A0E2A 100%);box-shadow:0 0 18px rgba(244,114,182,.5);display:flex;align-items:center;justify-content:center;animation:hb 1.4s infinite;}
+@keyframes hb{0%,100%{transform:scale(1);}30%{transform:scale(1.08);}60%{transform:scale(.96);}}
+.heart-core i{font-size:18px;color:#FFE0EE;}
+.h-num{font-size:42px;font-weight:500;color:var(--text);font-family:var(--font-mono);line-height:1;}
+.h-pct{font-size:14px;color:var(--pink-soft);font-family:var(--font-mono);}
+.h-status{font-size:10px;color:var(--text-dim);letter-spacing:1.5px;margin-top:4px;}
+.ekg-wrap{flex:1;height:56px;position:relative;overflow:hidden;}
+.vtile{background:rgba(15,10,18,.5);border:1px solid rgba(244,114,182,.12);border-radius:10px;padding:12px 14px;min-width:110px;}
+.vtile.amb{border-color:rgba(239,159,39,.18);}
+.vt-lbl{font-size:9px;color:var(--text-dim);letter-spacing:1.5px;}
+.vt-num{font-size:22px;font-family:var(--font-mono);font-weight:500;margin-top:4px;line-height:1;}
+.vt-num.pnk{color:var(--pink-soft);}
+.vt-num.amb{color:var(--amber);}
+.err-div{position:relative;height:1px;background:rgba(244,114,182,.1);margin:28px 0 16px;overflow:hidden;}
+.err-div::after{content:'';position:absolute;top:0;height:1px;width:80px;background:linear-gradient(90deg,transparent,var(--pink),transparent);animation:scan 4s linear infinite reverse;}
+.sort-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
+.sort-pills{display:flex;gap:2px;padding:2px;background:rgba(15,10,18,.4);border:1px solid rgba(244,114,182,.08);border-radius:6px;}
+.sp{padding:4px 9px;font-size:8px;letter-spacing:1.5px;color:var(--text-dim);cursor:pointer;border-radius:4px;background:transparent;border:none;font-family:inherit;}
+.sp.active{color:var(--pink-soft);background:rgba(244,114,182,.06);}
+.err-card{background:rgba(20,12,18,.6);border:1px solid rgba(244,114,182,.18);border-radius:12px;padding:16px 20px;backdrop-filter:blur(10px);animation:fadeUp .6s ease-out;position:relative;margin-bottom:12px;}
+.err-card.warn{border-color:rgba(239,159,39,.22);background:rgba(28,18,8,.45);}
+.err-bar{position:absolute;left:0;top:18px;bottom:18px;width:2px;background:linear-gradient(180deg,var(--pink),rgba(244,114,182,.3));border-radius:1px;}
+.err-bar.amb{background:linear-gradient(180deg,var(--amber),rgba(239,159,39,.3));}
+.err-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;}
+.err-hl{display:flex;align-items:center;gap:10px;}
+.tag{font-size:9px;padding:3px 8px;border-radius:4px;letter-spacing:2px;font-weight:500;}
+.tag-crit{background:rgba(244,114,182,.18);color:var(--pink-soft);border:1px solid rgba(244,114,182,.35);}
+.tag-warn{background:rgba(239,159,39,.12);color:var(--amber);border:1px solid rgba(239,159,39,.3);}
+.err-id{font-size:10px;color:var(--text-dim);letter-spacing:1px;font-family:var(--font-mono);}
+.err-cat{font-size:9px;color:var(--text-faint);letter-spacing:1px;}
+.err-title{font-size:14px;color:var(--text);line-height:1.5;margin-bottom:6px;}
+.err-desc{font-size:12px;color:var(--text-mute);line-height:1.6;}
+.err-desc code{color:var(--violet-soft);background:rgba(139,124,255,.08);padding:1px 5px;border-radius:3px;font-size:11px;font-family:var(--font-mono);}
+.code-block{background:#06070F;border:1px solid rgba(139,124,255,.12);border-radius:8px;padding:10px 14px;font-family:var(--font-mono);font-size:11px;color:#B8BCD4;margin-top:12px;line-height:1.6;white-space:pre-wrap;}
+.err-actions{display:flex;gap:8px;margin-top:14px;align-items:center;}
+.act-btn{background:transparent;border:1px solid rgba(94,234,212,.25);color:var(--cyan);padding:6px 12px;border-radius:7px;font-size:10px;letter-spacing:1px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-family:inherit;}
+.act-btn.amb{color:var(--amber);border-color:rgba(239,159,39,.3);}
+.err-meta{margin-left:auto;font-size:9px;color:var(--text-dim);letter-spacing:1px;}
+</style>
+</head>
+<body>
+<div class="condor-frame" id="frame">
+
+  <!-- HUD -->
+  <div class="cb cb-tl"></div><div class="cb cb-tr"></div>
+  <div class="cb cb-bl"></div><div class="cb cb-br"></div>
+  <svg class="bg-grid" viewBox="0 0 1200 760" preserveAspectRatio="none">
+    <defs><pattern id="g" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#5EEAD4" stroke-width=".3"/>
+    </pattern></defs>
+    <rect width="100%" height="100%" fill="url(#g)"/>
+  </svg>
+  <div class="scan-line"></div>
+  <div class="spark" style="top:18%;left:8%;"></div>
+  <div class="spark" style="top:35%;left:92%;background:var(--violet);box-shadow:0 0 6px var(--violet);animation-duration:2s;"></div>
+  <div class="spark" style="top:65%;left:6%;background:var(--violet-soft);box-shadow:0 0 6px var(--violet-soft);animation-duration:2.5s;"></div>
+  <div class="spark" style="top:78%;left:94%;animation-duration:1.8s;"></div>
+
+  <!-- TOP NAV -->
+  <div class="top-nav" id="topNav">
+    <button class="top-tab" data-screen="conversacao">Conversação</button>
+    <span class="top-div">·</span>
+    <button class="top-tab active" data-screen="projetos">Projetos</button>
+    <span class="top-div">·</span>
+    <button class="top-tab" data-screen="memoria">Memória</button>
+  </div>
+
+  <button class="errors-btn" id="errosBtn">
+    <span class="err-dot"></span>ERROS<span class="err-count" id="errCount">0</span>
+  </button>
+
+  <button class="back-btn" id="backBtn" style="display:none;">
+    <i class="ti ti-arrow-left"></i> VOLTAR
+  </button>
+  <div class="diag-badge" id="diagBadge" style="display:none;">
+    <span class="err-dot"></span>AUTO-DIAGNÓSTICO
+  </div>
+
+  <!-- ═══════════════ CONVERSAÇÃO ═══════════════ -->
+  <section class="screen" id="screen-conversacao">
+    <div class="conv-wrap" id="chatWrap">
+      <div class="session-mark">
+        <div class="line"></div>
+        <span class="lbl" id="sessionLabel">SESSÃO · --:--</span>
+        <div class="line"></div>
+      </div>
+      <!-- mensagens inseridas via JS -->
+    </div>
+    <div id="typingIndicator" style="display:none;position:absolute;bottom:195px;left:76px;">
+      <div class="typing">
+        <div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>
+        <span class="typing-lbl">PROCESSANDO RESPOSTA</span>
+      </div>
+    </div>
+    <div class="voice-bar">
+      <div class="voice-row">
+        <div class="voice-info">
+          <div class="on" id="voiceStatus">● VOZ INATIVA</div>
+          <div style="margin-top:4px;" id="tokenCount">0 tokens · 0 turnos</div>
+        </div>
+        <div class="voice-center">
+          <div class="waveform">
+            <div class="wbar ws" style="animation-delay:0s;"></div>
+            <div class="wbar wb" style="animation-delay:.1s;"></div>
+            <div class="wbar ws" style="animation-delay:.2s;"></div>
+            <div class="wbar wb" style="animation-delay:.3s;"></div>
+            <div class="wbar ws v" style="animation-delay:.4s;"></div>
+          </div>
+          <div class="orb-wrap" id="voiceOrb">
+            <div class="orb-ring"></div><div class="orb-ring v"></div>
+            <div class="orb-core" id="orbCore"><i class="ti ti-microphone"></i></div>
+          </div>
+          <div class="waveform">
+            <div class="wbar ws v" style="animation-delay:.4s;"></div>
+            <div class="wbar wb" style="animation-delay:.3s;"></div>
+            <div class="wbar ws" style="animation-delay:.2s;"></div>
+            <div class="wbar wb" style="animation-delay:.1s;"></div>
+            <div class="wbar ws" style="animation-delay:0s;"></div>
+          </div>
+        </div>
+        <div class="voice-info right">
+          <div class="on" id="listenStatus">PRONTO</div>
+          <div style="margin-top:4px;" id="modelName">carregando...</div>
+        </div>
+      </div>
+      <div style="text-align:center;margin-top:6px;">
+        <span id="voiceHint" style="font-size:9px;color:var(--text-dim);letter-spacing:2px;">CLIQUE NO ORB PARA CONVERSAR POR VOZ</span>
+      </div>
+      <!-- Campo de texto -->
+      <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:0 20px;">
+        <input id="textInput" type="text"
+          placeholder="escreva aqui e pressione Enter..."
+          style="flex:1;background:rgba(255,255,255,0.04);border:1px solid rgba(139,124,255,0.2);
+                 border-radius:10px;padding:10px 16px;color:var(--text);font-family:var(--font-sans);
+                 font-size:12px;letter-spacing:0.5px;outline:none;caret-color:var(--cyan);"
+        />
+        <button id="sendBtn"
+          style="background:rgba(94,234,212,0.08);border:1px solid rgba(94,234,212,0.25);
+                 color:var(--cyan);padding:10px 16px;border-radius:10px;cursor:pointer;
+                 font-size:11px;letter-spacing:1px;font-family:var(--font-sans);">
+          ENVIAR
+        </button>
+        <button id="muteBtn"
+          style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.2);
+                 color:#fff;padding:10px 16px;border-radius:10px;cursor:pointer;
+                 font-size:18px;line-height:1;flex-shrink:0;"
+          title="Silenciar / Ativar voz">
+          🔊
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ PROJETOS ═══════════════ -->
+  <section class="screen active" id="screen-projetos">
+    <div class="proj-wrap">
+      <div class="proj-glow"></div>
+      <!-- Memory tags dinâmicas — populadas via projects.js -->
+      <div id="memTagsContainer"></div>
+      <div class="sphere-wrap">
+        <!-- Anel externo -->
+        <svg style="position:absolute;animation:orb-r 90s linear infinite;" viewBox="0 0 380 380" width="380" height="380">
+          <defs><linearGradient id="rg" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#8B7CFF" stop-opacity=".9"/>
+            <stop offset="50%" stop-color="#5EEAD4" stop-opacity=".5"/>
+            <stop offset="100%" stop-color="#8B7CFF" stop-opacity=".2"/>
+          </linearGradient></defs>
+          <circle cx="190" cy="190" r="180" fill="none" stroke="url(#rg)" stroke-width=".6" stroke-dasharray="1 10"/>
+          <g stroke="#5EEAD4" stroke-width=".4" opacity=".5">
+            <line x1="190" y1="6" x2="190" y2="20"/><line x1="374" y1="190" x2="360" y2="190"/>
+            <line x1="190" y1="374" x2="190" y2="360"/><line x1="6" y1="190" x2="20" y2="190"/>
+          </g>
+          <circle cx="190" cy="10" r="2.5" fill="#5EEAD4"><animate attributeName="r" values="2.5;4;2.5" dur="3s" repeatCount="indefinite"/></circle>
+        </svg>
+        <!-- Anel médio -->
+        <svg style="position:absolute;animation:orb-l 50s linear infinite;" viewBox="0 0 380 380" width="320" height="320">
+          <circle cx="190" cy="190" r="155" fill="none" stroke="#5EEAD4" stroke-width=".5" stroke-opacity=".6" stroke-dasharray="2 6"/>
+          <circle cx="190" cy="190" r="155" fill="none" stroke="#5EEAD4" stroke-width="1" stroke-opacity=".8" stroke-dasharray="6 40" style="animation:dflow 3s linear infinite;"/>
+          <circle cx="190" cy="35" r="3" fill="#5EEAD4"/>
+        </svg>
+        <!-- Anel interno -->
+        <svg style="position:absolute;animation:orb-r 35s linear infinite;" viewBox="0 0 380 380" width="250" height="250">
+          <circle cx="190" cy="190" r="130" fill="none" stroke="#8B7CFF" stroke-width=".7" stroke-opacity=".7" stroke-dasharray="25 5"/>
+          <circle cx="190" cy="60" r="2.5" fill="#C4B5FD"/>
+        </svg>
+        <!-- Globo central -->
+        <svg style="position:absolute;animation:breath 4s ease-in-out infinite;" viewBox="0 0 200 200" width="210" height="210">
+          <defs>
+            <radialGradient id="gg" cx="50%" cy="40%" r="60%">
+              <stop offset="0%" stop-color="#5EEAD4" stop-opacity=".35"/>
+              <stop offset="50%" stop-color="#8B7CFF" stop-opacity=".2"/>
+              <stop offset="100%" stop-color="#07080F" stop-opacity="0"/>
+            </radialGradient>
+            <linearGradient id="gs" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#5EEAD4" stop-opacity=".95"/>
+              <stop offset="100%" stop-color="#8B7CFF" stop-opacity=".95"/>
+            </linearGradient>
+          </defs>
+          <circle cx="100" cy="100" r="80" fill="url(#gg)"/>
+          <circle cx="100" cy="100" r="80" fill="none" stroke="url(#gs)" stroke-width="1.2"/>
+          <g stroke="#8B7CFF" stroke-width=".5" fill="none" opacity=".7">
+            <ellipse cx="100" cy="100" rx="80" ry="20"/>
+            <ellipse cx="100" cy="100" rx="80" ry="40"/>
+            <ellipse cx="100" cy="100" rx="80" ry="60"/>
+          </g>
+          <g stroke="#5EEAD4" stroke-width=".5" fill="none" opacity=".8">
+            <ellipse cx="100" cy="100" rx="20" ry="80"><animate attributeName="rx" values="20;80;20" dur="8s" repeatCount="indefinite"/></ellipse>
+            <ellipse cx="100" cy="100" rx="50" ry="80" opacity=".6"/>
+          </g>
+          <line x1="20" y1="100" x2="180" y2="100" stroke="#5EEAD4" stroke-width=".6" opacity=".6"/>
+          <line x1="100" y1="20" x2="100" y2="180" stroke="#8B7CFF" stroke-width=".6" opacity=".6"/>
+          <circle cx="100" cy="100" r="8" fill="#5EEAD4" opacity=".4"><animate attributeName="r" values="8;14;8" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values=".5;.1;.5" dur="2s" repeatCount="indefinite"/></circle>
+          <circle cx="100" cy="100" r="5" fill="#5EEAD4" opacity=".9"><animate attributeName="r" values="5;7;5" dur="2s" repeatCount="indefinite"/></circle>
+          <circle cx="100" cy="100" r="2.5" fill="#E8E9F3"/>
+        </svg>
+        <!-- Projetos orbitando — populados via projects.js conforme o Condor aprende -->
+        <div id="projectOrbiters"></div>
+      </div>
+      <div class="listen-block">
+        <div class="listen-txt">OUVINDO</div>
+        <div class="listen-wave">
+          <div class="wbar ws" style="animation-delay:0s;"></div>
+          <div class="wbar wb" style="animation-delay:.08s;"></div>
+          <div class="wbar ws" style="animation-delay:.16s;"></div>
+          <div class="wbar wb" style="animation-delay:.24s;"></div>
+          <div class="wbar ws v" style="animation-delay:.32s;"></div>
+          <div class="wbar ws v" style="animation-delay:.4s;"></div>
+          <div class="wbar ws v" style="animation-delay:.32s;"></div>
+          <div class="wbar wb" style="animation-delay:.24s;"></div>
+          <div class="wbar ws" style="animation-delay:.16s;"></div>
+          <div class="wbar wb" style="animation-delay:.08s;"></div>
+          <div class="wbar ws" style="animation-delay:0s;"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ MEMÓRIA ═══════════════ -->
+  <section class="screen" id="screen-memoria">
+    <div class="mem-wrap">
+      <div style="position:relative;">
+        <div class="cluster-chips">
+          <div class="cc"><span class="cc-dot" style="background:var(--cyan);box-shadow:0 0 6px var(--cyan);"></span>TRABALHO</div>
+          <div class="cc" style="color:var(--violet-soft);"><span class="cc-dot" style="background:var(--violet);box-shadow:0 0 6px var(--violet);"></span>PESSOAL</div>
+          <div class="cc" style="color:var(--pink-soft);border-color:rgba(244,114,182,.2);"><span class="cc-dot" style="background:var(--pink);box-shadow:0 0 6px var(--pink);"></span>ESTUDOS</div>
+          <div class="cc" style="color:var(--text-mute);"><span class="cc-dot" style="background:var(--text-dim);"></span>HÁBITOS</div>
+        </div>
+        <div style="position:relative;min-height:550px;">
+          <div style="position:absolute;top:50px;left:50%;transform:translateX(-50%);width:500px;height:500px;border-radius:50%;background:radial-gradient(circle,rgba(139,124,255,.1) 0%,rgba(94,234,212,.04) 40%,transparent 70%);pointer-events:none;"></div>
+          <svg id="memGraph" viewBox="0 0 600 520" style="width:100%;height:520px;overflow:visible;"></svg>
+          <div class="mem-tooltip" style="position:absolute;top:215px;left:55%;display:none;" id="memTooltip">
+            <div style="font-size:9px;color:var(--cyan);letter-spacing:1.5px;margin-bottom:4px;">CONEXÃO ATIVA</div>
+            <div style="font-size:11px;color:var(--text);" id="tooltipText">—</div>
+            <div style="font-size:9px;color:var(--text-dim);margin-top:3px;">aprendido recentemente</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div>
+          <div style="font-size:9px;color:var(--cyan);letter-spacing:2.5px;margin-bottom:4px;">FLUXO RECENTE</div>
+          <div style="font-size:10px;color:var(--text-dim);letter-spacing:.5px;">o que estou aprendendo</div>
+        </div>
+        <div id="memStream" style="display:flex;flex-direction:column;gap:2px;"></div>
+        <div style="margin-top:auto;padding-top:20px;border-top:1px solid rgba(139,124,255,.1);">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+            <span style="font-size:9px;color:var(--text-dim);letter-spacing:1.5px;">NÓS</span>
+            <span style="font-size:16px;color:var(--cyan);font-family:var(--font-mono);font-weight:500;" id="statNodes">0</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+            <span style="font-size:9px;color:var(--text-dim);letter-spacing:1.5px;">CONEXÕES</span>
+            <span style="font-size:16px;color:var(--violet-soft);font-family:var(--font-mono);font-weight:500;" id="statEdges">0</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <span style="font-size:9px;color:var(--text-dim);letter-spacing:1.5px;">APRENDENDO</span>
+            <span style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--cyan);">
+              <span style="width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 6px var(--cyan);animation:spk 1.2s infinite;"></span>
+              ATIVO
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ ERROS ═══════════════ -->
+  <section class="screen" id="screen-erros">
+    <div class="err-wrap">
+      <div class="err-sec">SAÚDE DO CONDOR</div>
+      <div class="health-row">
+        <div style="display:flex;align-items:center;gap:14px;">
+          <div class="heart-wrap">
+            <div class="heart-glow"></div>
+            <div class="heart-core"><i class="ti ti-heart"></i></div>
+          </div>
+          <div>
+            <div class="health-stat-big" style="display:flex;align-items:baseline;gap:8px;">
+              <span class="h-num" id="healthScore">--</span>
+              <span class="h-pct">%</span>
+            </div>
+            <div class="h-status" id="healthStatus">VERIFICANDO...</div>
+          </div>
+        </div>
+        <div class="ekg-wrap">
+          <svg viewBox="0 0 300 56" style="width:100%;height:100%;">
+            <polyline points="0,28 30,28 50,28 60,8 70,48 80,28 100,28 120,28 130,12 140,44 150,28 180,28 200,28 210,10 220,46 230,28 260,28 280,28 300,28"
+              fill="none" stroke="rgba(244,114,182,0.6)" stroke-width="1.5" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="vtile">
+          <div class="vt-lbl">CRÍTICOS</div>
+          <div class="vt-num pnk" id="statCritical">0</div>
+        </div>
+        <div class="vtile amb">
+          <div class="vt-lbl">AVISOS</div>
+          <div class="vt-num amb" id="statWarning">0</div>
+        </div>
+      </div>
+      <div class="err-div"></div>
+      <div class="sort-row">
+        <div style="font-size:9px;color:var(--text-faint);letter-spacing:1.5px;">ordenar</div>
+        <div class="sort-pills">
+          <button class="sp active">severidade</button>
+          <button class="sp">recente</button>
+          <button class="sp">categoria</button>
+        </div>
+      </div>
+      <div id="errList"></div>
+    </div>
+  </section>
+
+</div>
+
+<script src="scripts/ws.js"></script>
+<script src="scripts/router.js"></script>
+<script src="scripts/conversation.js"></script>
+<script src="scripts/voice.js"></script>
+<script src="scripts/memory.js"></script>
+<script src="scripts/projects.js"></script>
+<script src="scripts/errors.js"></script>
+<script>
+  // Inicializa a aplicação
+  window.addEventListener('DOMContentLoaded', () => {
+    CondorRouter.init();
+    CondorWS.connect();
+    CondorVoice.init();
+    CondorMemory.init();
+    CondorProjects.init();
+    CondorErrors.init();
+
+    // Hora da sessão
+    const now = new Date();
+    document.getElementById('sessionLabel').textContent =
+      `SESSÃO · ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+  });
+</script>
+</body>
+</html>
