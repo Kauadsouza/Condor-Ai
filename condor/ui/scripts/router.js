@@ -1,58 +1,47 @@
 /**
- * CondorRouter — navegação entre as 4 telas.
+ * CondorRouter — navegação entre as quatro telas.
  */
 const CondorRouter = (() => {
-  let current = 'projetos';
+  let atual = 'conversacao';
 
   function init() {
-    // Tabs
     document.querySelectorAll('.top-tab').forEach(btn => {
-      btn.addEventListener('click', () => go(btn.dataset.screen));
+      btn.addEventListener('click', () => ir(btn.dataset.screen));
     });
-
-    // Botão ERROS
-    document.getElementById('errosBtn').addEventListener('click', () => go('erros'));
-
-    // Botão VOLTAR
-    document.getElementById('backBtn').addEventListener('click', () => go('projetos'));
+    document.getElementById('errosBtn').addEventListener('click', () => ir('erros'));
+    document.getElementById('backBtn').addEventListener('click', () => ir('conversacao'));
   }
 
-  function go(screen) {
-    // Esconde todas as telas
+  function ir(tela) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-
-    // Mostra a tela alvo
-    const el = document.getElementById(`screen-${screen}`);
+    const el = document.getElementById(`screen-${tela}`);
     if (el) el.classList.add('active');
-    current = screen;
+    atual = tela;
 
-    const frame     = document.getElementById('frame');
-    const topNav    = document.getElementById('topNav');
-    const errosBtn  = document.getElementById('errosBtn');
-    const backBtn   = document.getElementById('backBtn');
-    const diagBadge = document.getElementById('diagBadge');
+    const frame = document.getElementById('frame');
+    const nav = document.getElementById('topNav');
+    const btnErros = document.getElementById('errosBtn');
+    const btnVoltar = document.getElementById('backBtn');
+    const selo = document.getElementById('diagBadge');
 
-    if (screen === 'erros') {
-      frame.classList.add('is-erros');
-      topNav.style.display    = 'none';
-      errosBtn.style.display  = 'none';
-      backBtn.style.display   = 'flex';
-      diagBadge.style.display = 'flex';
-    } else {
-      frame.classList.remove('is-erros');
-      topNav.style.display    = 'flex';
-      errosBtn.style.display  = 'flex';
-      backBtn.style.display   = 'none';
-      diagBadge.style.display = 'none';
+    const naTelaErros = tela === 'erros';
+    frame.classList.toggle('is-erros', naTelaErros);
+    nav.style.display = naTelaErros ? 'none' : 'flex';
+    btnErros.style.display = naTelaErros ? 'none' : 'flex';
+    btnVoltar.style.display = naTelaErros ? 'flex' : 'none';
+    selo.style.display = naTelaErros ? 'flex' : 'none';
 
-      // Atualiza aba ativa
+    if (!naTelaErros) {
       document.querySelectorAll('.top-tab').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.screen === screen);
+        btn.classList.toggle('active', btn.dataset.screen === tela);
       });
     }
-
-    CondorWS.send({ type: 'screen.change', screen });
+    // Recarrega os dados da tela que acabou de abrir. Chamada direta: os
+    // módulos são `const` de topo de script, então não existem em `window`.
+    if (naTelaErros) CondorErros.atualizar();
+    else if (tela === 'memoria') CondorMemoria.atualizar();
+    else if (tela === 'projetos') CondorProjetos.atualizar();
   }
 
-  return { init, go, current: () => current };
+  return { init, ir, atual: () => atual };
 })();

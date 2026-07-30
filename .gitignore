@@ -1,42 +1,49 @@
-# Modelos LLM (gigabytes — não sobem pro GitHub)
-data/models/
-data/llama-bin/
+# ── Segredos — NUNCA subir ────────────────────────────────────────
+.env
+*.key
+*.secret
+# A palavra treinada é vinculada à SUA conta Picovoice — não sobe.
+# O LEIA-ME da pasta continua versionado pra explicar o que vai ali.
+data/wake/*.ppn
+data/wake/*.pv
 
-# Banco de memória (dados pessoais do usuário)
-data/memory.db
-data/memory.db-shm
-data/memory.db-wal
-data/vectors/
+# ── Dados pessoais ────────────────────────────────────────────────
+# A memória é sua: o que ele aprendeu sobre você não vai pro repositório.
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/config.yaml
+data/screenshots/
+data/auditoria.log
 
-# Logs e arquivos de runtime
-data/launcher.log
-data/launcher.lock
-data/ui_window.pid
-data/*.log
+# ── Logs e temporários ────────────────────────────────────────────
 *.log
+*.tmp
+*.swp
+*.bak
 
-# Python
+# ── Backup da versão antiga ───────────────────────────────────────
+_backup_v2/
+
+# ── Python ────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
-.venv/
-venv/
-env/
+*.pyd
 *.egg-info/
 dist/
 build/
+.venv/
+venv/
+env/
 
-# Windows
+# ── OS ────────────────────────────────────────────────────────────
+.DS_Store
 Thumbs.db
 desktop.ini
-$RECYCLE.BIN/
 
-# IDE
-.vscode/
+# ── IDE ───────────────────────────────────────────────────────────
+.vscode/settings.json
 .idea/
-*.swp
-
-# Credenciais
-.env
-*.key
-*.pem
+*.sublime-workspace

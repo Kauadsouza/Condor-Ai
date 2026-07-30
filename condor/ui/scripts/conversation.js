@@ -1,188 +1,164 @@
 /**
- * CondorConversation — gerencia balões de chat e streaming de tokens.
+ * CondorConversa — as bolhas da tela de conversação.
+ *
+ * Fluxo de um turno por voz:
+ *   transcricao      → bolha do usuário
+ *   ferramenta.*     → linhas de ação dentro da bolha do Condor
+ *   resposta.token   → texto vai aparecendo letra a letra
+ *   resposta.fim     → fecha a bolha
  */
-const CondorConversation = (() => {
-  let turnCount  = 0;
-  let tokenCount = 0;
-  let aiEl       = null;    // elemento do balão atual do assistente
-  let _muted     = false;
+const CondorConversa = (() => {
+  const $ = (id) => document.getElementById(id);
+  let bolhaAtual = null;
+  let textoAtual = '';
+  let blocoAcoes = null;
 
-  // ── Renderiza texto com formatação básica ────────────────────────────────
-  function _renderText(el, text) {
-    // Remove blocos ◆ do display (código executado não aparece no balão)
-    const clean = text.replace(/◆\w+:[\s\S]*?(?=◆|$)/g, '').trim();
-    el.textContent = clean || text;
-  }
+  function init() {
+    const campo = $('textInput');
+    const botao = $('sendBtn');
 
-  // ── Cria um balão de mensagem ────────────────────────────────────────────
-  function addMessage(role, text) {
-    const wrap = document.getElementById('chatWrap');
+    const enviar = () => {
+      const texto = campo.value.trim();
+      if (!texto) return;
+      adicionarUsuario(texto);
+      CondorWS.mandarTexto(texto);
+      campo.value = '';
+      mostrarDigitando(true);
+    };
 
-    const row = document.createElement('div');
-    row.className = 'msg-row';
-
-    const bubble = document.createElement('div');
-    bubble.className = `msg-bubble ${role === 'user' ? 'msg-user' : 'msg-ai'}`;
-
-    // Label com horário
-    const lbl = document.createElement('div');
-    lbl.className = 'msg-lbl';
-    const now = new Date();
-    const ts  = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
-    lbl.style.color     = role === 'user' ? 'var(--violet-soft)' : 'var(--cyan)';
-    lbl.style.textAlign = role === 'user' ? 'right' : 'left';
-    lbl.textContent     = role === 'user' ? `VOCÊ · ${ts}` : `CONDOR · ${ts}`;
-
-    const txt = document.createElement('div');
-    txt.className = 'msg-text';
-    if (text) _renderText(txt, text);
-
-    bubble.appendChild(lbl);
-    bubble.appendChild(txt);
-    row.appendChild(bubble);
-    wrap.appendChild(row);
-    wrap.scrollTop = wrap.scrollHeight;
-
-    if (role === 'assistant') aiEl = txt;
-    return txt;
-  }
-
-  // ── Streaming de tokens ──────────────────────────────────────────────────
-  let _streamRaw = '';   // texto cru acumulado durante streaming
-
-  function appendToken(token) {
-    if (!aiEl) {
-      aiEl = addMessage('assistant', '');
-      aiEl.classList.add('streaming');
-      _streamRaw = '';
-    }
-    _streamRaw += token;
-    tokenCount += token.length;
-
-    // Mostra texto sem os blocos ◆ durante o streaming
-    const visible = _streamRaw.replace(/◆\w+:[\s\S]*?(?=◆|$)/g, '').trim();
-    aiEl.textContent = visible || _streamRaw;
-
-    document.getElementById('chatWrap').scrollTop =
-      document.getElementById('chatWrap').scrollHeight;
-  }
-
-  function startAiMessage() {
-    aiEl = null;
-    _streamRaw = '';
-    document.getElementById('typingIndicator').style.display = 'block';
-  }
-
-  function finishAiMessage() {
-    document.getElementById('typingIndicator').style.display = 'none';
-
-    // Remove cursor piscante e render final limpo
-    if (aiEl) {
-      aiEl.classList.remove('streaming');
-      if (_streamRaw) _renderText(aiEl, _streamRaw);
-    }
-
-    turnCount++;
-    document.getElementById('tokenCount').textContent =
-      `${tokenCount.toLocaleString()} tokens · ${turnCount} turnos`;
-    aiEl = null;
-    _streamRaw = '';
-  }
-
-  // ── Botão de mudo ────────────────────────────────────────────────────────
-  function setupMuteBtn() {
-    const btn = document.getElementById('muteBtn');
-    if (!btn) return;
-    btn.addEventListener('click', () => {
-      _muted = !_muted;
-      btn.textContent = _muted ? '🔇' : '🔊';
-      btn.style.borderColor = _muted ? 'rgba(244,114,182,0.5)' : 'rgba(255,255,255,0.2)';
+    botao.addEventListener('click', enviar);
+    campo.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviar(); }
     });
+
+    CondorWS.ao('transcricao', (m) => { adicionarUsuario(m.texto); mostrarDigitando(true); });
+    CondorWS.ao('resposta.token', (m) => acrescentar(m.texto));
+    CondorWS.ao('resposta.fim', (m) => finalizar(m.texto));
+    CondorWS.ao('ferramenta.inicio', (m) => acaoIniciou(m));
+    CondorWS.ao('ferramenta.fim', (m) => acaoTerminou(m));
+    CondorWS.ao('erro', (m) => finalizar(m.mensagem || 'Deu ruim aqui.'));
+    CondorWS.ao('dormiu', () => { marcarSessao('DORMIU'); fecharBolha(); });
+    CondorWS.ao('acordou', () => marcarSessao('ACORDOU'));
   }
-  setupMuteBtn();
 
-  // ── Campo de texto ───────────────────────────────────────────────────────
-  function setupTextInput() {
-    const input = document.getElementById('textInput');
-    const btn   = document.getElementById('sendBtn');
-    if (!input || !btn) return;
+  // ── Bolhas ────────────────────────────────────────────────────────────
 
-    function send() {
-      const text = input.value.trim();
-      if (!text) return;
-      addMessage('user', text);
-      CondorWS.sendText(text);
-      input.value = '';
-    }
+  function area() { return $('chatWrap'); }
 
-    btn.addEventListener('click', send);
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); send(); }
-    });
+  function rolar() {
+    const a = area();
+    a.scrollTop = a.scrollHeight;
   }
-  setupTextInput();
 
-  // ── Handlers WebSocket ───────────────────────────────────────────────────
-  CondorWS.on('stt.final', msg => {
-    if (msg.text && msg.text.trim()) addMessage('user', msg.text);
-  });
+  function adicionarUsuario(texto) {
+    const linha = document.createElement('div');
+    linha.className = 'msg-row';
+    linha.innerHTML = `
+      <div class="msg-bubble msg-user">
+        <div class="msg-lbl" style="color:var(--violet-soft);">VOCÊ</div>
+        <div class="msg-text"></div>
+      </div>`;
+    linha.querySelector('.msg-text').textContent = texto;
+    area().appendChild(linha);
+    rolar();
+  }
 
-  CondorWS.on('llm.token', msg => {
-    if (!aiEl) startAiMessage();
-    appendToken(msg.token);
-  });
+  function abrirBolhaCondor() {
+    if (bolhaAtual) return;
+    const linha = document.createElement('div');
+    linha.className = 'msg-row';
+    linha.innerHTML = `
+      <div class="msg-bubble msg-ai">
+        <div class="msg-lbl" style="color:var(--cyan);">CONDOR</div>
+        <div class="acoes"></div>
+        <div class="msg-text streaming"></div>
+      </div>`;
+    area().appendChild(linha);
+    bolhaAtual = linha.querySelector('.msg-text');
+    blocoAcoes = linha.querySelector('.acoes');
+    textoAtual = '';
+    rolar();
+  }
 
-  CondorWS.on('llm.done', () => {
-    finishAiMessage();
-  });
+  function acrescentar(pedaco) {
+    mostrarDigitando(false);
+    abrirBolhaCondor();
+    textoAtual += pedaco;
+    bolhaAtual.textContent = textoAtual;
+    rolar();
+  }
 
-  CondorWS.on('action.executing', msg => {
-    addMessage('assistant', `⚙️  Executando: ${msg.action}…`);
-  });
-
-  CondorWS.on('action.result', msg => {
-    if (msg.result?.result) {
-      addMessage('assistant', `✓ ${msg.result.result}`);
+  function finalizar(texto) {
+    mostrarDigitando(false);
+    // Quando o modelo usou ferramentas, o texto do meio não vira resposta —
+    // o que vale é o texto final que o servidor manda aqui.
+    if (texto && texto !== textoAtual) {
+      abrirBolhaCondor();
+      textoAtual = texto;
+      bolhaAtual.textContent = texto;
     }
-  });
+    fecharBolha();
+  }
 
-  // Resultado do executor ◆ (CMD, PY, READ, WRITE, GET, PIP)
-  CondorWS.on('exec.result', msg => {
-    if (!msg.output) return;
-    const wrap = document.getElementById('chatWrap');
-    const row  = document.createElement('div');
-    row.className = 'msg-row';
+  function fecharBolha() {
+    if (bolhaAtual) bolhaAtual.classList.remove('streaming');
+    bolhaAtual = null;
+    blocoAcoes = null;
+    textoAtual = '';
+    rolar();
+  }
 
-    const bubble = document.createElement('div');
-    bubble.className = 'msg-bubble msg-ai';
-    bubble.style.background   = 'rgba(0,200,120,0.06)';
-    bubble.style.borderColor  = 'rgba(0,200,120,0.2)';
+  // ── Ações (ferramentas) ───────────────────────────────────────────────
 
-    const lbl = document.createElement('div');
-    lbl.className   = 'msg-lbl';
-    lbl.style.color = '#00c878';
-    lbl.textContent = '⚙ EXECUÇÃO';
+  function acaoIniciou(m) {
+    mostrarDigitando(false);
+    abrirBolhaCondor();
+    const linha = document.createElement('div');
+    linha.className = 'acao-linha';
+    linha.dataset.ferramenta = m.ferramenta;
+    linha.innerHTML = `
+      <span class="acao-ponto"></span>
+      <span class="acao-nome">${escapar(m.rotulo || m.ferramenta)}</span>
+      <span class="acao-arg">${escapar(m.argumentos || '')}</span>`;
+    blocoAcoes.appendChild(linha);
+    rolar();
+  }
 
-    const pre = document.createElement('pre');
-    pre.style.cssText = [
-      'margin:6px 0 0',
-      'font-size:11px',
-      'white-space:pre-wrap',
-      'word-break:break-all',
-      'color:#a0ffca',
-      'font-family:monospace',
-      'max-height:220px',
-      'overflow-y:auto',
-      'line-height:1.5',
-    ].join(';');
-    pre.textContent = msg.output;
+  function acaoTerminou(m) {
+    if (!blocoAcoes) return;
+    const linhas = blocoAcoes.querySelectorAll(
+      `.acao-linha[data-ferramenta="${CSS.escape(m.ferramenta)}"]`);
+    const alvo = linhas[linhas.length - 1];
+    if (!alvo) return;
+    alvo.classList.add(m.ok ? 'ok' : 'falhou');
+    alvo.querySelector('.acao-ponto').textContent = m.ok ? '✓' : '✕';
+    if (!m.ok && m.saida) {
+      alvo.querySelector('.acao-arg').textContent = m.saida.slice(0, 120);
+    }
+  }
 
-    bubble.appendChild(lbl);
-    bubble.appendChild(pre);
-    row.appendChild(bubble);
-    wrap.appendChild(row);
-    wrap.scrollTop = wrap.scrollHeight;
-  });
+  // ── Auxiliares ────────────────────────────────────────────────────────
 
-  return { addMessage };
+  function mostrarDigitando(ligado) {
+    $('typingIndicator').style.display = ligado ? 'block' : 'none';
+  }
+
+  function marcarSessao(rotulo) {
+    const marca = document.createElement('div');
+    marca.className = 'session-mark';
+    const hora = new Date().toLocaleTimeString('pt-BR',
+      { hour: '2-digit', minute: '2-digit' });
+    marca.innerHTML = `<div class="line"></div>
+      <span class="lbl">${rotulo} · ${hora}</span><div class="line"></div>`;
+    area().appendChild(marca);
+    rolar();
+  }
+
+  function escapar(t) {
+    const d = document.createElement('div');
+    d.textContent = t == null ? '' : String(t);
+    return d.innerHTML;
+  }
+
+  return { init, adicionarUsuario, marcarSessao };
 })();

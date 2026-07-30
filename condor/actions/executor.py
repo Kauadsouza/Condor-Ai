@@ -1,193 +1,520 @@
 """
-Executor de alto poder — dá ao Condor controle total sobre o PC.
+As mãos do Condor — acesso total ao PC, sem nada piscando na tela.
 
-O AI inclui blocos especiais na resposta usando o marcador ◆:
-  ◆CMD: Get-ChildItem C:/Users          → executa PowerShell
-  ◆PY:\nx=1+1\nprint(x)                 → executa Python no contexto do Condor
-  ◆READ: C:/caminho/arquivo.txt          → lê um arquivo
-  ◆WRITE: C:/caminho/arquivo.txt\nconteúdo → escreve um arquivo
-  ◆GET: https://url.com -> C:/destino   → baixa arquivo da internet
-  ◆PIP: nome_pacote                     → instala pacote Python
+Todo processo filho nasce com CREATE_NO_WINDOW: PowerShell, pip, o que for.
+Você nunca vê um prompt preto abrir e fechar.
 
-O server.py detecta esses marcadores, executa e injeta os resultados
-de volta na conversa para que o Condor possa agir sobre eles.
+Cada função devolve sempre o mesmo formato:
+    {"ok": bool, "saida": str}
 """
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
-import textwrap
-from contextlib import redirect_stdout, redirect_stderr
+import time
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger("condor.executor")
+log = logging.getLogger("condor.maos")
 
-# Raiz do projeto — disponível para o código Python executado pelo Condor
 ROOT = Path(__file__).parent.parent.parent
+DATA = ROOT / "data"
 
-# Padrões de extração dos marcadores
-_CMD_RE   = re.compile(r'◆CMD:\s*(.+?)(?=◆|\Z)', re.DOTALL)
-_PY_RE    = re.compile(r'◆PY:\s*\n(.*?)(?=◆|\Z)', re.DOTALL)
-_READ_RE  = re.compile(r'◆READ:\s*(.+?)(?=◆|\Z)')
-_WRITE_RE = re.compile(r'◆WRITE:\s*(.+?)\n(.*?)(?=◆|\Z)', re.DOTALL)
-_GET_RE   = re.compile(r'◆GET:\s*(https?://\S+)\s*->\s*(.+?)(?=◆|\Z)')
-_PIP_RE   = re.compile(r'◆PIP:\s*(.+?)(?=◆|\Z)')
+# A flag que impede a janela preta de aparecer.
+SEM_JANELA = 0x08000000 if sys.platform == "win32" else 0
 
-
-def extract_and_run(response: str, context: dict | None = None) -> list[dict]:
-    """
-    Extrai todos os marcadores ◆ do texto do AI e executa cada um.
-    Retorna lista de resultados [{marker, input, output, success}].
-    """
-    results = []
-
-    # ── ◆CMD ──────────────────────────────────────────────────────────────────
-    for m in _CMD_RE.finditer(response):
-        cmd = m.group(1).strip()
-        results.append(_run_shell(cmd))
-
-    # ── ◆PY ───────────────────────────────────────────────────────────────────
-    for m in _PY_RE.finditer(response):
-        code = textwrap.dedent(m.group(1))
-        results.append(_run_python(code, context))
-
-    # ── ◆READ ─────────────────────────────────────────────────────────────────
-    for m in _READ_RE.finditer(response):
-        path = m.group(1).strip()
-        results.append(_read_file(path))
-
-    # ── ◆WRITE ────────────────────────────────────────────────────────────────
-    for m in _WRITE_RE.finditer(response):
-        path    = m.group(1).strip()
-        content = m.group(2)
-        results.append(_write_file(path, content))
-
-    # ── ◆GET ──────────────────────────────────────────────────────────────────
-    for m in _GET_RE.finditer(response):
-        url  = m.group(1).strip()
-        dest = m.group(2).strip()
-        results.append(_download(url, dest))
-
-    # ── ◆PIP ──────────────────────────────────────────────────────────────────
-    for m in _PIP_RE.finditer(response):
-        pkg = m.group(1).strip()
-        results.append(_pip_install(pkg))
-
-    return results
+# User-Agent completo de navegador. Com um UA curto ("Mozilla/5.0") o
+# DuckDuckGo devolve uma página reduzida e a busca volta vazia.
+_NAVEGADOR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 
-def format_results(results: list[dict]) -> str:
-    """Formata resultados para injetar de volta na conversa."""
-    if not results:
-        return ""
-    lines = []
-    for r in results:
-        status = "✓" if r["success"] else "✗"
-        lines.append(f"[{status} {r['marker']}] {r['input'][:80]}")
-        if r["output"]:
-            lines.append(r["output"][:1500])
-    return "\n".join(lines)
+def _startupinfo():
+    """Cinto e suspensório: além do CREATE_NO_WINDOW, manda a janela nascer
+    escondida. Alguns executáveis ignoram a flag e obedecem só isto."""
+    if sys.platform != "win32":
+        return None
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return si
 
 
-# ── Implementações ─────────────────────────────────────────────────────────────
+def _rodar(args: list[str], timeout: int = 60, entrada: str | None = None) -> tuple[int, str]:
+    p = subprocess.run(
+        args, capture_output=True, text=True, timeout=timeout, input=entrada,
+        encoding="utf-8", errors="replace", cwd=str(ROOT),
+        creationflags=SEM_JANELA, startupinfo=_startupinfo(),
+    )
+    return p.returncode, (p.stdout + p.stderr).strip()
 
-def _run_shell(cmd: str) -> dict:
-    log.info("◆CMD: %s", cmd[:120])
+
+def _ok(saida: str) -> dict:
+    return {"ok": True, "saida": saida}
+
+
+def _erro(saida: str) -> dict:
+    return {"ok": False, "saida": saida}
+
+
+def _caminho(bruto: str) -> Path:
+    """Aceita ~, variáveis do Windows (%USERPROFILE%) e caminho relativo."""
+    texto = os.path.expandvars(str(bruto).strip().strip('"').strip("'"))
+    p = Path(texto).expanduser()
+    return p if p.is_absolute() else (ROOT / p)
+
+
+# ── Shell e código ───────────────────────────────────────────────────────────
+
+def executar_powershell(comando: str, timeout: int = 90) -> dict:
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", cmd],
-            capture_output=True, text=True, timeout=60,
-            encoding="utf-8", errors="replace",
-            cwd=str(ROOT),
-        )
-        out = (result.stdout + result.stderr).strip() or "(sem saída)"
-        return {"marker": "CMD", "input": cmd, "output": out[:2000], "success": result.returncode == 0}
+        codigo, saida = _rodar(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-Command", comando],
+            timeout=timeout)
+        return {"ok": codigo == 0, "saida": (saida or "(sem saída)")[:6000]}
     except subprocess.TimeoutExpired:
-        return {"marker": "CMD", "input": cmd, "output": "Timeout (60s)", "success": False}
+        return _erro(f"Timeout de {timeout}s estourado.")
     except Exception as exc:
-        return {"marker": "CMD", "input": cmd, "output": str(exc), "success": False}
+        return _erro(f"{type(exc).__name__}: {exc}")
 
 
-def _run_python(code: str, context: dict | None = None) -> dict:
-    log.info("◆PY: %s...", code[:60].replace('\n', ' '))
-    stdout_buf = io.StringIO()
-    stderr_buf = io.StringIO()
-
-    # Contexto de execução: tem acesso ao banco, ao grafo, ao ROOT
-    exec_globals: dict[str, Any] = {
+def executar_python(codigo: str, contexto: dict | None = None) -> dict:
+    """Roda Python no processo do Condor — enxerga a memória e o projeto."""
+    saida_buf, erro_buf = io.StringIO(), io.StringIO()
+    globais: dict[str, Any] = {
         "__builtins__": __builtins__,
-        "ROOT": ROOT,
-        "Path": Path,
-        "os": os,
-        "sys": sys,
-        "subprocess": subprocess,
-        "re": re,
+        "ROOT": ROOT, "DATA": DATA, "Path": Path,
+        "os": os, "sys": sys, "re": re, "subprocess": subprocess, "shutil": shutil,
     }
-    # Injeta referências vivas do servidor se disponíveis
-    if context:
-        exec_globals.update(context)
-
+    if contexto:
+        globais.update(contexto)
     try:
-        with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
-            exec(compile(code, "<condor>", "exec"), exec_globals)
-        out = stdout_buf.getvalue() + stderr_buf.getvalue()
-        return {"marker": "PY", "input": code[:80], "output": out.strip()[:2000] or "(executado sem output)", "success": True}
+        with redirect_stdout(saida_buf), redirect_stderr(erro_buf):
+            exec(compile(codigo, "<condor>", "exec"), globais)
+        texto = (saida_buf.getvalue() + erro_buf.getvalue()).strip()
+        return _ok(texto[:6000] or "(rodou, sem saída)")
     except Exception as exc:
-        return {"marker": "PY", "input": code[:80], "output": f"{type(exc).__name__}: {exc}", "success": False}
+        return _erro(f"{type(exc).__name__}: {exc}\n{erro_buf.getvalue()[:1000]}")
 
 
-def _read_file(path: str) -> dict:
+def instalar_pacote(pacote: str) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9._\-\[\]=<>,]+", pacote.strip()):
+        return _erro("Nome de pacote inválido.")
     try:
-        p = Path(path.strip())
-        if not p.is_absolute():
-            p = ROOT / p
-        content = p.read_text(encoding="utf-8", errors="replace")
-        return {"marker": "READ", "input": str(p), "output": content[:3000], "success": True}
+        codigo, saida = _rodar(
+            [sys.executable, "-m", "pip", "install", "--quiet",
+             "--disable-pip-version-check", pacote.strip()], timeout=300)
+        return {"ok": codigo == 0, "saida": (saida or f"{pacote} instalado.")[:1500]}
     except Exception as exc:
-        return {"marker": "READ", "input": path, "output": str(exc), "success": False}
+        return _erro(str(exc))
 
 
-def _write_file(path: str, content: str) -> dict:
+# ── Arquivos ─────────────────────────────────────────────────────────────────
+
+def ler_arquivo(caminho: str, max_chars: int = 12000) -> dict:
     try:
-        p = Path(path.strip())
-        if not p.is_absolute():
-            p = ROOT / p
+        p = _caminho(caminho)
+        if not p.exists():
+            return _erro(f"Não existe: {p}")
+        if p.is_dir():
+            return listar_pasta(str(p))
+        dados = p.read_text(encoding="utf-8", errors="replace")
+        corte = "" if len(dados) <= max_chars else f"\n\n[... cortado, {len(dados)} chars no total]"
+        return _ok(dados[:max_chars] + corte)
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def escrever_arquivo(caminho: str, conteudo: str, anexar: bool = False) -> dict:
+    try:
+        p = _caminho(caminho)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-        return {"marker": "WRITE", "input": str(p), "output": f"Escrito: {len(content)} chars", "success": True}
+        with open(p, "a" if anexar else "w", encoding="utf-8") as f:
+            f.write(conteudo)
+        verbo = "Anexado a" if anexar else "Escrito em"
+        return _ok(f"{verbo} {p} ({len(conteudo)} chars)")
     except Exception as exc:
-        return {"marker": "WRITE", "input": path, "output": str(exc), "success": False}
+        return _erro(f"{type(exc).__name__}: {exc}")
 
 
-def _download(url: str, dest: str) -> dict:
+def listar_pasta(caminho: str = ".", limite: int = 200) -> dict:
+    try:
+        p = _caminho(caminho)
+        if not p.is_dir():
+            return _erro(f"Não é pasta: {p}")
+        itens = []
+        for i, item in enumerate(sorted(p.iterdir(),
+                                        key=lambda x: (x.is_file(), x.name.lower()))):
+            if i >= limite:
+                itens.append(f"... (mais itens em {p})")
+                break
+            if item.is_dir():
+                itens.append(f"[pasta] {item.name}")
+            else:
+                try:
+                    kb = item.stat().st_size / 1024
+                    itens.append(f"        {item.name}  ({kb:.1f} KB)")
+                except OSError:
+                    itens.append(f"        {item.name}")
+        return _ok(f"{p}\n" + "\n".join(itens) if itens else f"{p} (vazia)")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def buscar_arquivos(padrao: str, raiz: str = "", limite: int = 60) -> dict:
+    """Procura por nome. Sem raiz, varre as pastas do usuário."""
+    try:
+        raizes = [_caminho(raiz)] if raiz else [
+            Path.home() / "Desktop", Path.home() / "Documents",
+            Path.home() / "Downloads", ROOT,
+        ]
+        achados: list[str] = []
+        alvo = padrao if any(c in padrao for c in "*?") else f"*{padrao}*"
+        for base in raizes:
+            if not base.exists():
+                continue
+            try:
+                for item in base.rglob(alvo):
+                    achados.append(str(item))
+                    if len(achados) >= limite:
+                        break
+            except (PermissionError, OSError):
+                continue
+            if len(achados) >= limite:
+                break
+        return _ok("\n".join(achados) if achados else f"Nada encontrado pra '{padrao}'.")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def deletar(caminho: str, recursivo: bool = False) -> dict:
+    try:
+        p = _caminho(caminho)
+        if not p.exists():
+            return _erro(f"Não existe: {p}")
+        if p.is_dir():
+            if recursivo:
+                shutil.rmtree(p)
+                return _ok(f"Pasta apagada: {p}")
+            p.rmdir()
+            return _ok(f"Pasta vazia apagada: {p}")
+        p.unlink()
+        return _ok(f"Arquivo apagado: {p}")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def mover(origem: str, destino: str) -> dict:
+    try:
+        o, d = _caminho(origem), _caminho(destino)
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(o), str(d))
+        return _ok(f"{o} → {d}")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def copiar(origem: str, destino: str) -> dict:
+    try:
+        o, d = _caminho(origem), _caminho(destino)
+        d.parent.mkdir(parents=True, exist_ok=True)
+        if o.is_dir():
+            shutil.copytree(str(o), str(d), dirs_exist_ok=True)
+        else:
+            shutil.copy2(str(o), str(d))
+        return _ok(f"Copiado: {o} → {d}")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def baixar(url: str, destino: str) -> dict:
     try:
         import urllib.request
-        p = Path(dest.strip())
-        if not p.is_absolute():
-            p = ROOT / p
+        p = _caminho(destino)
         p.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(url, p)
-        size = p.stat().st_size
-        return {"marker": "GET", "input": url, "output": f"Baixado: {p} ({size/1024:.1f} KB)", "success": True}
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Condor)"})
+        with urllib.request.urlopen(req, timeout=120) as r, open(p, "wb") as f:
+            shutil.copyfileobj(r, f)
+        return _ok(f"Baixado: {p} ({p.stat().st_size / 1024:.1f} KB)")
     except Exception as exc:
-        return {"marker": "GET", "input": url, "output": str(exc), "success": False}
+        return _erro(f"{type(exc).__name__}: {exc}")
 
 
-def _pip_install(pkg: str) -> dict:
-    log.info("◆PIP: %s", pkg)
+def ler_pdf(caminho: str, max_chars: int = 12000) -> dict:
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", pkg.strip(), "--quiet"],
-            capture_output=True, text=True, timeout=120,
-            encoding="utf-8", errors="replace",
-        )
-        out = (result.stdout + result.stderr).strip() or "Instalado."
-        return {"marker": "PIP", "input": pkg, "output": out[:500], "success": result.returncode == 0}
+        p = _caminho(caminho)
+        if not p.exists():
+            return _erro(f"Não existe: {p}")
+        from pypdf import PdfReader
+        leitor = PdfReader(str(p))
+        texto = "\n".join((pg.extract_text() or "") for pg in leitor.pages[:40])
+        if not texto.strip():
+            return _ok("(PDF sem texto extraível — provavelmente é escaneado)")
+        return _ok(texto[:max_chars])
+    except ImportError:
+        return _erro("pypdf não instalado.")
     except Exception as exc:
-        return {"marker": "PIP", "input": pkg, "output": str(exc), "success": False}
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+# ── Apps e janelas ───────────────────────────────────────────────────────────
+
+def abrir(alvo: str) -> dict:
+    """Abre app, arquivo, pasta ou site. Aceita 'spotify', 'C:\\x.txt', 'youtube.com'."""
+    alvo = alvo.strip()
+    try:
+        if re.match(r"^(https?://|www\.)", alvo) or re.match(r"^[\w-]+\.(com|br|org|net|io|dev)", alvo):
+            url = alvo if alvo.startswith("http") else f"https://{alvo}"
+            os.startfile(url)
+            return _ok(f"Abri {url}")
+
+        p = _caminho(alvo)
+        if p.exists():
+            os.startfile(str(p))
+            return _ok(f"Abri {p}")
+
+        # Nome de app: tenta o atalho do menu iniciar, depois o executável direto
+        codigo, saida = _rodar(
+            ["powershell", "-NoProfile", "-Command",
+             f"Start-Process '{alvo}' -ErrorAction Stop"], timeout=20)
+        if codigo == 0:
+            return _ok(f"Abri {alvo}")
+
+        codigo, saida = _rodar(
+            ["powershell", "-NoProfile", "-Command",
+             "$alvo='" + alvo.replace("'", "''") + "'; "
+             "$m = Get-ChildItem -Path "
+             "\"$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\","
+             "\"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\" "
+             "-Recurse -Include *.lnk -ErrorAction SilentlyContinue | "
+             "Where-Object { $_.BaseName -like \"*$alvo*\" } | Select-Object -First 1; "
+             "if ($m) { Start-Process $m.FullName; $m.BaseName } else { 'NAOACHEI' }"],
+            timeout=45)
+        if "NAOACHEI" in saida or not saida:
+            return _erro(f"Não achei '{alvo}' instalado.")
+        return _ok(f"Abri {saida.strip()}")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def fechar_app(nome: str) -> dict:
+    try:
+        codigo, saida = _rodar(
+            ["powershell", "-NoProfile", "-Command",
+             f"Stop-Process -Name '{nome.replace('.exe', '')}' -Force -ErrorAction Stop"],
+            timeout=20)
+        return {"ok": codigo == 0, "saida": f"Fechei {nome}" if codigo == 0 else saida[:400]}
+    except Exception as exc:
+        return _erro(str(exc))
+
+
+def listar_janelas() -> dict:
+    try:
+        _, saida = _rodar(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | "
+             "Select-Object ProcessName, MainWindowTitle | "
+             "Format-Table -AutoSize | Out-String -Width 180"], timeout=20)
+        return _ok(saida[:3000] or "(nenhuma janela com título)")
+    except Exception as exc:
+        return _erro(str(exc))
+
+
+def focar_janela(titulo: str) -> dict:
+    try:
+        seguro = titulo.replace("'", "''")
+        _, saida = _rodar(
+            ["powershell", "-NoProfile", "-Command",
+             "$w = New-Object -ComObject WScript.Shell; "
+             f"if ($w.AppActivate('{seguro}')) {{ 'OK' }} else {{ 'NAOACHEI' }}"],
+            timeout=15)
+        if "OK" in saida:
+            return _ok(f"Janela '{titulo}' em foco.")
+        return _erro(f"Não achei janela com '{titulo}' no título.")
+    except Exception as exc:
+        return _erro(str(exc))
+
+
+def info_sistema() -> dict:
+    try:
+        import psutil
+        cpu = psutil.cpu_percent(interval=0.4)
+        ram = psutil.virtual_memory()
+        disco = psutil.disk_usage("C:\\" if sys.platform == "win32" else "/")
+        linhas = [
+            f"CPU: {cpu:.0f}%  ({psutil.cpu_count(logical=True)} threads)",
+            f"RAM: {ram.percent:.0f}% — {ram.used/1e9:.1f} de {ram.total/1e9:.1f} GB",
+            f"Disco C: {disco.percent:.0f}% — {disco.free/1e9:.1f} GB livres",
+            f"Ligado há {(time.time() - psutil.boot_time())/3600:.1f} h",
+        ]
+        try:
+            bat = psutil.sensors_battery()
+            if bat:
+                linhas.append(f"Bateria: {bat.percent:.0f}%"
+                              + (" (na tomada)" if bat.power_plugged else ""))
+        except Exception:
+            pass
+        topo = sorted(psutil.process_iter(["name", "memory_info"]),
+                      key=lambda p: (p.info["memory_info"].rss if p.info["memory_info"] else 0),
+                      reverse=True)[:5]
+        linhas.append("Mais pesados: " + ", ".join(
+            f"{p.info['name']} ({p.info['memory_info'].rss/1e6:.0f} MB)"
+            for p in topo if p.info["memory_info"]))
+        return _ok("\n".join(linhas))
+    except Exception as exc:
+        return _erro(str(exc))
+
+
+# ── Tela, mouse e teclado ────────────────────────────────────────────────────
+
+def screenshot() -> dict:
+    """Tira print e devolve o caminho + a imagem em base64 (o modelo enxerga)."""
+    try:
+        from PIL import ImageGrab
+        img = ImageGrab.grab(all_screens=True)
+        pasta = DATA / "screenshots"
+        pasta.mkdir(parents=True, exist_ok=True)
+        destino = pasta / f"tela_{int(time.time())}.png"
+        img.save(destino)
+
+        # Reduz antes de mandar pro modelo: 1024px de largura já dá pra ler tudo
+        # e corta o custo do token de imagem pela metade.
+        copia = img.copy()
+        if copia.width > 1400:
+            proporcao = 1400 / copia.width
+            copia = copia.resize((1400, int(copia.height * proporcao)))
+        buf = io.BytesIO()
+        copia.convert("RGB").save(buf, format="JPEG", quality=72)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return {"ok": True, "saida": f"Print salvo em {destino} ({img.size[0]}x{img.size[1]})",
+                "imagem_b64": b64}
+    except ImportError:
+        return _erro("Pillow não instalado.")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def clicar(x: int, y: int, botao: str = "left", duplo: bool = False) -> dict:
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = False
+        if duplo:
+            pyautogui.doubleClick(x=x, y=y)
+        else:
+            pyautogui.click(x=x, y=y, button=botao)
+        return _ok(f"Clique {'duplo ' if duplo else ''}{botao} em ({x}, {y})")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def digitar(texto: str) -> dict:
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = False
+        # write() não dá conta de acento; pro texto com acento vai pelo clipboard.
+        if any(ord(c) > 127 for c in texto):
+            escrever_clipboard(texto)
+            pyautogui.hotkey("ctrl", "v")
+            return _ok(f"Digitado (via clipboard): {len(texto)} chars")
+        pyautogui.write(texto, interval=0.012)
+        return _ok(f"Digitado: {len(texto)} chars")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def atalho(teclas: str) -> dict:
+    """Ex.: 'ctrl+c', 'alt+tab', 'win+d', 'enter'."""
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = False
+        partes = [t.strip().lower() for t in re.split(r"[+\-]", teclas) if t.strip()]
+        if not partes:
+            return _erro("Combinação vazia.")
+        if len(partes) == 1:
+            pyautogui.press(partes[0])
+        else:
+            pyautogui.hotkey(*partes)
+        return _ok(f"Teclas: {'+'.join(partes)}")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def ler_clipboard() -> dict:
+    try:
+        import pyperclip
+        return _ok(pyperclip.paste()[:5000] or "(clipboard vazio)")
+    except Exception:
+        try:
+            _, saida = _rodar(["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                              timeout=10)
+            return _ok(saida[:5000] or "(clipboard vazio)")
+        except Exception as exc:
+            return _erro(str(exc))
+
+
+def escrever_clipboard(texto: str) -> dict:
+    try:
+        import pyperclip
+        pyperclip.copy(texto)
+        return _ok(f"Copiado: {len(texto)} chars")
+    except Exception:
+        try:
+            codigo, _ = _rodar(["powershell", "-NoProfile", "-Command", "$input | Set-Clipboard"],
+                               timeout=10, entrada=texto)
+            return {"ok": codigo == 0, "saida": f"Copiado: {len(texto)} chars"}
+        except Exception as exc:
+            return _erro(str(exc))
+
+
+# ── Web ──────────────────────────────────────────────────────────────────────
+
+def buscar_web(consulta: str, limite: int = 6) -> dict:
+    """Busca no DuckDuckGo sem API key. Devolve título + resumo dos resultados."""
+    try:
+        import html
+        import urllib.parse
+        import urllib.request
+        url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(consulta)
+        req = urllib.request.Request(url, headers={"User-Agent": _NAVEGADOR})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            corpo = r.read().decode("utf-8", errors="replace")
+
+        def _limpar(s: str) -> str:
+            return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html.unescape(s))).strip()
+
+        titulos = [_limpar(t) for t in re.findall(
+            r'<a[^>]+class="result__a"[^>]*>(.*?)</a>', corpo, re.DOTALL)]
+        resumos = [_limpar(s) for s in re.findall(
+            r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', corpo, re.DOTALL)]
+        itens = [f"{i+1}. {t}\n   {resumos[i] if i < len(resumos) else ''}"
+                 for i, t in enumerate(titulos[:limite])]
+        return _ok("\n".join(itens) or "(nenhum resultado)")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def ler_site(url: str, max_chars: int = 8000) -> dict:
+    """Baixa a página e devolve só o texto."""
+    try:
+        import html
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": _NAVEGADOR})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            corpo = r.read().decode("utf-8", errors="replace")
+        corpo = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", corpo,
+                       flags=re.DOTALL | re.IGNORECASE)
+        texto = re.sub(r"<[^>]+>", " ", corpo)
+        texto = re.sub(r"[ \t]+", " ", html.unescape(texto))
+        texto = re.sub(r"\n\s*\n+", "\n\n", texto).strip()
+        return _ok(texto[:max_chars])
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")

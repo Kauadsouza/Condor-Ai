@@ -1,0 +1,4 @@
+Coloque aqui os dois arquivos do Picovoice:
+  Condor_pt_windows_v3_0_0.ppn   (a palavra treinada)
+  porcupine_params_pt.pv         (o modelo do portugues)
+Veja o passo 2.2 do COMO_USAR.md

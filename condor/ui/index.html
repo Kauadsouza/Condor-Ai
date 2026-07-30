@@ -223,6 +223,37 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
 .act-btn{background:transparent;border:1px solid rgba(94,234,212,.25);color:var(--cyan);padding:6px 12px;border-radius:7px;font-size:10px;letter-spacing:1px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-family:inherit;}
 .act-btn.amb{color:var(--amber);border-color:rgba(239,159,39,.3);}
 .err-meta{margin-left:auto;font-size:9px;color:var(--text-dim);letter-spacing:1px;}
+
+/* ── AÇÕES DENTRO DA BOLHA ──────────────────────────────────────── */
+.acoes{display:flex;flex-direction:column;gap:5px;}
+.acoes:not(:empty){margin-bottom:10px;}
+.acao-linha{display:flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:10px;color:var(--text-mute);padding:5px 9px;background:rgba(139,124,255,.05);border-left:2px solid rgba(139,124,255,.35);border-radius:0 6px 6px 0;animation:fadeUp .25s ease-out;}
+.acao-linha.ok{border-left-color:rgba(94,234,212,.6);}
+.acao-linha.falhou{border-left-color:var(--pink);background:rgba(244,114,182,.06);}
+.acao-ponto{width:11px;text-align:center;color:var(--violet-soft);font-size:9px;}
+.acao-linha.ok .acao-ponto{color:var(--cyan);}
+.acao-linha.falhou .acao-ponto{color:var(--pink);}
+.acao-nome{color:var(--violet-soft);letter-spacing:.5px;white-space:nowrap;}
+.acao-arg{color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.acao-linha:not(.ok):not(.falhou) .acao-ponto{animation:spk 1s infinite;}
+.acao-linha:not(.ok):not(.falhou) .acao-ponto::before{content:'▸';}
+
+/* ── DORMINDO — a tela inteira esfria ───────────────────────────── */
+.condor-frame.is-dormindo .orb-core{filter:grayscale(.75);opacity:.45;box-shadow:none;}
+.condor-frame.is-dormindo .orb-ring{opacity:.2;animation-duration:5s;}
+.condor-frame.is-dormindo .waveform,.condor-frame.is-dormindo .listen-wave{opacity:.22;}
+.condor-frame.is-dormindo .scan-line{opacity:.3;}
+
+/* ── CAIXA DE SENHA ─────────────────────────────────────────────── */
+.senha-box{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:50;width:min(460px,86%);background:rgba(20,12,18,.96);border:1px solid rgba(244,114,182,.45);border-radius:14px;padding:22px 24px;backdrop-filter:blur(20px);box-shadow:0 0 60px rgba(244,114,182,.18),0 20px 60px rgba(0,0,0,.6);animation:fadeUp .25s ease-out;}
+.senha-titulo{display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:2.5px;color:var(--pink-soft);margin-bottom:12px;}
+.senha-motivo{font-size:13px;color:var(--text);line-height:1.6;margin-bottom:16px;}
+.senha-linha{display:flex;gap:8px;}
+.senha-linha input{flex:1;background:rgba(255,255,255,.05);border:1px solid rgba(244,114,182,.3);border-radius:9px;padding:10px 14px;color:var(--text);font-family:var(--font-sans);font-size:13px;outline:none;caret-color:var(--pink);letter-spacing:2px;}
+.senha-linha input:focus{border-color:rgba(244,114,182,.7);}
+.senha-linha button{background:rgba(244,114,182,.12);border:1px solid rgba(244,114,182,.4);color:var(--pink-soft);padding:10px 14px;border-radius:9px;cursor:pointer;font-size:10px;letter-spacing:1.5px;font-family:inherit;}
+.senha-linha button.secundario{background:transparent;border-color:rgba(139,124,255,.2);color:var(--text-dim);}
+.senha-dica{font-size:9px;color:var(--text-faint);letter-spacing:1.5px;margin-top:12px;text-align:center;}
 </style>
 </head>
 <body>
@@ -245,9 +276,9 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
 
   <!-- TOP NAV -->
   <div class="top-nav" id="topNav">
-    <button class="top-tab" data-screen="conversacao">Conversação</button>
+    <button class="top-tab active" data-screen="conversacao">Conversação</button>
     <span class="top-div">·</span>
-    <button class="top-tab active" data-screen="projetos">Projetos</button>
+    <button class="top-tab" data-screen="projetos">Projetos</button>
     <span class="top-div">·</span>
     <button class="top-tab" data-screen="memoria">Memória</button>
   </div>
@@ -264,7 +295,7 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
   </div>
 
   <!-- ═══════════════ CONVERSAÇÃO ═══════════════ -->
-  <section class="screen" id="screen-conversacao">
+  <section class="screen active" id="screen-conversacao">
     <div class="conv-wrap" id="chatWrap">
       <div class="session-mark">
         <div class="line"></div>
@@ -282,8 +313,9 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
     <div class="voice-bar">
       <div class="voice-row">
         <div class="voice-info">
-          <div class="on" id="voiceStatus">● VOZ INATIVA</div>
-          <div style="margin-top:4px;" id="tokenCount">0 tokens · 0 turnos</div>
+          <div class="on" id="voiceStatus">● DORMINDO</div>
+          <div style="margin-top:4px;" id="tokenCount">0 fatos · 0 turnos</div>
+          <div style="margin-top:4px;" id="custoHoje">US$ 0.000 hoje</div>
         </div>
         <div class="voice-center">
           <div class="waveform">
@@ -311,7 +343,7 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
         </div>
       </div>
       <div style="text-align:center;margin-top:6px;">
-        <span id="voiceHint" style="font-size:9px;color:var(--text-dim);letter-spacing:2px;">CLIQUE NO ORB PARA CONVERSAR POR VOZ</span>
+        <span id="voiceHint" style="font-size:9px;color:var(--text-dim);letter-spacing:2px;">DIGA "CONDOR" PRA ME CHAMAR</span>
       </div>
       <!-- Campo de texto -->
       <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:0 20px;">
@@ -327,19 +359,12 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
                  font-size:11px;letter-spacing:1px;font-family:var(--font-sans);">
           ENVIAR
         </button>
-        <button id="muteBtn"
-          style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.2);
-                 color:#fff;padding:10px 16px;border-radius:10px;cursor:pointer;
-                 font-size:18px;line-height:1;flex-shrink:0;"
-          title="Silenciar / Ativar voz">
-          🔊
-        </button>
       </div>
     </div>
   </section>
 
   <!-- ═══════════════ PROJETOS ═══════════════ -->
-  <section class="screen active" id="screen-projetos">
+  <section class="screen" id="screen-projetos">
     <div class="proj-wrap">
       <div class="proj-glow"></div>
       <!-- Memory tags dinâmicas — populadas via projects.js -->
@@ -525,19 +550,18 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
 <script src="scripts/projects.js"></script>
 <script src="scripts/errors.js"></script>
 <script>
-  // Inicializa a aplicação
   window.addEventListener('DOMContentLoaded', () => {
     CondorRouter.init();
-    CondorWS.connect();
-    CondorVoice.init();
-    CondorMemory.init();
-    CondorProjects.init();
-    CondorErrors.init();
+    CondorConversa.init();
+    CondorVoz.init();
+    CondorMemoria.init();
+    CondorProjetos.init();
+    CondorErros.init();
+    CondorWS.conectar();
 
-    // Hora da sessão
-    const now = new Date();
+    const agora = new Date();
     document.getElementById('sessionLabel').textContent =
-      `SESSÃO · ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+      `SESSÃO · ${String(agora.getHours()).padStart(2,'0')}:${String(agora.getMinutes()).padStart(2,'0')}`;
   });
 </script>
 </body>

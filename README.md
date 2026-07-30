@@ -1,165 +1,149 @@
-# 🦅 Condor — Seu Assistente de IA 100% Local
+# 🦅 CONDOR
 
-O **Condor** é um assistente pessoal com inteligência artificial que roda **inteiramente no seu computador**.
+Assistente pessoal com acesso total ao seu PC. Fica dormindo no fundo do
+Windows até você chamar pelo nome. Aí ele acorda, escuta, resolve e volta a
+dormir sozinho.
 
-Sem nuvem. Sem envio de dados. Sem comprometer sua privacidade.
-
-Ele entende, lembra, executa tarefas e interage com você em tempo real — direto pelo terminal.
-
----
-
-## 🚀 O que é o Condor?
-
-O Condor foi criado com um objetivo simples:
-
-> Construir um assistente realmente útil, inteligente e privado.
-
-Diferente de soluções tradicionais, ele:
-
-- Não depende de APIs externas  
-- Não envia seus dados para servidores  
-- Funciona offline  
-- Controla o seu sistema de forma inteligente  
+Cérebro: **GPT-4o** (API da OpenAI).
+Memória: **SQLite na sua máquina** — ele aprende sobre você e nunca esquece.
 
 ---
 
-## 🔐 Privacidade Total
+## Como funciona no dia a dia
 
-Tudo no Condor acontece localmente:
+```
+   DORMINDO ──── você fala "Condor, ..." ────► ACORDADO
+      ▲                                            │
+      └────────── 2 min sem te ouvir ──────────────┘
+```
 
-- 🛑 Zero envio de dados para a internet  
-- 🧠 Modelos rodando na sua máquina  
-- 📂 Arquivos e memória sob seu controle  
+1. Ele fica ouvindo o microfone o tempo todo, **localmente**, esperando a
+   palavra de chamada. Dormindo não gasta um centavo de API.
+2. Você fala **"Condor"** e emenda o pedido. Ele grava até você parar de falar.
+3. A janela abre, ele pensa, age no PC se precisar e responde falando.
+4. Passados 2 minutos sem você chamar de novo, a janela fecha e ele dorme.
 
-Você não precisa confiar em terceiros.  
-O controle é seu.
-
----
-
-## 🧠 Inteligência com Roteamento de Modelos
-
-O Condor utiliza modelos locais via **Ollama**, com um sistema inteligente de escolha:
-
-- ⚡ **Modelo leve (llama3.2)** → conversas rápidas  
-- 🧠 **Modelo avançado (qwen2.5-coder)** → código, decisões e tarefas complexas  
-
-Isso garante **velocidade + capacidade**, sem desperdício de recursos.
+Todo pedido começa chamando o nome dele. É isso que separa "estou falando com
+o Condor" de "estou falando na sala".
 
 ---
 
-## 🧬 Memória de Longo Prazo
+## O que ele faz no PC
 
-O Condor não esquece.
+Acesso total, de verdade. Nenhuma janela preta piscando na tela — todo
+processo filho nasce escondido.
 
-- Banco de dados: SQLite  
-- Sistema de embeddings  
-- Busca por similaridade semântica  
-
-👉 Ele lembra de conversas passadas e usa isso para te responder melhor.
-
----
-
-## 🛠️ Controle do Sistema (Agent Loop)
-
-O Condor não só responde — ele **age**.
-
-Ele possui um loop agêntico com tool calling que permite:
-
-- 📂 Ler e escrever arquivos  
-- 🚀 Abrir aplicativos  
-- 💻 Executar comandos no terminal  
-- 🔍 Buscar arquivos no sistema  
-- 📊 Coletar informações do sistema  
-- ⚙️ Automatizar tarefas  
-
-Tudo isso de forma inteligente, decidindo sozinho quando usar cada ferramenta.
+| | |
+|---|---|
+| **Shell** | qualquer comando PowerShell |
+| **Código** | executa Python na hora |
+| **Arquivos** | ler, escrever, criar, mover, copiar, apagar, procurar no PC inteiro |
+| **Programas** | abrir, fechar, listar e trazer janelas pra frente |
+| **Tela** | tira print e **enxerga** o que tem nela |
+| **Mouse e teclado** | clicar, digitar, atalhos |
+| **Web** | buscar e ler páginas |
+| **Sistema** | CPU, RAM, disco, bateria, processos |
+| **Memória** | consultar tudo que já aprendeu sobre você |
 
 ---
 
-## 🎙️ Interação por Voz
+## A única trava
 
-- Wake word (ativação por voz)  
-- Autenticação por voz  
-- Silêncio total para desconhecidos  
+Ele faz tudo sozinho, sem pedir licença. **Exceto** quatro coisas, que exigem
+sua senha falada em voz alta:
 
-👉 Apenas você consegue usar o Condor.
+- destruir o sistema (`format`, `diskpart`, apagar o registro)
+- apagar arquivos em massa (remoção recursiva de pasta grande ou raiz de disco)
+- desligar ou reiniciar o PC
+- mexer em firewall, antivírus ou redes salvas
 
----
+Ele fala *"isso vai apagar arquivos em massa, me diz a senha"*, você responde
+falando (ou digita na janela). Errou ou ficou quieto, a ação não acontece.
 
-## 🖥️ Interface
+Toda ação — liberada ou barrada — fica registrada em `data/auditoria.log`.
 
-O Condor roda em um HUD no terminal com:
-
-- Streaming de resposta em tempo real  
-- Visualização das ferramentas sendo usadas  
-- Feedback contínuo durante execução  
-
-Simples, rápido e direto.
+Senha inicial: `teste`. Troque em `.env` (`CONDOR_SENHA`).
 
 ---
 
-## ⚙️ Como Funciona
+## Memória
 
-1. Você ativa o Condor com a wake word  
-2. Ele autentica sua voz  
-3. Interpreta sua intenção  
-4. Decide o que fazer  
-5. Executa ações no sistema (se necessário)  
-6. Responde em tempo real  
+Ele aprende sozinho. Depois de cada conversa, um modelo barato relê o que foi
+dito e decide o que vale guardar pra sempre: quem você é, no que trabalha, o
+que prefere, sua rotina, seus projetos, o que vocês combinaram.
 
----
+Nada disso é regra fixa — é julgamento do modelo, e por isso não enche o banco
+de lixo.
 
-## 🧩 Stack Tecnológica
+Guardado em `data/condor.db` (SQLite, na sua máquina):
 
-- LLMs locais via Ollama  
-- Python (agent loop e backend)  
-- SQLite (memória persistente)  
-- Embeddings (contexto semântico)  
-- Terminal UI (HUD customizado)  
-
----
-
-## 🎯 Diferenciais
-
-- 🔒 100% local e privado  
-- 🧠 Memória real de longo prazo  
-- ⚡ Execução direta no sistema operacional  
-- 🎙️ Interface por voz com autenticação  
-- 🔄 Agente autônomo com tomada de decisão  
-- 🧩 Integração com múltiplas ferramentas  
+| tabela | o que é |
+|---|---|
+| `fatos` | o que ele sabe sobre você, com busca por texto e por significado |
+| `entidades` / `relacoes` | pessoas, projetos e lugares, e como se ligam (o grafo da tela Memória) |
+| `conversas` | histórico completo, por sessão |
+| `acoes` | auditoria de tudo que ele rodou no PC |
+| `uso_api` | quanto cada chamada custou |
 
 ---
 
-## 📌 Filosofia
+## Instalação
 
-> Um assistente deve trabalhar para você — não explorar seus dados.
+Veja **[COMO_USAR.md](COMO_USAR.md)** — passo a passo, do zero, incluindo como
+pegar a chave da OpenAI e como treinar a palavra "Condor".
 
----
+Resumo:
 
-## 🛣️ Roadmap
+```bash
+pip install -r requirements.txt
+```
 
-- Interface gráfica (GUI)  
-- Integração com navegador  
-- Sistema de plugins  
-- Automação avançada de workflows  
-- Multi-usuário com perfis  
-
----
-
-## 🤝 Contribuição
-
-Contribuições são bem-vindas.
-
-Se você acredita em um futuro com mais privacidade e controle, esse projeto é pra você.
+Preencha o `.env`, depois dois cliques em `condor_launcher.pyw`.
 
 ---
 
-## 📄 Licença
+## Estrutura
 
-Este projeto está sob licença MIT.
+```
+condor/
+├── config.py          configuração (data/config.yaml + .env)
+├── session.py         o ciclo dormir/acordar
+├── server.py          FastAPI + WebSocket
+├── brain/
+│   ├── client.py      OpenAI: streaming e loop de ferramentas
+│   ├── tools.py       as 26 ferramentas que o modelo pode chamar
+│   └── persona.py     quem ele é
+├── actions/
+│   ├── executor.py    as mãos: shell, arquivos, mouse, tela, web
+│   └── guard.py       a trava por senha + auditoria
+├── memory/
+│   ├── db.py          SQLite com FTS5 e embeddings
+│   ├── recall.py      o que entra na conversa
+│   └── extractor.py   o que vale guardar pra sempre
+├── voice/
+│   ├── wake.py        a escuta local sempre ligada
+│   ├── stt.py         transcrição
+│   └── tts.py         a voz dele
+└── ui/                a interface (HUD)
+```
 
 ---
 
-## 🦅 Condor
+## Privacidade — leia
 
-Um assistente que realmente entende, executa e respeita você.
+A versão antiga rodava um modelo local e nada saía do PC. **Esta não.**
+
+Vai pra OpenAI: o que você fala depois de chamar ele, as respostas, e os fatos
+da memória que forem relevantes pro pedido (entram como contexto).
+
+**Não** vai: o áudio enquanto ele está dormindo (o detector é local), nem o
+conteúdo do seu PC que ele não precisou abrir pra te responder.
+
+Seu banco de memória, os logs e a auditoria ficam só na sua máquina.
+
+---
+
+## Custo
+
+Você paga por uso à OpenAI. O contador na tela mostra o gasto do dia.
+Dormindo, o custo é zero — é por isso que a sessão fecha sozinha.

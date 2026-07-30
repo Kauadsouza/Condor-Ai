@@ -1,85 +1,92 @@
 /**
- * CondorErrors — tela de erros e saúde do sistema.
+ * CondorErros — a tela de saúde.
+ *
+ * Mostra o que está impedindo o Condor de funcionar direito (sem chave da
+ * OpenAI, microfone off) e as ações que falharam quando ele tentou mexer no PC.
  */
-const CondorErrors = (() => {
+const CondorErros = (() => {
+  const $ = (id) => document.getElementById(id);
+
   function init() {
-    CondorWS.on('health.update', renderHealth);
-
-    // Carrega estado inicial
-    fetch('/api/health').then(r => r.json()).then(renderHealth).catch(() => {});
-
-    // Botões de ordenação
-    document.querySelectorAll('.sp').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.sp').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-      });
-    });
+    atualizar();
+    setInterval(() => {
+      if (CondorRouter.atual() === 'erros') atualizar();
+    }, 20000);
   }
 
-  function renderHealth(data) {
-    // Score e status
-    document.getElementById('healthScore').textContent  = data.score ?? '--';
-    document.getElementById('healthStatus').textContent =
-      `${data.status ?? 'VERIFICANDO'} · ${data.critical ?? 0} crítico(s)`;
+  async function atualizar() {
+    try {
+      const s = await fetch('/api/saude').then(r => r.json());
+      pintarSaude(s);
+      pintarLista(s);
+      $('errCount').textContent = (s.criticos || 0) + (s.avisos || 0);
+    } catch (e) {
+      console.warn('[erros] não consegui carregar', e);
+    }
+  }
 
-    document.getElementById('statCritical').textContent = data.critical ?? 0;
-    document.getElementById('statWarning').textContent  = data.warning  ?? 0;
+  function pintarSaude(s) {
+    $('healthScore').textContent = s.pontos ?? '--';
+    $('statCritical').textContent = s.criticos ?? 0;
+    $('statWarning').textContent = s.avisos ?? 0;
+    const p = s.pontos ?? 0;
+    $('healthStatus').textContent =
+      p >= 90 ? 'TUDO CERTO' : p >= 60 ? 'FUNCIONANDO COM RESSALVAS' : 'PRECISO DE AJUSTE';
+  }
 
-    // Botão de erros no topo
-    const total = (data.critical ?? 0) + (data.warning ?? 0);
-    document.getElementById('errCount').textContent = total;
+  function pintarLista(s) {
+    const cartoes = [];
 
-    // Lista de erros
-    const list   = document.getElementById('errList');
-    const errors = data.errors || [];
-    list.innerHTML = '';
-
-    if (errors.length === 0) {
-      list.innerHTML = `<div style="font-size:12px;color:var(--text-dim);padding:20px 0;">Nenhum erro detectado. O Condor está operando normalmente.</div>`;
-      return;
+    if (!s.cerebro) {
+      cartoes.push(cartao('crit', 'SEM CÉREBRO', 'OPENAI',
+        'Não tem chave da OpenAI configurada — sem ela eu não penso.',
+        'Abra o arquivo .env na pasta do Condor e preencha OPENAI_API_KEY=sk-...'));
+    }
+    if (!s.escuta) {
+      cartoes.push(cartao('warn', 'ESCUTA DESLIGADA', 'VOZ',
+        s.motivo_escuta || 'O detector de voz não subiu.',
+        'Preencha PICOVOICE_ACCESS_KEY no .env (a conta é grátis em console.picovoice.ai).'));
     }
 
-    errors.forEach(err => {
-      const isCrit = err.severity === 'critical';
-      const card   = document.createElement('div');
-      card.className = `err-card ${isCrit ? '' : 'warn'}`;
-      card.innerHTML = `
-        <div class="err-bar ${isCrit ? '' : 'amb'}"></div>
+    (s.falhas || []).forEach(f => {
+      const quando = new Date((f.ts || 0) * 1000)
+        .toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      cartoes.push(cartao('warn', 'AÇÃO FALHOU', (f.ferramenta || '').toUpperCase(),
+        `${f.entrada || ''}`, '', quando));
+    });
+
+    if (!cartoes.length) {
+      cartoes.push(`<div class="err-card" style="border-color:rgba(94,234,212,.2)">
+        <div class="err-title">Nenhum problema. Tudo rodando.</div>
+        <div class="err-desc">${escapar((s.sistema || '').split('\n')[0] || '')}</div>
+      </div>`);
+    }
+    $('errList').innerHTML = cartoes.join('');
+  }
+
+  function cartao(nivel, titulo, categoria, descricao, comoResolver, quando) {
+    const critico = nivel === 'crit';
+    return `
+      <div class="err-card ${critico ? '' : 'warn'}">
+        <div class="err-bar ${critico ? '' : 'amb'}"></div>
         <div class="err-head">
           <div class="err-hl">
-            <span class="tag ${isCrit ? 'tag-crit' : 'tag-warn'}">${err.severity.toUpperCase()}</span>
-            <span class="err-id">${err.id}</span>
-            <span class="err-cat">${err.category}</span>
+            <span class="tag ${critico ? 'tag-crit' : 'tag-warn'}">${critico ? 'CRÍTICO' : 'AVISO'}</span>
+            <span class="err-cat">${escapar(categoria)}</span>
           </div>
-          <span class="err-meta">${_ago(err.ts)}</span>
+          ${quando ? `<span class="err-meta">${quando}</span>` : ''}
         </div>
-        <div class="err-title"><i class="ti ${isCrit ? 'ti-alert-circle' : 'ti-alert-triangle'}"></i> ${_esc(err.title)}</div>
-        <div class="err-desc">${_esc(err.description)}</div>
-        ${err.detail ? `<div class="code-block">${_esc(err.detail)}</div>` : ''}
-        <div class="err-actions">
-          <button class="act-btn" onclick="CondorConversation.addMessage('user','Explica o erro ${err.id} e como corrigir');CondorRouter.go('conversacao');CondorWS.sendText('Explica o erro ${err.id}: ${err.title}')">
-            <i class="ti ti-bulb"></i> SUGERIR CORREÇÃO
-          </button>
-          <button class="act-btn ${isCrit ? '' : 'amb'}">
-            <i class="ti ti-file-text"></i> VER LOG
-          </button>
-        </div>`;
-      list.appendChild(card);
-    });
+        <div class="err-title">${escapar(titulo)}</div>
+        <div class="err-desc">${escapar(descricao)}</div>
+        ${comoResolver ? `<div class="code-block">${escapar(comoResolver)}</div>` : ''}
+      </div>`;
   }
 
-  function _esc(s) {
-    return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  function escapar(t) {
+    const d = document.createElement('div');
+    d.textContent = t == null ? '' : String(t);
+    return d.innerHTML;
   }
 
-  function _ago(ts) {
-    if (!ts) return '';
-    const diff = Math.floor((Date.now() / 1000) - ts);
-    if (diff < 60) return 'agora';
-    if (diff < 3600) return `${Math.floor(diff / 60)}min`;
-    return `${Math.floor(diff / 3600)}h`;
-  }
-
-  return { init };
+  return { init, atualizar };
 })();

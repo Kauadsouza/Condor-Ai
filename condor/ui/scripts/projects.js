@@ -1,106 +1,68 @@
 /**
- * CondorProjects — projetos e memory tags dinâmicos.
- * Só aparecem quando o Condor aprender sobre eles via conversa.
- * Enquanto não há dados: globo vazio, sem cards, sem tags.
+ * CondorProjetos — os cards que orbitam a esfera central.
+ *
+ * Cada card é um projeto que o Condor identificou sozinho conversando com você.
+ * Sem projeto nenhum, a esfera fica lá girando e o texto convida a falar.
  */
-const CondorProjects = (() => {
-  const ORBITS    = ['ob-a', 'ob-b', 'ob-c', 'ob-d'];
-  const TAG_SPOTS = [
-    { top: '18%', left: '14%',  delay: '0s',    color: '' },
-    { top: '26%', right: '16%', delay: '1.2s',  color: 'rgba(94,234,212,.5)' },
-    { top: '72%', left: '18%',  delay: '2.4s',  color: '' },
-    { top: '78%', right: '20%', delay: '3.6s',  color: 'rgba(139,124,255,.5)' },
-    { top: '12%', left: '42%',  delay: '1.8s',  color: 'rgba(94,234,212,.4)' },
-    { top: '88%', left: '46%',  delay: '0.6s',  color: '' },
-  ];
+const CondorProjetos = (() => {
+  const ORBITAS = ['ob-a', 'ob-b', 'ob-c', 'ob-d'];
 
   function init() {
-    loadProjects();
-    loadMemTags();
-
-    // Atualiza quando o Condor aprende algo novo
-    CondorWS.on('memory.learned', () => {
-      loadProjects();
-      loadMemTags();
-    });
-
-    // Atualiza a cada 30s enquanto na tela de projetos
+    atualizar();
     setInterval(() => {
-      loadProjects();
-      loadMemTags();
-    }, 30_000);
+      if (CondorRouter.atual() === 'projetos') atualizar();
+    }, 60000);
   }
 
-  async function loadProjects() {
+  async function atualizar() {
     try {
-      const data = await fetch('/api/projects').then(r => r.json());
-      renderProjects(data.projects || []);
-    } catch (_) {}
+      const [proj, fluxo] = await Promise.all([
+        fetch('/api/projetos').then(r => r.json()),
+        fetch('/api/memoria/fluxo').then(r => r.json()),
+      ]);
+      pintarOrbitas(proj.projetos || []);
+      pintarEtiquetas((fluxo.itens || []).slice(0, 6));
+    } catch (e) {
+      console.warn('[projetos] não consegui carregar', e);
+    }
   }
 
-  async function loadMemTags() {
-    try {
-      const items = await fetch('/api/memory/stream').then(r => r.json());
-      renderMemTags(items || []);
-    } catch (_) {}
-  }
-
-  function renderProjects(projects) {
-    const container = document.getElementById('projectOrbiters');
-    if (!container) return;
-    container.innerHTML = '';
-
-    if (projects.length === 0) return;  // globo vazio — normal no início
-
-    projects.slice(0, 4).forEach((proj, i) => {
-      const isViolet = i % 2 === 1;
-      const orbit    = ORBITS[i % ORBITS.length];
-
-      const orbiter = document.createElement('div');
-      orbiter.className = `proj-orbiter ${orbit}`;
-      orbiter.innerHTML = `
+  function pintarOrbitas(projetos) {
+    const alvo = document.getElementById('projectOrbiters');
+    alvo.innerHTML = projetos.slice(0, 4).map((p, i) => `
+      <div class="proj-orbiter ${ORBITAS[i]}">
         <div class="proj-card">
           <div class="pc-inner">
-            <span class="pc-dot ${isViolet ? 'v' : ''}"></span>
-            <div>
-              <div class="pc-lbl ${isViolet ? 'v' : ''}">PROJETO · ${String(i + 1).padStart(2, '0')}</div>
-              <div class="pc-title">${_esc(proj.name)}</div>
-            </div>
+            <span class="pc-dot ${i % 2 ? 'v' : ''}"></span>
+            <span class="pc-lbl ${i % 2 ? 'v' : ''}">${escapar((p.cluster || 'PROJETO').toUpperCase())}</span>
           </div>
-        </div>`;
-      container.appendChild(orbiter);
-    });
+          <div class="pc-title">${escapar(corta(p.nome, 26))}</div>
+        </div>
+      </div>`).join('');
   }
 
-  function renderMemTags(items) {
-    const container = document.getElementById('memTagsContainer');
-    if (!container) return;
-    container.innerHTML = '';
-
-    if (items.length === 0) return;
-
-    items.slice(0, TAG_SPOTS.length).forEach((item, i) => {
-      const spot = TAG_SPOTS[i];
-      const tag  = document.createElement('div');
-      tag.className = 'mem-tag';
-
-      // Posição
-      if (spot.left)  tag.style.left  = spot.left;
-      if (spot.right) tag.style.right = spot.right;
-      tag.style.top            = spot.top;
-      tag.style.animationDelay = spot.delay;
-      if (spot.color) tag.style.color = spot.color;
-
-      // Texto: mostra o nome da entidade aprendida
-      const prefix = item.cluster === 'TRABALHO' ? '+' : '·';
-      tag.textContent = `${prefix} ${item.name.toLowerCase().replace(/\s+/g, '_')}`;
-      container.appendChild(tag);
-    });
+  function pintarEtiquetas(itens) {
+    const alvo = document.getElementById('memTagsContainer');
+    const cantos = [
+      { top: '18%', left: '12%' }, { top: '28%', right: '14%' },
+      { top: '62%', left: '9%' }, { top: '72%', right: '11%' },
+      { top: '44%', left: '6%' }, { top: '52%', right: '7%' },
+    ];
+    alvo.innerHTML = itens.map((it, i) => {
+      const pos = cantos[i % cantos.length];
+      const estilo = Object.entries(pos).map(([k, v]) => `${k}:${v}`).join(';');
+      return `<div class="mem-tag" style="${estilo};animation-delay:${i * 0.7}s">
+        ${escapar(corta(it.texto, 34))}</div>`;
+    }).join('');
   }
 
-  function _esc(s) {
-    return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const corta = (t, n) => (t || '').length > n ? t.slice(0, n - 1) + '…' : (t || '');
+
+  function escapar(t) {
+    const d = document.createElement('div');
+    d.textContent = t == null ? '' : String(t);
+    return d.innerHTML;
   }
 
-  return { init };
+  return { init, atualizar };
 })();

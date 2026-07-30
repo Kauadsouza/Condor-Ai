@@ -1,61 +1,63 @@
 /**
- * CondorWS — cliente WebSocket com reconexão automática.
- * Despacha eventos para os módulos registrados via CondorWS.on(type, handler).
+ * CondorWS — canal com o servidor, com reconexão automática.
+ *
+ * O servidor manda tudo com a chave "tipo". Cada módulo se inscreve no que
+ * lhe interessa via CondorWS.ao('estado', fn). O '*' recebe tudo.
  */
 const CondorWS = (() => {
   let ws = null;
-  let reconnectTimer = null;
-  const handlers = {};
-  const WS_URL = `ws://${location.host}/ws`;
+  let timerReconexao = null;
+  let tentativas = 0;
+  const inscritos = {};
+  const URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
 
-  function connect() {
-    ws = new WebSocket(WS_URL);
+  function conectar() {
+    ws = new WebSocket(URL);
 
     ws.onopen = () => {
-      console.log('[WS] conectado');
-      clearTimeout(reconnectTimer);
-      dispatch('ws.connected', {});
+      tentativas = 0;
+      clearTimeout(timerReconexao);
+      despachar('ws.ligado', {});
     };
 
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
-        dispatch(msg.type, msg);
+        despachar(msg.tipo, msg);
       } catch (e) {
-        console.error('[WS] parse error', e);
+        console.error('[ws] mensagem inválida', e);
       }
     };
 
-    ws.onerror = (e) => {
-      console.warn('[WS] erro', e);
-    };
-
     ws.onclose = () => {
-      console.log('[WS] desconectado — reconectando em 3s');
-      dispatch('ws.disconnected', {});
-      reconnectTimer = setTimeout(connect, 3000);
+      despachar('ws.caiu', {});
+      // Espera progressiva: 1s, 2s, 4s... até 10s. Evita martelar o servidor
+      // enquanto ele ainda está subindo.
+      const espera = Math.min(10000, 1000 * Math.pow(2, tentativas++));
+      timerReconexao = setTimeout(conectar, espera);
     };
+
+    ws.onerror = () => { /* o onclose já cuida da reconexão */ };
   }
 
-  function dispatch(type, msg) {
-    (handlers[type] || []).forEach(fn => fn(msg));
-    (handlers['*'] || []).forEach(fn => fn(msg));
+  function despachar(tipo, msg) {
+    (inscritos[tipo] || []).forEach(fn => fn(msg));
+    (inscritos['*'] || []).forEach(fn => fn(msg));
   }
 
-  function on(type, fn) {
-    if (!handlers[type]) handlers[type] = [];
-    handlers[type].push(fn);
+  function ao(tipo, fn) {
+    (inscritos[tipo] = inscritos[tipo] || []).push(fn);
   }
 
-  function send(obj) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(obj));
-    }
+  function enviar(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
 
-  function sendText(text) {
-    send({ type: 'text.message', text });
-  }
-
-  return { connect, on, send, sendText };
+  return {
+    conectar,
+    ao,
+    enviar,
+    mandarTexto: (texto) => enviar({ tipo: 'texto', texto }),
+    mandarSenha: (texto) => enviar({ tipo: 'senha', texto }),
+  };
 })();
