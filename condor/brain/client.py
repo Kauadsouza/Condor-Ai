@@ -68,6 +68,11 @@ class Cerebro:
     def pronto(self) -> bool:
         return bool(self._cfg.chave_openai)
 
+    @property
+    def memoria(self):
+        """A voz e os ouvidos também registram custo — precisam do banco."""
+        return self._memoria
+
     async def testar_chave(self) -> tuple[bool, str]:
         """Bate na API pra saber se a chave presta — chamado no boot."""
         if not self._cfg.chave_openai:
@@ -196,7 +201,10 @@ class Cerebro:
                     args = {}
 
                 rotulo = ferramentas.ROTULOS.get(nome, nome)
-                await _evento("ferramenta.inicio", ferramenta=nome, rotulo=rotulo,
+                # O id da chamada acompanha os dois eventos: com ferramentas em
+                # paralelo, é ele que diz qual linha da interface fechar.
+                await _evento("ferramenta.inicio", id=chamada["id"],
+                              ferramenta=nome, rotulo=rotulo,
                               argumentos=_resumir_args(args))
 
                 resultado = await self._executar_com_guarda(nome, args)
@@ -205,7 +213,8 @@ class Cerebro:
                 if resultado.get("imagem_b64"):
                     imagens_pendentes.append(resultado["imagem_b64"])
 
-                await _evento("ferramenta.fim", ferramenta=nome, rotulo=rotulo,
+                await _evento("ferramenta.fim", id=chamada["id"],
+                              ferramenta=nome, rotulo=rotulo,
                               ok=bool(resultado.get("ok")), saida=saida[:400])
 
                 historico.append({

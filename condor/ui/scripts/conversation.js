@@ -115,6 +115,9 @@ const CondorConversa = (() => {
     abrirBolhaCondor();
     const linha = document.createElement('div');
     linha.className = 'acao-linha';
+    // O id da chamada é o que casa início e fim. Sem ele, duas ferramentas
+    // iguais rodando em paralelo fechariam a linha errada.
+    linha.dataset.id = m.id || '';
     linha.dataset.ferramenta = m.ferramenta;
     linha.innerHTML = `
       <span class="acao-ponto"></span>
@@ -126,9 +129,14 @@ const CondorConversa = (() => {
 
   function acaoTerminou(m) {
     if (!blocoAcoes) return;
-    const linhas = blocoAcoes.querySelectorAll(
-      `.acao-linha[data-ferramenta="${CSS.escape(m.ferramenta)}"]`);
-    const alvo = linhas[linhas.length - 1];
+    let alvo = m.id
+      ? blocoAcoes.querySelector(`.acao-linha[data-id="${CSS.escape(m.id)}"]`)
+      : null;
+    if (!alvo) {
+      const iguais = blocoAcoes.querySelectorAll(
+        `.acao-linha[data-ferramenta="${CSS.escape(m.ferramenta)}"]:not(.ok):not(.falhou)`);
+      alvo = iguais[0];
+    }
     if (!alvo) return;
     alvo.classList.add(m.ok ? 'ok' : 'falhou');
     alvo.querySelector('.acao-ponto').textContent = m.ok ? '✓' : '✕';

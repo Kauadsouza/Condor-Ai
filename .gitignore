@@ -23,9 +23,6 @@ data/auditoria.log
 *.swp
 *.bak
 
-# ── Backup da versão antiga ───────────────────────────────────────
-_backup_v2/
-
 # ── Python ────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

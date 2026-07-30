@@ -62,7 +62,7 @@ class Ouvidos:
             return ""
 
         try:
-            self._cerebro._memoria.registrar_uso(
+            self._cerebro.memoria.registrar_uso(
                 self._cfg.voz.modelo_stt, 0, 0, (segundos / 60) * CUSTO_POR_MINUTO)
         except Exception:
             pass

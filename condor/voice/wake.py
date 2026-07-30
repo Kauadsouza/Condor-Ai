@@ -82,6 +82,11 @@ class Escuta(threading.Thread):
     def capturar_fala(self, timeout: float = 30.0) -> bytes | None:
         """Grava uma fala AGORA, sem esperar a wake word.
         É o que a trava de segurança usa pra ouvir a senha."""
+        # Sem a thread do microfone viva, ninguém vai atender o pedido — não
+        # adianta prender uma thread do pool esperando o timeout inteiro.
+        if not self.ativa:
+            return None
+
         futuro: concurrent.futures.Future = concurrent.futures.Future()
         with self._pedido_lock:
             self._pedido = futuro

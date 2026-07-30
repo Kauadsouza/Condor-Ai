@@ -125,7 +125,40 @@ condor/
 │   ├── stt.py         transcrição
 │   └── tts.py         a voz dele
 └── ui/                a interface (HUD)
+
+testes/
+└── rodar_testes.py    119 testes, sem gastar API
 ```
+
+---
+
+## Testes
+
+```bash
+python testes/rodar_testes.py
+```
+
+119 verificações que rodam **sem chave nenhuma e sem gastar um centavo**:
+usam um banco temporário, não tocam na sua memória e não rodam nada
+destrutivo. Sai com código 1 se algo quebrar.
+
+O que eles cobrem:
+
+- **A trava** — 21 comandos catastróficos que *têm* que pedir senha e 12 de
+  uso normal que *não podem* ser barrados. Foi esse teste que pegou o furo
+  em que remoção recursiva na raiz do disco passava livre.
+- **A senha** — as variações que o Whisper produz ao transcrever sua voz
+  ("A senha é teste", "Teste.", "TESTE").
+- **O fluxo da guarda** — inclusive falha fechada: sem canal pra perguntar, a
+  ação não acontece.
+- **As ferramentas** — shell, Python, arquivos com acento, clipboard, sistema.
+- **O silêncio** — garante que nenhum subprocesso pode abrir janela.
+- **Os schemas** — cada ferramenta declarada bate com a assinatura real da
+  função Python. Sem isso o modelo manda argumento que estoura na execução.
+- **A memória** — gravar, corrigir sem duplicar, buscar por texto, grafo,
+  auditoria, custo e embeddings.
+
+Rode antes de confiar em qualquer mudança sua no código.
 
 ---
 

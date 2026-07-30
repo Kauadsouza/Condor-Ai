@@ -67,7 +67,7 @@ class Voz:
             return None
 
         try:
-            self._cerebro._memoria.registrar_uso(
+            self._cerebro.memoria.registrar_uso(
                 self._cfg.voz.modelo_tts, 0, 0,
                 len(limpo) * CUSTO_POR_MILHAO_CHARS / 1_000_000)
         except Exception:
