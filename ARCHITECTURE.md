@@ -12,7 +12,11 @@ Aplicativo Condor -> janela nativa -> /ui
   -> sessao local HttpOnly de 4 h + Host/Origin/Client exatos
   -> limites de corpo, frequencia, conexoes e tentativas de autenticacao
   -> frase valida ativa o perfil operacional unico do dono
-  -> Condor X (unico prototipo local)
+  -> aba Projetos
+     -> catalogo de projetos locais
+     -> ficha interna de cada projeto
+        -> informacoes e prototipo
+        -> Condor X (primeiro projeto)
   -> Sessao Condor
      -> modo offline deterministico
      -> conector local por loopback ou conector externo opcional (planejamento)
@@ -50,7 +54,7 @@ portateis de Python e formatos abertos.
 
 1. concluido: conector generativo local compativel com Responses API;
 2. concluido: STT, TTS, push-to-talk e visao totalmente locais;
-3. concluido: ARTX Hub local com assistente Condor e digital twin do Condor X no aplicativo;
+3. concluido: ARTX Hub local com assistente Condor e catalogo de projetos no aplicativo;
 4. concluido: aplicativo Condor em janela propria, separado do Hub e portavel entre Windows e Linux;
 5. concluido: digital twin exclusivamente humano de alta fidelidade, com referencia de 1,80 m e 85 kg;
 6. concluido: marca luminosa C como identidade permanente do Condor X no torax;

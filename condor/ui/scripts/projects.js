@@ -1,5 +1,7 @@
-/** Painel local do protótipo Condor X. */
+/** Catálogo local de projetos e ficha interna do protótipo Condor X. */
 const CondorProjetos = (() => {
+  let projetoAberto = null;
+
   const MODULOS = {
     head: {
       zone: 'ANATOMIA CRANIOFACIAL', title: 'Cabeça',
@@ -45,17 +47,47 @@ const CondorProjetos = (() => {
     window.dispatchEvent(new CustomEvent('condor-x-select', { detail: { id } }));
   }
 
+  function abrirProjeto(id) {
+    if (id !== 'condor-x') return;
+    projetoAberto = id;
+    document.getElementById('projectsCatalog').hidden = true;
+    document.getElementById('projectDetail').hidden = false;
+    selecionar('chest');
+    window.dispatchEvent(new CustomEvent('condor-x-visibility', { detail: { active: true } }));
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      window.dispatchEvent(new Event('condor-x-resize'));
+    }));
+  }
+
+  function voltarAoCatalogo() {
+    projetoAberto = null;
+    document.getElementById('projectDetail').hidden = true;
+    document.getElementById('projectsCatalog').hidden = false;
+    window.dispatchEvent(new CustomEvent('condor-x-visibility', { detail: { active: false } }));
+  }
+
   function init() {
+    document.querySelectorAll('[data-project-open]').forEach((button) => {
+      button.addEventListener('click', () => abrirProjeto(button.dataset.projectOpen));
+    });
+    document.getElementById('projectDetailBack').addEventListener('click', voltarAoCatalogo);
     document.querySelectorAll('[data-cx-part]').forEach((button) => {
       button.addEventListener('click', () => selecionar(button.dataset.cxPart));
     });
     window.addEventListener('condor-x-picked', (event) => selecionar(event.detail.id));
     selecionar('chest');
+    voltarAoCatalogo();
   }
 
   function atualizar() {
-    window.dispatchEvent(new Event('condor-x-resize'));
+    voltarAoCatalogo();
   }
 
-  return { init, atualizar, selecionar };
+  function esconder() {
+    if (projetoAberto) {
+      window.dispatchEvent(new CustomEvent('condor-x-visibility', { detail: { active: false } }));
+    }
+  }
+
+  return { init, atualizar, selecionar, abrirProjeto, voltarAoCatalogo, esconder };
 })();

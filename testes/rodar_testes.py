@@ -497,6 +497,7 @@ class InterfaceBoundaryTests(unittest.TestCase):
     def test_condor_x_keeps_realistic_human_reference_and_c_mark(self):
         source = (ROOT / "condor" / "ui" / "scripts" / "condor-x.js").read_text("utf-8")
         interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
+        projects = (ROOT / "condor" / "ui" / "scripts" / "projects.js").read_text("utf-8")
         vendor = ROOT / "condor" / "ui" / "vendor"
         self.assertTrue((vendor / "three.module.min.js").is_file())
         self.assertTrue((vendor / "three.core.min.js").is_file())
@@ -509,6 +510,14 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertIn("joelhos naturais e pés completos", source)
         self.assertIn("Anatomia técnica de alta fidelidade", interface)
         self.assertIn("Núcleo C", interface)
+        self.assertIn('data-screen="projetos">Projetos</button>', interface)
+        self.assertIn('id="projectsCatalog"', interface)
+        self.assertIn('data-project-open="condor-x"', interface)
+        self.assertIn('id="projectDetail" hidden', interface)
+        self.assertIn("ABRIR PROJETO", interface)
+        self.assertIn("function abrirProjeto", projects)
+        self.assertIn("function voltarAoCatalogo", projects)
+        self.assertIn("condor-x-visibility", projects)
         self.assertNotIn("Estado operacional", interface)
         self.assertNotIn("Nível de autonomia", interface)
         self.assertNotIn("Controle local", interface)

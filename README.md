@@ -29,9 +29,10 @@ Microsoft, celular, nuvem obrigatoria nem servico de login externo.
 - aba Condor no Hub como assistente de organizacao, capaz de criar atividades
   e abrir os sistemas ARTX, sem receber memoria, arquivos ou acoes do PC;
 - aplicativo Condor em janela propria, aberto pelo atalho do sistema e com
-  conversa, memoria, Condor X e diagnostico, sem seletor de autonomia;
-- Condor X como unico prototipo local, com digital twin 3D e
-  modulos corporais clicaveis;
+  conversa, memoria, projetos e diagnostico, sem seletor de autonomia;
+- aba **Projetos** como catalogo local: cada card abre sua propria ficha com
+  informacoes e prototipo; o Condor X e o primeiro projeto, com digital twin
+  3D e modulos corporais clicaveis;
 - voz privada com Faster Whisper e Piper, incluindo push-to-talk no navegador;
 - visao privada com `qwen3-vl:2b` para capturas autorizadas;
 - conector opcional pela Responses API, sempre com `store=false`;

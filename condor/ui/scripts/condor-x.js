@@ -372,12 +372,22 @@ if (viewport && !viewport.dataset.ready) {
   resize();
 
   const started = performance.now();
-  renderer.setAnimationLoop((now) => {
+  const animate = (now) => {
     const time = (now - started) / 1000;
     rig.rotation.y = rotation + Math.sin(time * 0.24) * 0.08;
     scan.position.y = 0.08 + (time * 0.31) % 1.72;
     scanMaterial.opacity = 0.14 + Math.sin(time * 3) * 0.06;
     core.scale.setScalar(1 + Math.sin(time * 2.3) * 0.035);
     renderer.render(scene, camera);
-  });
+  };
+
+  function setActive(active) {
+    renderer.setAnimationLoop(active ? animate : null);
+    if (active) {
+      resize();
+      renderer.render(scene, camera);
+    }
+  }
+  window.addEventListener('condor-x-visibility', (event) => setActive(Boolean(event.detail?.active)));
+  setActive(!document.getElementById('projectDetail')?.hidden);
 }

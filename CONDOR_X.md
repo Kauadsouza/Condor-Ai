@@ -1,7 +1,8 @@
 # Condor X — digital twin e engenharia segura
 
 Condor X e um projeto de pesquisa modular. A versao atual e um **digital twin
-inerte** dentro do aplicativo local Condor. Ela serve para organizar requisitos,
+inerte** dentro da ficha do Condor X na aba **Projetos** do aplicativo local
+Condor. Ela serve para organizar requisitos,
 ergonomia, telemetria e prototipos de baixa energia antes de qualquer objeto
 fisico.
 

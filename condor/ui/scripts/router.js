@@ -1,5 +1,5 @@
 /**
- * CondorRouter — navegação entre conversa, Condor X, memória e diagnóstico.
+ * CondorRouter — navegação entre conversa, projetos, memória e diagnóstico.
  */
 const CondorRouter = (() => {
   let atual = 'conversacao';
@@ -13,6 +13,7 @@ const CondorRouter = (() => {
   }
 
   function ir(tela) {
+    if (tela !== 'projetos') CondorProjetos.esconder();
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     const el = document.getElementById(`screen-${tela}`);
     if (el) el.classList.add('active');

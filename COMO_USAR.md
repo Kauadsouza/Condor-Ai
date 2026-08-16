@@ -25,8 +25,11 @@ O Condor nunca pede conta do Windows nem vinculacao com celular.
 
 - **Hub:** o Condor organiza atividades e abre os sistemas ARTX. Ele nao altera
   o PC e nao recebe a memoria local.
-- **Aplicativo Condor:** conversa, voz, memoria, Condor X e diagnostico. E a
+- **Aplicativo Condor:** conversa, voz, memoria, projetos e diagnostico. E a
   unica interface operacional do computador.
+- **Projetos:** mostra o catalogo local. Ao abrir um card, o aplicativo exibe
+  a ficha completa daquele projeto, suas informacoes e seu prototipo. O Condor
+  X e o primeiro projeto cadastrado.
 - **Acesso:** depois da frase correta, o perfil completo do dono e ativado
   automaticamente. Nao existe seletor de autonomia.
 
