@@ -46,12 +46,13 @@ fisico.
 No painel, um modulo de risco alto permanece bloqueado. Avancar a barra e
 registrar progresso nao autoriza fabricacao nem teste fisico.
 
-## Armadura — Fase 01 iniciada
+## Prototipo humano de alta fidelidade
 
-A primeira camada da armadura existe somente no digital twin. Ela acompanha o
-corpo humano de referencia de 1,80 m e 85 kg e pode ser ligada ou escondida para
-comparar encaixe, proporcao e mobilidade. A fase atual inclui carenagens
-transparentes de capacete, torso, ombros, antebracos, coxas e canelas.
+O Condor X atual e um digital twin exclusivamente humano, sem armadura ou
+carenagem. A malha preserva a referencia de 1,80 m e 85 kg e detalha crânio,
+face, olhos, mandibula, tronco, maos, joelhos, tornozelos e pes. A marca luminosa
+C permanece no torax como identidade do prototipo, sem representar um sistema
+fisico de energia.
 
 O nucleo do peito usa a letra **C** como marca permanente do Condor X. Nesta
 fase, o C e identidade visual e ponto de telemetria simulada; nao representa

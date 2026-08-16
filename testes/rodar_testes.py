@@ -444,7 +444,7 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertNotIn("<iframe", source)
         self.assertNotIn("/api/hub/condor-x/", source)
 
-    def test_condor_x_keeps_human_reference_c_mark_and_passive_armor(self):
+    def test_condor_x_keeps_realistic_human_reference_and_c_mark(self):
         component = ROOT.parent.parent / "ARTX Hub" / "src" / "components" / "CondorWorkspace.tsx"
         if not component.exists():
             self.skipTest("ARTX Hub nao esta neste checkout")
@@ -452,8 +452,12 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertIn("const exactScale = 1.8 / naturalHeight", source)
         self.assertIn("Núcleo C", source)
         self.assertIn("const cArc", source)
-        self.assertIn("Armadura · Fase 01", source)
-        self.assertIn("sem armas, propulsão, chama", source)
+        self.assertIn("Protótipo humano de alta fidelidade", source)
+        self.assertIn("const upperLid", source)
+        self.assertIn("const knuckle", source)
+        self.assertIn("const patella", source)
+        self.assertNotIn("Armadura · Fase 01", source)
+        self.assertNotIn("addArmor", source)
 
 
 if __name__ == "__main__":

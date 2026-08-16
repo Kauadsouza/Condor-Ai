@@ -51,7 +51,7 @@ portateis de Python e formatos abertos.
 2. concluido: STT, TTS, push-to-talk e visao totalmente locais;
 3. concluido: ARTX Hub original local, aba demonstrativa do Condor e digital twin do Condor X;
 4. concluido: aplicativo Condor em janela propria, separado do Hub e portavel entre Windows e Linux;
-5. iniciado: armadura digital passiva Fase 01 sobre o corpo humano de referencia de 1,80 m e 85 kg;
+5. em refinamento: digital twin exclusivamente humano de alta fidelidade, com referencia de 1,80 m e 85 kg;
 6. concluido: marca luminosa C como identidade permanente do Condor X no torax;
 7. futuro: segundo equipamento Condor em hardware proprio via WireGuard;
 8. futuro: sincronizacao cifrada ponta a ponta entre identidades autorizadas;
