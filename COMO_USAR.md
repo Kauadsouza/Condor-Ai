@@ -5,8 +5,9 @@
 1. Execute o instalador correspondente ao PC.
 2. Abra o atalho **Condor** criado na Area de Trabalho ou no menu de aplicativos.
 3. O aplicativo abre diretamente a interface completa em uma janela propria.
-   O Hub em `http://127.0.0.1:7777/hub/index.html` e apenas uma demonstracao
-   limitada, sem conversa, memoria, arquivos ou acoes do PC.
+   O Hub em `http://127.0.0.1:7777/hub/index.html` inclui um assistente Condor
+   para criar atividades e abrir sistemas, mas nao recebe memoria, arquivos ou
+   acoes do PC.
 4. Crie o cofre com seu nome e uma frase secreta exclusiva.
 5. Chaves externas sao opcionais e ficam cifradas no cofre.
 
@@ -22,12 +23,12 @@ O Condor nunca pede conta do Windows nem vinculacao com celular.
 
 ## Hub e aplicativo
 
-- **Hub:** mostra a identidade, o laboratorio e o digital twin do Condor X.
-  Seus controles sao demonstrativos e nao alteram o PC.
-- **Aplicativo Condor:** conversa, voz, memoria, projetos, diagnostico e
-  controle de autonomia. E a unica interface operacional.
-- **Controle local:** dentro do aplicativo, escolha observador, assistente,
-  operador ou administrador. A mudanca exige a frase secreta.
+- **Hub:** o Condor organiza atividades e abre os sistemas ARTX. Ele nao altera
+  o PC e nao recebe a memoria local.
+- **Aplicativo Condor:** conversa, voz, memoria, Condor X e diagnostico. E a
+  unica interface operacional do computador.
+- **Acesso:** depois da frase correta, o perfil completo do dono e ativado
+  automaticamente. Nao existe seletor de autonomia.
 
 ## Modos de uso
 
@@ -41,23 +42,19 @@ O Condor nunca pede conta do Windows nem vinculacao com celular.
 
 ## Seguranca pratica
 
-- Acoes de alteracao pedem a frase secreta na interface.
-- Voz nunca aprova acao sensivel.
+- Nenhuma ferramenta do PC funciona antes da frase secreta ser validada.
+- Depois da entrada, a sessao do dono opera sem pedir a frase a cada acao.
+- Voz nunca desbloqueia a sessao nem retoma o interruptor de emergencia.
 - `PARAR CONDOR` bloqueia imediatamente todas as ferramentas.
 - Para retomar, e obrigatorio digitar a frase secreta.
 - Exclusoes feitas pelo assistente vao para `~/.condor/trash`.
 - Alteracoes em arquivos existentes criam versoes em `~/.condor/versions`.
 
-Perfis:
-
-- `observer`: observa; nao altera o PC.
-- `assistant`: revisa leituras e confirma alteracoes.
-- `operator`: leituras permitidas fluem; alteracoes continuam confirmadas.
-- `admin`: maior autonomia dentro das capacidades especificas; operacoes
-  criticas continuam confirmadas e shell arbitrario continua bloqueado.
-
-O padrao e `assistant`. As pastas iniciais permitidas sao Desktop, Documents,
-Downloads e a propria pasta do codigo. Isso pode ser ajustado em
+O perfil e sempre `admin` para a sessao autenticada, mas continua limitado ao
+catalogo de ferramentas especificas e as pastas autorizadas. Shell arbitrario,
+Python arbitrario e instalacao livre de pacotes permanecem bloqueados. As
+pastas iniciais permitidas sao Desktop, Documents, Downloads e a propria pasta
+do codigo. Isso pode ser ajustado em
 `~/.condor/config.yaml` com o Condor fechado.
 
 ## Trocar de Windows para Linux

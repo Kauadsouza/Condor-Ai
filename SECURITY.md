@@ -10,11 +10,18 @@ Dados privados em repouso usam AES-256-GCM. A frase do dono e verificada por
 Scrypt e nao e armazenada. A identidade do dispositivo usa Ed25519. A auditoria
 forma uma cadeia SHA-256 e o codigo tem um manifesto assinado.
 
-## Aprovacoes
+## Sessao autenticada do dono
 
-Uma aprovacao contem o hash exato da ferramenta e de todos os argumentos. Ela
-expira, vale uma vez e nao autoriza uma acao parecida. Captura de voz nunca e
-aceita como aprovacao.
+Antes da frase secreta correta, nenhuma ferramenta do computador e liberada.
+Depois da autenticacao, o perfil operacional unico do dono permanece ativo ate
+o bloqueio, a parada de emergencia ou o encerramento do servidor. O modelo nao
+consegue ativar essa sessao. Captura de voz nunca desbloqueia nem retoma o
+Condor.
+
+A politica ainda classifica o risco, limita pastas e bloqueia shell, Python e
+instalacao arbitrarios. Durante a sessao autenticada, operacoes do catalogo nao
+pedem a frase novamente; exclusoes continuam recuperaveis pela lixeira privada
+e alteracoes de arquivo mantem versoes locais.
 
 ## Rede
 

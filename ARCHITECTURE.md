@@ -3,20 +3,21 @@
 ```text
 ARTX Hub /hub
   -> sistemas ARTX independentes
-  -> aba Condor (demonstracao sem operacoes)
-     -> visao da inteligencia
-     -> laboratorio
-        -> Condor X (unico projeto atual)
+  -> aba Condor (assistente organizacional)
+     -> cria atividades do Hub
+     -> abre sistemas ARTX
+     -> nao recebe memoria, arquivos ou comandos do PC
 
 Aplicativo Condor -> janela nativa -> /ui
   -> sessao local HttpOnly de 4 h + Host/Origin/Client exatos
   -> limites de corpo, frequencia, conexoes e tentativas de autenticacao
-  -> controle local de autonomia
+  -> frase valida ativa o perfil operacional unico do dono
+  -> Condor X (unico prototipo local)
   -> Sessao Condor
      -> modo offline deterministico
      -> conector local por loopback ou conector externo opcional (planejamento)
         -> PolicyEngine local
-           -> aprovacao exata do dono
+           -> sessao autenticada do dono
               -> ferramentas especificas
 
 Cofre AES-GCM
@@ -39,7 +40,7 @@ Modelos locais
 ```
 
 O pacote `condor/security` nao chama IA. Essa separacao impede que uma resposta
-do modelo mude permissao, valide a propria acao ou fabrique uma aprovacao.
+do modelo mude permissao, desbloqueie o dono ou amplie o catalogo de ferramentas.
 
 Adaptadores dependentes do sistema ficam nas bordas. O servidor, cofre,
 memoria, politica, identidade, auditoria e protocolo da interface usam recursos
@@ -49,9 +50,9 @@ portateis de Python e formatos abertos.
 
 1. concluido: conector generativo local compativel com Responses API;
 2. concluido: STT, TTS, push-to-talk e visao totalmente locais;
-3. concluido: ARTX Hub original local, aba demonstrativa do Condor e digital twin do Condor X;
+3. concluido: ARTX Hub local com assistente Condor e digital twin do Condor X no aplicativo;
 4. concluido: aplicativo Condor em janela propria, separado do Hub e portavel entre Windows e Linux;
-5. em refinamento: digital twin exclusivamente humano de alta fidelidade, com referencia de 1,80 m e 85 kg;
+5. concluido: digital twin exclusivamente humano de alta fidelidade, com referencia de 1,80 m e 85 kg;
 6. concluido: marca luminosa C como identidade permanente do Condor X no torax;
 7. futuro: segundo equipamento Condor em hardware proprio via WireGuard;
 8. futuro: sincronizacao cifrada ponta a ponta entre identidades autorizadas;

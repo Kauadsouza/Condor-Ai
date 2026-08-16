@@ -322,6 +322,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         audit_ok, audit_count = guarda.verificar_auditoria()
         return {
             "owner_configured": guarda.configurada,
+            "owner_session_active": guarda.owner_session_active,
             "vault_exists": vault.exists,
             "vault_unlocked": vault.unlocked,
             "profile": config.seguranca.perfil,
@@ -366,6 +367,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             identity.ensure()
             integrity.refresh()
             memoria.unlock(base64.b64decode(vault.get("MEMORY_KEY")))
+            guarda.unlock_owner_session()
             salvar_config(config)
             await _ensure_voice()
         except (ValueError, VaultError) as exc:
@@ -382,6 +384,8 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             vault.unlock(_passphrase(payload))
             identity.ensure()
             memoria.unlock(base64.b64decode(vault.get("MEMORY_KEY")))
+            guarda.unlock_owner_session()
+            salvar_config(config)
             await _ensure_voice()
             if not guarda.stopped:
                 escuta.voltar_a_ouvir()
@@ -392,6 +396,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     @app.post("/api/seguranca/bloquear")
     async def api_security_lock():
+        guarda.lock_owner_session()
         memoria.lock()
         vault.lock()
         return {"ok": True}
@@ -433,6 +438,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     @app.post("/api/emergencia/parar")
     async def api_emergency_stop():
         guarda.emergency_stop()
+        guarda.lock_owner_session()
         escuta.silenciar()
         voz.calar()
         await sessao.dormir("interruptor de emergencia")
@@ -453,38 +459,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return _auth_failed("emergency_resume")
         local_security.auth_succeeded("emergency_resume")
         return {"ok": True, "vault_unlocked": False}
-
-    @app.post("/api/seguranca/politica")
-    async def api_security_policy(payload: dict):
-        if response := _auth_wait("policy_update"):
-            return response
-        profile = str(payload.get("profile") or "")
-        if profile not in {"observer", "assistant", "operator", "admin"}:
-            return JSONResponse({"erro": "perfil de autonomia invalido"}, status_code=400)
-        try:
-            passphrase = _passphrase(payload)
-        except ValueError:
-            return _auth_failed("policy_update")
-        ok = guarda.update_policy(
-            profile,
-            bool(payload.get("simulation")),
-            passphrase,
-        )
-        if not ok:
-            return _auth_failed("policy_update")
-        local_security.auth_succeeded("policy_update")
-        if "memory_sharing" in payload:
-            config.cerebro.compartilhar_memoria_com_conector = bool(payload["memory_sharing"])
-        if "connector_learning" in payload:
-            config.cerebro.aprendizado_automatico_por_conector = bool(payload["connector_learning"])
-        salvar_config(config)
-        return {
-            "ok": True,
-            "profile": profile,
-            "simulation": config.seguranca.simulacao,
-            "memory_sharing": config.cerebro.compartilhar_memoria_com_conector,
-            "connector_learning": config.cerebro.aprendizado_automatico_por_conector,
-        }
 
     @app.post("/api/seguranca/integridade/recriar")
     async def api_integrity_refresh(payload: dict):

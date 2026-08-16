@@ -99,7 +99,7 @@ class SessaoConfig(BaseModel):
 class SegurancaConfig(BaseModel):
     """Politica local, independente de fornecedor e sistema operacional."""
 
-    perfil: str = "assistant"          # observer | assistant | operator | admin
+    perfil: str = "admin"              # o dono autenticado recebe o perfil completo
     simulacao: bool = False
     timeout_aprovacao: int = 90
     auditoria: bool = True

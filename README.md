@@ -15,8 +15,8 @@ Microsoft, celular, nuvem obrigatoria nem servico de login externo.
 - identidade Ed25519 propria do dispositivo;
 - manifesto assinado para detectar alteracoes no codigo;
 - auditoria encadeada por hash;
-- perfis de autonomia, simulacao e pastas permitidas;
-- aprovacoes sensiveis exatas, digitadas, temporarias e de uso unico;
+- perfil operacional unico depois da autenticacao e pastas permitidas;
+- sessao do dono bloqueada ate a frase secreta ser validada;
 - interruptor de emergencia;
 - exclusao recuperavel pela lixeira privada do Condor;
 - ferramentas de shell, Python arbitrario e instalacao automatica fora do
@@ -26,11 +26,11 @@ Microsoft, celular, nuvem obrigatoria nem servico de login externo.
   servidor compativel com a Responses API;
 - ARTX Hub original servido localmente em `/hub`, mantendo Site, Videos, SAT e
   University Path independentes;
-- aba exclusiva do Condor dentro do Hub como demonstracao limitada, sem acesso
-  a conversa, memoria, arquivos ou acoes do PC;
+- aba Condor no Hub como assistente de organizacao, capaz de criar atividades
+  e abrir os sistemas ARTX, sem receber memoria, arquivos ou acoes do PC;
 - aplicativo Condor em janela propria, aberto pelo atalho do sistema e com
-  conversa, memoria, projetos, diagnostico e controle local de autonomia;
-- Condor X como unico projeto atual do laboratorio, com digital twin 3D e
+  conversa, memoria, Condor X e diagnostico, sem seletor de autonomia;
+- Condor X como unico prototipo local, com digital twin 3D e
   modulos corporais clicaveis;
 - voz privada com Faster Whisper e Piper, incluindo push-to-talk no navegador;
 - visao privada com `qwen3-vl:2b` para capturas autorizadas;

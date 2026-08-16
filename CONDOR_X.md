@@ -1,7 +1,7 @@
 # Condor X — digital twin e engenharia segura
 
 Condor X e um projeto de pesquisa modular. A versao atual e um **digital twin
-inerte** dentro do laboratorio da aba Condor no ARTX Hub. Ela serve para organizar requisitos,
+inerte** dentro do aplicativo local Condor. Ela serve para organizar requisitos,
 ergonomia, telemetria e prototipos de baixa energia antes de qualquer objeto
 fisico.
 
@@ -32,7 +32,7 @@ fisico.
 | Bracos | sensores de gesto e feedback leve | bracelete sem motor |
 | Pernas | ergonomia e medicao de movimento | marcadores e IMUs externas |
 | Energia | fonte certificada e fusivel | fonte de bancada, fora do corpo |
-| Software | digital twin, logs e simulacao | ja integrado ao Hub local |
+| Software | digital twin, logs e simulacao | integrado ao aplicativo Condor |
 
 ## Portoes de evolucao
 

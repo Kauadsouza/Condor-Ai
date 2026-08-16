@@ -10,10 +10,11 @@
 - Piper `pt_BR-faber-medium`: texto para voz em CPU;
 - `~/.condor`: configuracao, pesos e estado privado.
 
-O Hub e exportado como arquivos estaticos e montado em `/hub` somente como
-demonstracao. O aplicativo Condor abre `/ui` em uma janela propria; apenas essa
-interface oferece conversa, memoria e controle operacional. O cookie de sessao
-e HttpOnly e vale para as duas interfaces porque elas usam a mesma origem local.
+O Hub e exportado como arquivos estaticos e montado em `/hub`. A aba Condor do
+Hub organiza atividades, mas nao recebe controle operacional do PC. O aplicativo
+Condor abre `/ui` em uma janela propria; apenas essa interface oferece conversa,
+memoria e ferramentas locais. O cookie de sessao e HttpOnly e vale para as duas
+interfaces porque elas usam a mesma origem local.
 
 ## Comandos
 

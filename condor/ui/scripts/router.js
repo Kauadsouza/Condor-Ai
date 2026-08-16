@@ -1,5 +1,5 @@
 /**
- * CondorRouter — navegação entre as quatro telas.
+ * CondorRouter — navegação entre conversa, Condor X, memória e diagnóstico.
  */
 const CondorRouter = (() => {
   let atual = 'conversacao';
@@ -41,7 +41,6 @@ const CondorRouter = (() => {
     if (naTelaErros) CondorErros.atualizar();
     else if (tela === 'memoria') CondorMemoria.atualizar();
     else if (tela === 'projetos') CondorProjetos.atualizar();
-    else if (tela === 'controle') CondorControle.atualizar();
   }
 
   return { init, ir, atual: () => atual };

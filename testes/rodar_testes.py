@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from condor.brain.tools import ESQUEMAS, FUNCOES
 from condor.brain.client import Cerebro
 from condor.actions import executor
+from condor.actions.guard import Guarda
 from condor.config import Config, salvar_config
 from condor.memory.db import Memoria
 from condor.security.approval import OwnerAuth
@@ -160,6 +161,42 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(executor.focar_janela(malicious)["ok"])
 
 
+class OwnerSessionTests(unittest.TestCase):
+    def test_locked_owner_cannot_use_pc_and_unlock_enables_fixed_admin_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = os.environ.get("CONDOR_HOME")
+            os.environ["CONDOR_HOME"] = tmp
+            try:
+                config = Config(seguranca={
+                    "perfil": "admin",
+                    "simulacao": False,
+                    "pastas_permitidas": [tmp],
+                })
+                guard = Guarda(config)
+                guard.configurar_dono(PASS)
+                locked = guard.avaliar("abrir", {"alvo": "notepad"})
+                self.assertFalse(locked.allowed)
+                self.assertIn("bloqueado", locked.reason.lower())
+
+                guard.unlock_owner_session()
+                self.assertTrue(guard.owner_session_active)
+                self.assertEqual(config.seguranca.perfil, "admin")
+                self.assertFalse(config.seguranca.simulacao)
+                destructive = guard.avaliar("deletar", {"caminho": str(Path(tmp) / "arquivo.txt")})
+                self.assertTrue(destructive.allowed)
+                self.assertTrue(destructive.requires_approval)
+                self.assertTrue(asyncio.run(guard.autorizar(destructive, "excluir arquivo permitido")))
+
+                guard.lock_owner_session()
+                self.assertFalse(guard.owner_session_active)
+                self.assertFalse(guard.avaliar("abrir", {"alvo": "notepad"}).allowed)
+            finally:
+                if previous is None:
+                    os.environ.pop("CONDOR_HOME", None)
+                else:
+                    os.environ["CONDOR_HOME"] = previous
+
+
 class AuditTests(unittest.TestCase):
     def test_chain_and_tamper_detection(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -288,21 +325,27 @@ class SessionSecurityTests(unittest.TestCase):
                 state = client.get("/api/seguranca/estado").json()
                 self.assertTrue(state["code_integrity"]["ok"])
                 self.assertTrue(state["device_id"].startswith("condor-"))
-                policy = client.post("/api/seguranca/politica", json={
-                    "profile": "operator", "simulation": True, "passphrase": PASS,
-                })
-                self.assertEqual(policy.status_code, 200, policy.text)
-                self.assertTrue(policy.json()["simulation"])
+                self.assertTrue(state["owner_session_active"])
+                self.assertEqual(state["profile"], "admin")
+                self.assertFalse(state["simulation"])
+                self.assertEqual(
+                    client.post("/api/seguranca/politica", json={
+                        "profile": "operator", "simulation": True, "passphrase": PASS,
+                    }).status_code,
+                    404,
+                )
                 stopped = client.post("/api/emergencia/parar")
                 self.assertEqual(stopped.status_code, 200, stopped.text)
                 stopped_state = client.get("/api/seguranca/estado").json()
                 self.assertTrue(stopped_state["emergency_stop"])
                 self.assertFalse(stopped_state["vault_unlocked"])
+                self.assertFalse(stopped_state["owner_session_active"])
                 resumed = client.post("/api/emergencia/retomar", json={"passphrase": PASS})
                 self.assertEqual(resumed.status_code, 200, resumed.text)
                 self.assertFalse(resumed.json()["vault_unlocked"])
                 unlocked = client.post("/api/seguranca/desbloquear", json={"passphrase": PASS})
                 self.assertEqual(unlocked.status_code, 200, unlocked.text)
+                self.assertTrue(client.get("/api/seguranca/estado").json()["owner_session_active"])
             finally:
                 if previous is None:
                     os.environ.pop("CONDOR_HOME", None)
@@ -391,6 +434,11 @@ class ConfigTests(unittest.TestCase):
     def test_name_is_condor_in_project(self):
         self.assertEqual("Condor".lower(), "condor")
 
+    def test_authenticated_owner_profile_is_fixed_and_operational(self):
+        config = Config()
+        self.assertEqual(config.seguranca.perfil, "admin")
+        self.assertFalse(config.seguranca.simulacao)
+
     def test_local_connector_is_loopback_only_and_has_priority(self):
         with self.assertRaises(ValueError):
             Config(cerebro={"endpoint_local": "https://example.com/v1"})
@@ -435,28 +483,35 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertNotIn("/hub/index.html", launcher)
         self.assertNotIn("/hub/index.html", window)
 
-    def test_hub_condor_is_demo_without_embedded_operational_ui(self):
+    def test_hub_condor_is_assistant_without_embedded_operational_ui(self):
         component = ROOT.parent.parent / "ARTX Hub" / "src" / "components" / "CondorWorkspace.tsx"
         if not component.exists():
             self.skipTest("ARTX Hub nao esta neste checkout")
         source = component.read_text("utf-8")
-        self.assertIn("Demonstração limitada", source)
+        self.assertIn("Fale. O Condor organiza.", source)
+        self.assertIn("Ativo no Hub", source)
+        self.assertNotIn("Demonstração limitada", source)
         self.assertNotIn("<iframe", source)
         self.assertNotIn("/api/hub/condor-x/", source)
 
     def test_condor_x_keeps_realistic_human_reference_and_c_mark(self):
-        component = ROOT.parent.parent / "ARTX Hub" / "src" / "components" / "CondorWorkspace.tsx"
-        if not component.exists():
-            self.skipTest("ARTX Hub nao esta neste checkout")
-        source = component.read_text("utf-8")
+        source = (ROOT / "condor" / "ui" / "scripts" / "condor-x.js").read_text("utf-8")
+        interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
+        vendor = ROOT / "condor" / "ui" / "vendor"
+        self.assertTrue((vendor / "three.module.min.js").is_file())
+        self.assertTrue((vendor / "three.core.min.js").is_file())
+        self.assertIn("three.core.min.js", (vendor / "three.module.min.js").read_text("utf-8"))
         self.assertIn("const exactScale = 1.8 / naturalHeight", source)
-        self.assertIn("Núcleo C", source)
+        self.assertIn("Assinatura C", source)
         self.assertIn("const cArc", source)
-        self.assertIn("Protótipo humano de alta fidelidade", source)
         self.assertIn("const upperLid", source)
-        self.assertIn("const knuckle", source)
-        self.assertIn("const patella", source)
-        self.assertNotIn("Armadura · Fase 01", source)
+        self.assertIn("Polegar e quatro dedos", source)
+        self.assertIn("joelhos naturais e pés completos", source)
+        self.assertIn("Anatomia técnica de alta fidelidade", interface)
+        self.assertIn("Núcleo C", interface)
+        self.assertNotIn("Estado operacional", interface)
+        self.assertNotIn("Nível de autonomia", interface)
+        self.assertNotIn("Controle local", interface)
         self.assertNotIn("addArmor", source)
 
 

@@ -40,24 +40,11 @@ class Guarda:
         self._audit = IntegrityAudit(state_path("audit", "actions.jsonl"))
         self._pedir: PedidoAprovacao | None = None
         self._emergency_stop = False
+        self._owner_session_active = False
 
     @property
     def allowed_roots(self) -> list[str]:
         return [str(path) for path in self._policy.allowed_roots]
-
-    def update_policy(self, profile: str, simulation: bool, passphrase: str) -> bool:
-        if not self.owner.verify(passphrase):
-            return False
-        self._policy.profile = AutonomyProfile(profile)
-        self._policy.simulation = bool(simulation)
-        self._cfg.seguranca.perfil = profile
-        self._cfg.seguranca.simulacao = bool(simulation)
-        self.auditar(
-            "security", "policy_update",
-            json.dumps({"profile": profile, "simulation": bool(simulation)}),
-            True, True,
-        )
-        return True
 
     @property
     def configurada(self) -> bool:
@@ -65,6 +52,21 @@ class Guarda:
 
     def configurar_dono(self, passphrase: str) -> None:
         self.owner.setup(passphrase)
+
+    def unlock_owner_session(self) -> None:
+        """Uma autenticacao local valida ativa o unico perfil operacional."""
+        self._owner_session_active = True
+        self._policy.profile = AutonomyProfile.ADMIN
+        self._policy.simulation = False
+        self._cfg.seguranca.perfil = AutonomyProfile.ADMIN.value
+        self._cfg.seguranca.simulacao = False
+
+    def lock_owner_session(self) -> None:
+        self._owner_session_active = False
+
+    @property
+    def owner_session_active(self) -> bool:
+        return self._owner_session_active
 
     def registrar_pedido_senha(self, fn: PedidoAprovacao) -> None:
         """Mantem o nome da API antiga para compatibilidade com a sessao."""
@@ -79,6 +81,16 @@ class Guarda:
                 simulated=False,
                 risk=decision.risk,
                 reason="Interruptor de emergencia do Condor esta ativo.",
+                digest=decision.digest,
+            )
+        if not self._owner_session_active:
+            decision = self._policy.decide(ferramenta, argumentos)
+            return ActionDecision(
+                allowed=False,
+                requires_approval=False,
+                simulated=False,
+                risk=decision.risk,
+                reason="Condor bloqueado. Entre com a frase secreta do dono.",
                 digest=decision.digest,
             )
         return self._policy.decide(ferramenta, argumentos)
@@ -107,6 +119,9 @@ class Guarda:
             )
             return False
         if not decision.requires_approval:
+            return True
+        if self._owner_session_active:
+            self.auditar("policy", descricao, "AUTORIZADO PELO DONO AUTENTICADO", True, True)
             return True
         if self._pedir is None or not self.owner.configured:
             self.auditar("policy", descricao, "BLOQUEADO: dono nao configurado", False, True)
