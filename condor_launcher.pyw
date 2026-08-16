@@ -6,7 +6,7 @@ Ele fica de pé em segundo plano escutando a palavra de chamada. A janela só
 aparece quando você chama.
 
 Como .pyw, o Windows abre com pythonw.exe, que não cria terminal. Toda a
-saída vai pra data/condor.log.
+saida vai para ~/.condor/logs/condor.log. No Linux, use scripts/run.sh.
 
 Pra parar: encerre o processo pythonw.exe pelo Gerenciador de Tarefas, ou rode
     Get-Process pythonw | Stop-Process
@@ -14,7 +14,6 @@ Pra parar: encerre o processo pythonw.exe pelo Gerenciador de Tarefas, ou rode
 
 from __future__ import annotations
 
-import ctypes
 import os
 import sys
 from pathlib import Path
@@ -24,14 +23,9 @@ os.chdir(ROOT)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Instância única: chamar de novo não sobe um segundo Condor disputando o
-# microfone e a porta 7777.
-_MUTEX = "CondorServidorSingleton"
-_JA_EXISTE = 183
+from condor.instance import acquire
 
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-kernel32.CreateMutexW(None, False, _MUTEX)
-if ctypes.get_last_error() == _JA_EXISTE:
+if not acquire("condor-server"):
     sys.exit(0)
 
 
@@ -50,11 +44,12 @@ def main() -> None:
         logging.getLogger("condor").exception("Caí no boot")
         # Sem console pra mostrar o erro: avisa numa caixa do Windows mesmo.
         try:
-            ctypes.windll.user32.MessageBoxW(
-                None,
-                "O Condor não conseguiu iniciar.\n\n"
-                "O motivo está em data\\condor.log.",
-                "CONDOR", 0x10)
+            if os.name == "nt":
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(
+                    None,
+                    "O Condor não conseguiu iniciar. Consulte ~/.condor/logs/condor.log.",
+                    "CONDOR", 0x10)
         except Exception:
             pass
 

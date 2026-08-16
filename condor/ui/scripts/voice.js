@@ -1,9 +1,9 @@
 /**
  * CondorVoz — o estado da voz na tela.
  *
- * Diferente da versão antiga, o microfone NÃO fica no navegador: quem escuta
- * é o servidor, o tempo todo, mesmo com a janela fechada. Aqui a gente só
- * reflete o que ele está fazendo e cuida do pedido de senha.
+ * O clique no orbe grava somente a fala atual e envia ao STT local. Se o dono
+ * configurar um detector passivo, a palavra Condor também pode acordar o app.
+ * Em ambos os casos o áudio permanece no próprio PC.
  */
 const CondorVoz = (() => {
   const $ = (id) => document.getElementById(id);
@@ -19,6 +19,10 @@ const CondorVoz = (() => {
   let restam = 0;
   let relogio = null;
   let palavra = 'condor';
+  let gravador = null;
+  let fluxo = null;
+  let partes = [];
+  let limiteGravacao = null;
 
   function init() {
     CondorWS.ao('estado', aplicar);
@@ -36,8 +40,9 @@ const CondorVoz = (() => {
       $('listenStatus').style.color = 'var(--pink)';
     });
 
-    // Clicar no orbe acorda na marra — útil pra testar sem falar.
-    $('voiceOrb').addEventListener('click', () => CondorWS.enviar({ tipo: 'acordar' }));
+    // Clique uma vez para começar e outra para enviar. O limite de vinte
+    // segundos encerra sozinho para o microfone nunca ficar aberto sem querer.
+    $('voiceOrb').addEventListener('click', alternarGravacaoLocal);
 
     relogio = setInterval(() => {
       if (restam > 0) { restam -= 1; pintarRelogio(); }
@@ -60,17 +65,94 @@ const CondorVoz = (() => {
     if (typeof m.restam === 'number') restam = m.restam;
     if (m.modelo) $('modelName').textContent = m.modelo;
 
-    if (m.escuta_ativa === false && m.motivo_escuta) {
-      $('listenStatus').textContent = 'MICROFONE OFF';
+    if (m.stt_local_pronto) {
+      $('listenStatus').textContent = m.escuta_ativa
+        ? `ESPERANDO "${palavra.toUpperCase()}"`
+        : 'VOZ LOCAL PRONTA';
+      $('listenStatus').style.color = 'var(--cyan)';
+      if (!gravador || gravador.state !== 'recording') {
+        $('voiceHint').textContent = 'CLIQUE NO ORBE PARA FALAR — ÁUDIO LOCAL';
+      }
+    } else if (m.escuta_ativa === false && m.motivo_escuta) {
+      $('listenStatus').textContent = 'VOZ INDISPONÍVEL';
       $('listenStatus').style.color = 'var(--pink)';
-      $('voiceHint').textContent = `ESCUTA DESLIGADA — ${m.motivo_escuta.toUpperCase()}`;
+      $('voiceHint').textContent = m.motivo_escuta.toUpperCase();
     } else if (m.escuta_ativa) {
       $('listenStatus').style.color = 'var(--cyan)';
       pintarRelogio();
     }
     if (m.cerebro_pronto === false) {
-      $('modelName').textContent = 'sem chave da OpenAI';
-      $('modelName').style.color = 'var(--pink)';
+      $('modelName').textContent = 'modo apresentação';
+      $('modelName').style.color = 'var(--amber)';
+    }
+  }
+
+  async function alternarGravacaoLocal() {
+    if (gravador && gravador.state === 'recording') {
+      gravador.stop();
+      return;
+    }
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      CondorWS.enviar({ tipo: 'acordar' });
+      $('voiceHint').textContent = 'NAVEGADOR SEM CAPTURA DE ÁUDIO';
+      return;
+    }
+    try {
+      fluxo = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        video: false,
+      });
+      const preferido = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+        .find((tipo) => MediaRecorder.isTypeSupported(tipo));
+      gravador = new MediaRecorder(fluxo, preferido ? { mimeType: preferido } : undefined);
+      partes = [];
+      gravador.addEventListener('dataavailable', (evento) => {
+        if (evento.data.size) partes.push(evento.data);
+      });
+      gravador.addEventListener('stop', enviarGravacaoLocal, { once: true });
+      gravador.start(250);
+      limiteGravacao = setTimeout(() => {
+        if (gravador && gravador.state === 'recording') gravador.stop();
+      }, 20000);
+      $('voiceStatus').textContent = '● GRAVANDO';
+      $('voiceStatus').style.color = 'var(--pink)';
+      $('voiceHint').textContent = 'FALE AGORA · CLIQUE DE NOVO PARA ENVIAR';
+      $('orbCore').classList.add('active');
+    } catch (erro) {
+      $('voiceHint').textContent = 'PERMISSÃO DO MICROFONE NÃO CONCEDIDA';
+      $('listenStatus').textContent = 'MICROFONE BLOQUEADO';
+      $('listenStatus').style.color = 'var(--pink)';
+    }
+  }
+
+  async function enviarGravacaoLocal() {
+    clearTimeout(limiteGravacao);
+    if (fluxo) fluxo.getTracks().forEach((trilha) => trilha.stop());
+    $('voiceStatus').textContent = '● TRANSCREVENDO';
+    $('voiceStatus').style.color = 'var(--violet)';
+    $('voiceHint').textContent = 'FASTER WHISPER · PROCESSAMENTO LOCAL';
+    try {
+      const tipo = gravador && gravador.mimeType ? gravador.mimeType : 'audio/webm';
+      const audio = new Blob(partes, { type: tipo });
+      if (audio.size < 256) throw new Error('gravação vazia');
+      const resposta = await fetch('/api/voice/transcribe', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': tipo },
+        body: audio,
+      });
+      const dados = await resposta.json();
+      if (!resposta.ok) throw new Error(dados.erro || 'não entendi a fala');
+      CondorConversa.adicionarUsuario(dados.texto);
+      $('voiceHint').textContent = 'CONDOR ESTÁ PROCESSANDO LOCALMENTE';
+    } catch (erro) {
+      $('voiceStatus').textContent = '● VOZ LOCAL';
+      $('voiceStatus').style.color = 'var(--cyan)';
+      $('voiceHint').textContent = String(erro.message || erro).toUpperCase();
+    } finally {
+      partes = [];
+      gravador = null;
+      fluxo = null;
     }
   }
 
@@ -100,14 +182,14 @@ const CondorVoz = (() => {
     caixa.id = 'senhaBox';
     caixa.className = 'senha-box';
     caixa.innerHTML = `
-      <div class="senha-titulo"><i class="ti ti-lock"></i> AÇÃO TRAVADA</div>
+      <div class="senha-titulo"><span aria-hidden="true">▣</span> AÇÃO TRAVADA</div>
       <div class="senha-motivo"></div>
       <div class="senha-linha">
-        <input id="senhaInput" type="password" placeholder="fale ou digite a senha" autocomplete="off">
+        <input id="senhaInput" type="password" placeholder="digite sua frase secreta" autocomplete="off">
         <button id="senhaOk">CONFIRMAR</button>
         <button id="senhaNao" class="secundario">CANCELAR</button>
       </div>
-      <div class="senha-dica">pode responder falando — estou ouvindo</div>`;
+      <div class="senha-dica">por segurança, voz nunca autoriza esta ação</div>`;
     caixa.querySelector('.senha-motivo').textContent = m.motivo || '';
     document.getElementById('frame').appendChild(caixa);
 

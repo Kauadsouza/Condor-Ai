@@ -1,7 +1,7 @@
 """
-Banco de memória do CONDOR — SQLite local, na sua máquina.
+Banco de memoria do Condor — SQLite em RAM, cifrado em disco.
 
-Tudo que ele aprende sobre você fica aqui, em data/condor.db:
+Tudo que ele aprende fica no snapshot ~/.condor/memory/condor.memory.enc:
 
   fatos      → o que ele sabe de você (gosto, hábito, projeto, decisão, pessoa)
   entidades  → coisas/pessoas/projetos que aparecem na sua vida
@@ -13,7 +13,7 @@ Tudo que ele aprende sobre você fica aqui, em data/condor.db:
 
 Busca em dois modos, combinados:
   - textual  (FTS5, casa palavra exata)
-  - semântica (embedding, casa significado mesmo com outras palavras)
+  - semantica (embedding, casa significado mesmo com outras palavras)
 """
 
 from __future__ import annotations
@@ -23,8 +23,16 @@ import logging
 import sqlite3
 import struct
 import time
+import base64
+import os
+import tempfile
+import threading
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 log = logging.getLogger("condor.memoria")
 
@@ -103,7 +111,99 @@ CREATE TABLE IF NOT EXISTS uso_api (
     ts        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_uso_ts ON uso_api(ts DESC);
+
+CREATE TABLE IF NOT EXISTS hub_projects (
+    id       TEXT PRIMARY KEY,
+    nome     TEXT NOT NULL,
+    tipo     TEXT NOT NULL,
+    status   TEXT NOT NULL,
+    progresso INTEGER NOT NULL DEFAULT 0,
+    resumo   TEXT NOT NULL DEFAULT '',
+    rota     TEXT NOT NULL DEFAULT '',
+    tom      TEXT NOT NULL DEFAULT 'cyan',
+    atualizado REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hub_tasks (
+    id       TEXT PRIMARY KEY,
+    titulo   TEXT NOT NULL,
+    projeto  TEXT NOT NULL DEFAULT 'condor',
+    status   TEXT NOT NULL DEFAULT 'pendente',
+    prioridade TEXT NOT NULL DEFAULT 'media',
+    criado   REAL NOT NULL,
+    atualizado REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hub_tasks_updated ON hub_tasks(atualizado DESC);
+
+CREATE TABLE IF NOT EXISTS hub_notes (
+    id       TEXT PRIMARY KEY,
+    titulo   TEXT NOT NULL,
+    conteudo TEXT NOT NULL,
+    projeto  TEXT NOT NULL DEFAULT 'condor',
+    criado   REAL NOT NULL,
+    atualizado REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hub_notes_updated ON hub_notes(atualizado DESC);
+
+CREATE TABLE IF NOT EXISTS condor_x_parts (
+    id       TEXT PRIMARY KEY,
+    nome     TEXT NOT NULL,
+    zona     TEXT NOT NULL,
+    status   TEXT NOT NULL,
+    progresso INTEGER NOT NULL DEFAULT 0,
+    risco    TEXT NOT NULL DEFAULT 'baixo',
+    resumo   TEXT NOT NULL DEFAULT '',
+    atualizado REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS creator_items (
+    id       TEXT PRIMARY KEY,
+    titulo   TEXT NOT NULL,
+    etapa    TEXT NOT NULL,
+    status   TEXT NOT NULL DEFAULT 'ideia',
+    notas    TEXT NOT NULL DEFAULT '',
+    criado   REAL NOT NULL,
+    atualizado REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_creator_updated ON creator_items(atualizado DESC);
+
+CREATE TABLE IF NOT EXISTS hub_missions (
+    id       TEXT PRIMARY KEY,
+    titulo   TEXT NOT NULL,
+    estado   TEXT NOT NULL DEFAULT 'planejada',
+    progresso INTEGER NOT NULL DEFAULT 0,
+    detalhe  TEXT NOT NULL DEFAULT '',
+    criado   REAL NOT NULL,
+    atualizado REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_missions_updated ON hub_missions(atualizado DESC);
 """
+
+DEFAULT_PROJECTS = (
+    ("condor", "Condor", "IA local", "ativo", 82,
+     "Nucleo privado, memoria cifrada e automacao supervisionada.", "/ui/index.html", "cyan"),
+    ("condor-x", "Condor X", "Digital twin", "prototipo", 28,
+     "Exoesqueleto conceitual modular, inerte e orientado por simulacao.", "", "amber"),
+    ("kauaartx", "KauaArtx", "Canal", "foco", 42,
+     "Operacao criativa do canal, do roteiro a publicacao.", "", "violet"),
+    ("university", "University Path", "Oxford", "ativo", 64,
+     "Documentos, prazos e preparacao universitaria.", "", "blue"),
+    ("site", "Site", "Sistema independente", "independente", 100,
+     "Marca pessoal publicada e mantida fora do nucleo do Condor.", "", "mint"),
+    ("videos", "Videos", "Sistema independente", "independente", 100,
+     "Pipeline de midia preservado como aplicacao independente.", "", "mint"),
+    ("sat", "SAT", "Sistema independente", "independente", 100,
+     "Sistema SAT preservado com codigo e dados proprios.", "", "mint"),
+)
+
+DEFAULT_CONDOR_X_PARTS = (
+    ("helmet", "Capacete", "cabeca", "conceito", 20, "baixo", "HUD, audio e ventilacao; sem vedacao pressurizada."),
+    ("chest", "Nucleo peitoral", "torso", "simulacao", 36, "baixo", "Computacao, telemetria e bateria de bancada protegida."),
+    ("left-arm", "Braco esquerdo", "membro", "conceito", 18, "baixo", "Sensores e controle gestual, sem propulsao ou arma."),
+    ("right-arm", "Braco direito", "membro", "conceito", 18, "baixo", "Sensores e controle gestual, sem propulsao ou arma."),
+    ("legs", "Pernas", "mobilidade", "conceito", 12, "medio", "Estudo ergonomico passivo; nenhum atuador de alta forca."),
+    ("power", "Energia", "infraestrutura", "bloqueado", 8, "alto", "Somente fonte certificada e teste de bancada com protecao."),
+)
 
 FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS fatos_fts USING fts5(
@@ -139,20 +239,88 @@ def _similaridade(a: list[float], b: list[float]) -> float:
 
 class Memoria:
     def __init__(self, caminho: str | Path) -> None:
-        self._path = str(caminho)
-        Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        self._path = Path(caminho)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         self._fts = False
         self.sessao_atual = 0
+        self._key: bytes | None = None
+        self._lock = threading.RLock()
+        self._database = sqlite3.connect(":memory:", check_same_thread=False)
+        self._database.row_factory = sqlite3.Row
 
     @contextmanager
     def _conn(self):
-        conn = sqlite3.connect(self._path, check_same_thread=False, timeout=15)
-        conn.row_factory = sqlite3.Row
+        with self._lock:
+            try:
+                yield self._database
+                self._database.commit()
+                self._persist()
+            except Exception:
+                self._database.rollback()
+                raise
+
+    @property
+    def unlocked(self) -> bool:
+        return self._key is not None
+
+    def unlock(self, key: bytes) -> None:
+        """Carrega o snapshot cifrado inteiro apenas na memoria RAM."""
+        if len(key) != 32:
+            raise ValueError("A chave da memoria precisa ter 32 bytes.")
+        with self._lock:
+            if self._path.exists() and self._path.stat().st_size:
+                envelope = json.loads(self._path.read_text(encoding="utf-8"))
+                try:
+                    plaintext = AESGCM(key).decrypt(
+                        base64.b64decode(envelope["nonce"]),
+                        base64.b64decode(envelope["ciphertext"]),
+                        b"condor-memory:1",
+                    )
+                except (InvalidTag, ValueError) as exc:
+                    raise RuntimeError("Memoria cifrada invalida ou adulterada.") from exc
+                self._database.close()
+                self._database = sqlite3.connect(":memory:", check_same_thread=False)
+                self._database.row_factory = sqlite3.Row
+                self._database.deserialize(plaintext)
+            self._key = bytes(key)
+            self.inicializar()
+
+    def lock(self) -> None:
+        with self._lock:
+            self._persist()
+            self._database.close()
+            self._database = sqlite3.connect(":memory:", check_same_thread=False)
+            self._database.row_factory = sqlite3.Row
+            self._key = None
+            self.sessao_atual = 0
+            self.inicializar()
+
+    def _persist(self) -> None:
+        if self._key is None:
+            return
+        plaintext = self._database.serialize()
+        nonce = os.urandom(12)
+        ciphertext = AESGCM(self._key).encrypt(nonce, plaintext, b"condor-memory:1")
+        envelope = {
+            "version": 1,
+            "cipher": "aes-256-gcm",
+            "nonce": base64.b64encode(nonce).decode(),
+            "ciphertext": base64.b64encode(ciphertext).decode(),
+        }
+        fd, temporary = tempfile.mkstemp(prefix=".memory-", dir=str(self._path.parent))
         try:
-            yield conn
-            conn.commit()
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(envelope, stream, separators=(",", ":"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self._path)
+            try:
+                self._path.chmod(0o600)
+            except OSError:
+                pass
         finally:
-            conn.close()
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def inicializar(self) -> None:
         with self._conn() as conn:
@@ -163,7 +331,21 @@ class Memoria:
             except sqlite3.OperationalError as exc:
                 # SQLite sem FTS5 compilado: busca cai pra LIKE, tudo segue.
                 log.warning("FTS5 indisponível (%s) — busca textual usará LIKE.", exc)
-        log.info("Memória pronta: %s", self._path)
+            if self.unlocked:
+                agora = time.time()
+                conn.executemany(
+                    """INSERT OR IGNORE INTO hub_projects
+                       (id,nome,tipo,status,progresso,resumo,rota,tom,atualizado)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    [(*item, agora) for item in DEFAULT_PROJECTS],
+                )
+                conn.executemany(
+                    """INSERT OR IGNORE INTO condor_x_parts
+                       (id,nome,zona,status,progresso,risco,resumo,atualizado)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    [(*item, agora) for item in DEFAULT_CONDOR_X_PARTS],
+                )
+        log.info("Memória pronta em RAM; snapshot cifrado: %s", self._path)
 
     # ── Sessões ────────────────────────────────────────────────────────────
 
@@ -432,3 +614,135 @@ class Memoria:
                 "SELECT nome, resumo, cluster FROM entidades WHERE tipo='projeto' "
                 "ORDER BY mencoes DESC, atualizado DESC LIMIT ?", (limite,)).fetchall()
             return [dict(r) for r in rows]
+
+    # ── ARTX Hub local ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _id(prefixo: str) -> str:
+        return f"{prefixo}_{uuid.uuid4().hex[:16]}"
+
+    def hub_snapshot(self) -> dict:
+        """Estado operacional do Hub; quando bloqueado, nunca expõe dados privados."""
+        if not self.unlocked:
+            return {
+                "locked": True,
+                "projects": [],
+                "tasks": [],
+                "notes": [],
+                "parts": [],
+                "creator": [],
+                "missions": [],
+            }
+        with self._conn() as conn:
+            def rows(query: str, params: tuple = ()) -> list[dict]:
+                return [dict(row) for row in conn.execute(query, params).fetchall()]
+
+            return {
+                "locked": False,
+                "projects": rows("SELECT * FROM hub_projects ORDER BY atualizado DESC"),
+                "tasks": rows("SELECT * FROM hub_tasks ORDER BY atualizado DESC LIMIT 100"),
+                "notes": rows("SELECT * FROM hub_notes ORDER BY atualizado DESC LIMIT 100"),
+                "parts": rows("SELECT * FROM condor_x_parts ORDER BY rowid"),
+                "creator": rows("SELECT * FROM creator_items ORDER BY atualizado DESC LIMIT 100"),
+                "missions": rows("SELECT * FROM hub_missions ORDER BY atualizado DESC LIMIT 100"),
+            }
+
+    def hub_create_task(self, titulo: str, projeto: str, prioridade: str) -> dict:
+        agora = time.time()
+        item_id = self._id("task")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO hub_tasks
+                   (id,titulo,projeto,status,prioridade,criado,atualizado)
+                   VALUES(?,?,?,'pendente',?,?,?)""",
+                (item_id, titulo, projeto, prioridade, agora, agora),
+            )
+            row = conn.execute("SELECT * FROM hub_tasks WHERE id=?", (item_id,)).fetchone()
+            return dict(row)
+
+    def hub_update_task(self, item_id: str, status: str) -> bool:
+        with self._conn() as conn:
+            result = conn.execute(
+                "UPDATE hub_tasks SET status=?, atualizado=? WHERE id=?",
+                (status, time.time(), item_id),
+            )
+            return result.rowcount > 0
+
+    def hub_delete_task(self, item_id: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM hub_tasks WHERE id=?", (item_id,)).rowcount > 0
+
+    def hub_create_note(self, titulo: str, conteudo: str, projeto: str) -> dict:
+        agora = time.time()
+        item_id = self._id("note")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO hub_notes
+                   (id,titulo,conteudo,projeto,criado,atualizado) VALUES(?,?,?,?,?,?)""",
+                (item_id, titulo, conteudo, projeto, agora, agora),
+            )
+            row = conn.execute("SELECT * FROM hub_notes WHERE id=?", (item_id,)).fetchone()
+            return dict(row)
+
+    def hub_update_note(self, item_id: str, titulo: str, conteudo: str) -> bool:
+        with self._conn() as conn:
+            result = conn.execute(
+                "UPDATE hub_notes SET titulo=?, conteudo=?, atualizado=? WHERE id=?",
+                (titulo, conteudo, time.time(), item_id),
+            )
+            return result.rowcount > 0
+
+    def hub_delete_note(self, item_id: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM hub_notes WHERE id=?", (item_id,)).rowcount > 0
+
+    def hub_update_part(self, item_id: str, status: str, progresso: int) -> bool:
+        with self._conn() as conn:
+            result = conn.execute(
+                """UPDATE condor_x_parts SET status=?, progresso=?, atualizado=?
+                   WHERE id=?""",
+                (status, progresso, time.time(), item_id),
+            )
+            return result.rowcount > 0
+
+    def hub_create_creator_item(self, titulo: str, etapa: str, notas: str) -> dict:
+        agora = time.time()
+        item_id = self._id("creator")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO creator_items
+                   (id,titulo,etapa,status,notas,criado,atualizado)
+                   VALUES(?,?,?,'ideia',?,?,?)""",
+                (item_id, titulo, etapa, notas, agora, agora),
+            )
+            row = conn.execute("SELECT * FROM creator_items WHERE id=?", (item_id,)).fetchone()
+            return dict(row)
+
+    def hub_update_creator_item(self, item_id: str, status: str) -> bool:
+        with self._conn() as conn:
+            result = conn.execute(
+                "UPDATE creator_items SET status=?, atualizado=? WHERE id=?",
+                (status, time.time(), item_id),
+            )
+            return result.rowcount > 0
+
+    def hub_create_mission(self, titulo: str, detalhe: str) -> dict:
+        agora = time.time()
+        item_id = self._id("mission")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO hub_missions
+                   (id,titulo,estado,progresso,detalhe,criado,atualizado)
+                   VALUES(?,?,'planejada',0,?,?,?)""",
+                (item_id, titulo, detalhe, agora, agora),
+            )
+            row = conn.execute("SELECT * FROM hub_missions WHERE id=?", (item_id,)).fetchone()
+            return dict(row)
+
+    def hub_update_mission(self, item_id: str, estado: str, progresso: int) -> bool:
+        with self._conn() as conn:
+            result = conn.execute(
+                """UPDATE hub_missions SET estado=?, progresso=?, atualizado=? WHERE id=?""",
+                (estado, progresso, time.time(), item_id),
+            )
+            return result.rowcount > 0

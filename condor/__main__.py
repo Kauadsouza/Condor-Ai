@@ -2,9 +2,9 @@
 Ponto de entrada: python -m condor
 
 Não abre janela e não imprime nada obrigatório. Tudo vai pro log em
-data/condor.log. Pra acompanhar em tempo real:
+~/.condor/logs/condor.log. Pra acompanhar em tempo real no Windows:
 
-    Get-Content data\\condor.log -Wait -Tail 30
+    Get-Content $HOME\\.condor\\logs\\condor.log -Wait -Tail 30
 """
 
 from __future__ import annotations
@@ -16,10 +16,11 @@ import sys
 from pathlib import Path
 
 from condor.config import carregar_config
+from condor.paths import state_root
 from condor.server import montar, rodar
 
 ROOT = Path(__file__).parent.parent
-LOG = ROOT / "data" / "condor.log"
+LOG = state_root() / "logs" / "condor.log"
 
 
 def preparar_log(verboso: bool = False) -> None:
@@ -58,12 +59,16 @@ async def principal() -> None:
     await rodar(app, config)
 
 
-if __name__ == "__main__":
+def main() -> None:
     preparar_log("-v" in sys.argv)
     try:
         asyncio.run(principal())
     except KeyboardInterrupt:
         pass
     except Exception:
-        logging.getLogger("condor").exception("Morri no boot")
+        logging.getLogger("condor").exception("Falha no boot do Condor")
         raise
+
+
+if __name__ == "__main__":
+    main()

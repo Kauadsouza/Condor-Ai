@@ -23,23 +23,24 @@ from openai import AsyncOpenAI
 
 from condor.brain import tools as ferramentas
 from condor.brain.persona import montar_prompt
+from condor.vision.local import VisaoLocal
 
 log = logging.getLogger("condor.cerebro")
 
 # Preço por 1 milhão de tokens (USD). Serve pro contador da interface —
 # se a OpenAI mudar a tabela, é só ajustar aqui.
 PRECOS = {
-    "gpt-4o":              (2.50, 10.00),
-    "gpt-4o-mini":         (0.15,  0.60),
-    "gpt-4.1":             (2.00,  8.00),
-    "gpt-4.1-mini":        (0.40,  1.60),
+    "gpt-5.6-sol":         (5.00, 30.00),
+    "gpt-5.6":             (5.00, 30.00),
+    "gpt-5.6-terra":       (2.00, 12.00),
+    "gpt-5.6-luna":        (0.20,  1.20),
     "text-embedding-3-small": (0.02, 0.0),
 }
 
 
 def calcular_custo(modelo: str, entrada: int, saida: int) -> float:
     base = modelo.split(":")[0]
-    p_in, p_out = PRECOS.get(base, PRECOS["gpt-4o"])
+    p_in, p_out = PRECOS.get(base, PRECOS["gpt-5.6-terra"])
     return (entrada * p_in + saida * p_out) / 1_000_000
 
 
@@ -50,6 +51,8 @@ class Cerebro:
         self._guarda = guarda
         self._recall = recall
         self._cliente: AsyncOpenAI | None = None
+        self._audio_cliente: AsyncOpenAI | None = None
+        self._visao = VisaoLocal(config)
         self.ultimo_erro: str = ""
 
     # ── Conexão ────────────────────────────────────────────────────────────
@@ -57,29 +60,76 @@ class Cerebro:
     @property
     def cliente(self) -> AsyncOpenAI:
         if self._cliente is None:
-            if not self._cfg.chave_openai:
+            if self.provedor == "local":
+                self._cliente = AsyncOpenAI(
+                    api_key="condor-local",
+                    base_url=self._cfg.cerebro.endpoint_local,
+                    timeout=90.0,
+                    max_retries=1,
+                )
+            elif self.provedor == "openai":
+                self._cliente = AsyncOpenAI(api_key=self._cfg.chave_openai, timeout=90.0,
+                                            max_retries=2)
+            else:
                 raise RuntimeError(
-                    "Sem OPENAI_API_KEY no .env — o Condor não tem como pensar.")
-            self._cliente = AsyncOpenAI(api_key=self._cfg.chave_openai, timeout=90.0,
-                                        max_retries=2)
+                    "Sem modelo local ou chave externa — o Condor esta em modo deterministico.")
         return self._cliente
 
     @property
+    def provedor(self) -> str:
+        if self._cfg.cerebro.modelo_local.strip():
+            return "local"
+        if self._cfg.chave_openai:
+            return "openai"
+        return "offline"
+
+    @property
+    def modelo_ativo(self) -> str:
+        if self.provedor == "local":
+            return self._cfg.cerebro.modelo_local.strip()
+        if self.provedor == "openai":
+            return self._cfg.cerebro.modelo
+        return "offline-deterministico"
+
+    def reset_connection(self) -> None:
+        self._cliente = None
+        self._audio_cliente = None
+
+    @property
+    def audio_cliente(self) -> AsyncOpenAI:
+        """Voz pode usar chave externa opcional mesmo com cerebro generativo local."""
+        if self._audio_cliente is None:
+            if self._cfg.chave_openai:
+                self._audio_cliente = AsyncOpenAI(
+                    api_key=self._cfg.chave_openai, timeout=90.0, max_retries=2
+                )
+            else:
+                self._audio_cliente = self.cliente
+        return self._audio_cliente
+
+    @property
     def pronto(self) -> bool:
-        return bool(self._cfg.chave_openai)
+        return self.provedor != "offline"
 
     @property
     def memoria(self):
         """A voz e os ouvidos também registram custo — precisam do banco."""
         return self._memoria
 
+    @property
+    def modelo_visao(self) -> str:
+        return self._visao.modelo
+
+    async def visao_pronta(self) -> bool:
+        return await self._visao.pronto()
+
     async def testar_chave(self) -> tuple[bool, str]:
         """Bate na API pra saber se a chave presta — chamado no boot."""
-        if not self._cfg.chave_openai:
-            return False, "Nenhuma chave configurada no .env"
+        if not self.pronto:
+            return False, "Nenhum modelo local ou chave externa configurado"
         try:
-            await self.cliente.models.retrieve(self._cfg.cerebro.modelo)
-            return True, self._cfg.cerebro.modelo
+            await self.cliente.models.retrieve(self.modelo_ativo)
+            return True, f"{self.provedor}:{self.modelo_ativo}"
         except Exception as exc:
             msg = str(exc)
             if "401" in msg or "invalid_api_key" in msg:
@@ -95,11 +145,14 @@ class Cerebro:
     def _contabilizar(self, modelo: str, uso) -> None:
         if not uso:
             return
-        entrada = getattr(uso, "prompt_tokens", 0) or 0
-        saida = getattr(uso, "completion_tokens", 0) or 0
+        entrada = (getattr(uso, "input_tokens", None)
+                   or getattr(uso, "prompt_tokens", 0) or 0)
+        saida = (getattr(uso, "output_tokens", None)
+                 or getattr(uso, "completion_tokens", 0) or 0)
         try:
+            custo = 0.0 if self.provedor == "local" else calcular_custo(modelo, entrada, saida)
             self._memoria.registrar_uso(modelo, entrada, saida,
-                                        calcular_custo(modelo, entrada, saida))
+                                        custo)
         except Exception:
             pass
 
@@ -113,152 +166,144 @@ class Cerebro:
         on_token: Callable[[str], Awaitable[None]] | None = None,
         on_evento: Callable[[dict], Awaitable[None]] | None = None,
     ) -> str:
-        """Roda até ter uma resposta final. `historico` é modificado no caminho,
-        acumulando as chamadas de ferramenta — é assim que o modelo lembra o que
-        já tentou dentro do mesmo pedido."""
+        """Loop de ferramentas pela Responses API; externo usa ``store=False``."""
         cfg = self._cfg.cerebro
         sistema = montar_prompt(self._cfg.nome_dono, memoria_relevante, modo_voz)
         resposta_final = ""
+        input_items = _historico_para_responses(historico)
+        schemas = ferramentas.ESQUEMAS
+        if not self._cfg.cerebro.compartilhar_memoria_com_conector:
+            schemas = [
+                schema for schema in schemas
+                if schema["function"]["name"] != "buscar_memoria"
+            ]
+        response_tools = [_response_tool(schema) for schema in schemas]
+        safety_id = self._cfg.safety_identifier
 
         async def _evento(tipo: str, **dados) -> None:
             if on_evento:
                 await on_evento({"tipo": tipo, **dados})
 
-        for iteracao in range(cfg.max_iteracoes):
-            mensagens = [{"role": "system", "content": sistema}] + historico
-
-            texto = ""
-            chamadas: dict[int, dict] = {}
-            uso = None
-
+        for _ in range(cfg.max_iteracoes):
             try:
-                fluxo = await self.cliente.chat.completions.create(
-                    model=cfg.modelo,
-                    messages=mensagens,
-                    tools=ferramentas.ESQUEMAS,
-                    tool_choice="auto",
-                    parallel_tool_calls=True,
-                    temperature=cfg.temperatura,
-                    max_tokens=cfg.max_tokens,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                )
-
-                async for pedaco in fluxo:
-                    if getattr(pedaco, "usage", None):
-                        uso = pedaco.usage
-                    if not pedaco.choices:
-                        continue
-                    delta = pedaco.choices[0].delta
-
-                    if delta.content:
-                        texto += delta.content
-                        if on_token:
-                            await on_token(delta.content)
-
-                    for tc in (delta.tool_calls or []):
-                        alvo = chamadas.setdefault(
-                            tc.index, {"id": "", "nome": "", "args": ""})
-                        if tc.id:
-                            alvo["id"] = tc.id
-                        if tc.function and tc.function.name:
-                            alvo["nome"] += tc.function.name
-                        if tc.function and tc.function.arguments:
-                            alvo["args"] += tc.function.arguments
-
+                request: dict[str, Any] = {
+                    "model": self.modelo_ativo,
+                    "instructions": sistema,
+                    "input": input_items,
+                    "tools": response_tools,
+                    "max_output_tokens": cfg.max_tokens,
+                }
+                if self.provedor == "openai":
+                    request.update({
+                        "tool_choice": "auto",
+                        "parallel_tool_calls": False,
+                        "store": False,
+                        "reasoning": {"effort": "medium"},
+                        "text": {"verbosity": "medium"},
+                        "safety_identifier": safety_id,
+                    })
+                response = await self.cliente.responses.create(**request)
             except Exception as exc:
                 self.ultimo_erro = str(exc)
-                log.error("Erro na chamada à OpenAI: %s", exc)
+                log.error("Erro na chamada ao conector de IA: %s", exc)
                 await _evento("erro", mensagem=_erro_amigavel(exc))
                 return _erro_amigavel(exc)
 
-            self._contabilizar(cfg.modelo, uso)
-
-            # ── Sem ferramenta: é a resposta final ─────────────────────────
-            if not chamadas:
-                resposta_final = texto.strip()
+            self._contabilizar(self.modelo_ativo, response.usage)
+            calls = [item for item in response.output if item.type == "function_call"]
+            if not calls:
+                resposta_final = (response.output_text or "").strip()
+                if on_token and resposta_final:
+                    await on_token(resposta_final)
                 historico.append({"role": "assistant", "content": resposta_final})
                 break
 
-            # ── Com ferramenta: o texto desta rodada é só raciocínio ───────
-            historico.append({
-                "role": "assistant",
-                "content": texto or None,
-                "tool_calls": [
-                    {"id": c["id"], "type": "function",
-                     "function": {"name": c["nome"], "arguments": c["args"] or "{}"}}
-                    for c in chamadas.values()
-                ],
-            })
-
-            imagens_pendentes: list[str] = []
-
-            for chamada in chamadas.values():
-                nome = chamada["nome"]
+            input_items.extend(
+                item.model_dump(exclude_none=True) for item in response.output
+            )
+            for call in calls:
+                nome = call.name
                 try:
-                    args = json.loads(chamada["args"] or "{}")
+                    args = json.loads(call.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
 
                 rotulo = ferramentas.ROTULOS.get(nome, nome)
-                # O id da chamada acompanha os dois eventos: com ferramentas em
-                # paralelo, é ele que diz qual linha da interface fechar.
-                await _evento("ferramenta.inicio", id=chamada["id"],
+                await _evento("ferramenta.inicio", id=call.call_id,
                               ferramenta=nome, rotulo=rotulo,
                               argumentos=_resumir_args(args))
 
                 resultado = await self._executar_com_guarda(nome, args)
                 saida = str(resultado.get("saida", ""))
-
-                if resultado.get("imagem_b64"):
-                    imagens_pendentes.append(resultado["imagem_b64"])
-
-                await _evento("ferramenta.fim", id=chamada["id"],
+                await _evento("ferramenta.fim", id=call.call_id,
                               ferramenta=nome, rotulo=rotulo,
                               ok=bool(resultado.get("ok")), saida=saida[:400])
-
-                historico.append({
-                    "role": "tool",
-                    "tool_call_id": chamada["id"],
-                    "content": (("OK\n" if resultado.get("ok") else "FALHOU\n") + saida)[:8000],
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": call.call_id,
+                    "output": (("OK\n" if resultado.get("ok") else "FALHOU\n") + saida)[:8000],
                 })
-
-            # Print da tela: entra como imagem de verdade pro modelo enxergar.
-            for b64 in imagens_pendentes:
-                historico.append({
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "[print da tela que você acabou de tirar]"},
-                        {"type": "image_url",
-                         "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-                    ],
-                })
+                if resultado.get("imagem_b64"):
+                    if self.provedor == "local":
+                        try:
+                            descricao = await self._visao.analisar(
+                                resultado["imagem_b64"],
+                                "Analise esta captura para ajudar a concluir o pedido atual. "
+                                "Transcreva textos relevantes, identifique controles e relate erros visíveis.",
+                            )
+                            input_items.append({
+                                "role": "user",
+                                "content": (
+                                    "[Análise feita pelo módulo de visão local "
+                                    f"{self._visao.modelo}; nenhum pixel saiu do PC]\n{descricao}"
+                                ),
+                            })
+                        except Exception as exc:
+                            log.error("Visão local falhou: %s", exc)
+                            input_items.append({
+                                "role": "user",
+                                "content": f"[A visão local não conseguiu analisar a captura: {exc}]",
+                            })
+                    else:
+                        input_items.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "[print da tela solicitado pelo dono]"},
+                                {"type": "input_image", "image_url":
+                                 f"data:image/jpeg;base64,{resultado['imagem_b64']}", "detail": "high"},
+                            ],
+                        })
 
         else:
-            # Estourou o limite de iterações — pede o fecho sem mais ferramentas.
-            resposta_final = await self._fechar_sem_ferramentas(historico, sistema)
+            resposta_final = "Parei no limite seguro de ferramentas antes de concluir."
+            historico.append({"role": "assistant", "content": resposta_final})
 
         return resposta_final or "Me perdi aqui, não consegui fechar essa."
 
     # ── Execução com a trava ───────────────────────────────────────────────
 
     async def _executar_com_guarda(self, nome: str, args: dict) -> dict:
-        categoria = self._guarda.avaliar(nome, args)
-        exigiu_senha = False
+        decisao = self._guarda.avaliar(nome, args)
+        exigiu_senha = decisao.requires_approval
 
-        if categoria:
-            exigiu_senha = True
+        if not decisao.allowed or decisao.simulated:
+            return {
+                "ok": False,
+                "saida": f"BARRADO pela politica local do Condor: {decisao.reason}",
+            }
+        if decisao.requires_approval:
             descricao = _descrever(nome, args)
-            liberado = await self._guarda.autorizar(categoria, descricao)
+            liberado = await self._guarda.autorizar(decisao, descricao)
             if not liberado:
-                return {"ok": False,
-                        "saida": "BARRADO pela trava de segurança: a senha não foi "
-                                 "confirmada. Não execute de novo, avise o dono."}
+                return {
+                    "ok": False,
+                    "saida": "BARRADO: a aprovacao local exata nao foi confirmada. "
+                             "Nao execute de novo; informe o dono.",
+                }
 
         inicio = time.time()
         resultado = await ferramentas.executar(
-            nome, args, contexto={"recall": self._recall,
-                                  "python_extra": {"memoria": self._memoria}})
+            nome, args, contexto={"recall": self._recall})
         duracao = time.time() - inicio
 
         try:
@@ -278,13 +323,17 @@ class Cerebro:
                        "o que você conseguiu fazer e o que ficou faltando.]",
         })
         try:
-            resposta = await self.cliente.chat.completions.create(
-                model=self._cfg.cerebro.modelo,
-                messages=[{"role": "system", "content": sistema}] + historico,
-                temperature=0.5, max_tokens=400,
-            )
-            self._contabilizar(self._cfg.cerebro.modelo, resposta.usage)
-            texto = (resposta.choices[0].message.content or "").strip()
+            request = {
+                "model": self.modelo_ativo,
+                "instructions": sistema,
+                "input": _historico_para_responses(historico),
+                "max_output_tokens": 400,
+            }
+            if self.provedor == "openai":
+                request["store"] = False
+            resposta = await self.cliente.responses.create(**request)
+            self._contabilizar(self.modelo_ativo, resposta.usage)
+            texto = (resposta.output_text or "").strip()
             historico.append({"role": "assistant", "content": texto})
             return texto
         except Exception as exc:
@@ -295,19 +344,23 @@ class Cerebro:
 
     async def completar(self, sistema: str, usuario: str, modelo: str | None = None,
                         json_mode: bool = False, max_tokens: int = 800) -> str:
-        modelo = modelo or self._cfg.cerebro.modelo_rapido
-        extras = {"response_format": {"type": "json_object"}} if json_mode else {}
+        modelo = self.modelo_ativo if self.provedor == "local" else (
+            modelo or self._cfg.cerebro.modelo_rapido
+        )
         try:
-            resposta = await self.cliente.chat.completions.create(
-                model=modelo,
-                messages=[{"role": "system", "content": sistema},
-                          {"role": "user", "content": usuario}],
-                temperature=0.2,
-                max_tokens=max_tokens,
-                **extras,
-            )
+            request = {
+                "model": modelo,
+                "instructions": sistema,
+                "input": usuario,
+                "max_output_tokens": max_tokens,
+            }
+            if self.provedor == "openai":
+                request["store"] = False
+                if json_mode:
+                    request["text"] = {"format": {"type": "json_object"}}
+            resposta = await self.cliente.responses.create(**request)
             self._contabilizar(modelo, resposta.usage)
-            return (resposta.choices[0].message.content or "").strip()
+            return (resposta.output_text or "").strip()
         except Exception as exc:
             log.error("Falha em completar(): %s", exc)
             return ""
@@ -318,9 +371,11 @@ class Cerebro:
                 model=self._cfg.cerebro.modelo_embedding,
                 input=texto[:8000])
             tokens = getattr(r.usage, "total_tokens", 0) or 0
+            custo = 0.0 if self.provedor == "local" else calcular_custo(
+                self._cfg.cerebro.modelo_embedding, tokens, 0
+            )
             self._memoria.registrar_uso(self._cfg.cerebro.modelo_embedding, tokens, 0,
-                                        calcular_custo(self._cfg.cerebro.modelo_embedding,
-                                                       tokens, 0))
+                                        custo)
             return r.data[0].embedding
         except Exception as exc:
             log.debug("Embedding falhou: %s", exc)
@@ -328,6 +383,42 @@ class Cerebro:
 
 
 # ── Auxiliares ───────────────────────────────────────────────────────────────
+
+def _response_tool(schema: dict) -> dict:
+    function = schema["function"]
+    return {
+        "type": "function",
+        "name": function["name"],
+        "description": function["description"],
+        "parameters": function["parameters"],
+        "strict": True,
+    }
+
+
+def _historico_para_responses(historico: list[dict]) -> list[dict]:
+    items: list[dict] = []
+    for message in historico:
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"user", "assistant"} or content is None:
+            continue
+        if isinstance(content, str):
+            items.append({"role": role, "content": content})
+            continue
+        converted = []
+        for part in content:
+            if part.get("type") == "text":
+                converted.append({"type": "input_text", "text": part.get("text", "")})
+            elif part.get("type") == "image_url":
+                image = part.get("image_url") or {}
+                converted.append({
+                    "type": "input_image",
+                    "image_url": image.get("url", ""),
+                    "detail": image.get("detail", "auto"),
+                })
+        if converted:
+            items.append({"role": role, "content": converted})
+    return items
 
 def _resumir_args(args: dict) -> str:
     partes = []
@@ -347,11 +438,11 @@ def _erro_amigavel(exc: Exception) -> str:
     if "insufficient_quota" in msg:
         return "Sua conta da OpenAI está sem crédito. Põe uns dólares lá que eu volto."
     if "invalid_api_key" in msg or "401" in msg:
-        return "A chave da OpenAI no .env não está valendo. Confere ela pra mim."
+        return "A credencial guardada no cofre nao foi aceita pelo conector de IA."
     if "rate_limit" in msg or "429" in msg:
-        return "A OpenAI está me segurando por excesso de chamada. Tenta de novo em instantes."
+        return "O conector de IA limitou as chamadas. Tente de novo em instantes."
     if "model_not_found" in msg:
-        return "Sua conta não tem acesso a esse modelo. Dá pra trocar no data/config.yaml."
+        return "O conector nao tem acesso a esse modelo. Troque em ~/.condor/config.yaml."
     if "timeout" in msg.lower() or "connection" in msg.lower():
-        return "Não consegui falar com a OpenAI. Deve ser a internet."
-    return "Deu erro do lado da OpenAI e eu não consegui responder."
+        return "Nao consegui falar com o conector de IA. Verifique o servidor local ou a internet."
+    return "O conector de IA falhou e eu nao consegui responder."

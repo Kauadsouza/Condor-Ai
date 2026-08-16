@@ -1,0 +1,10 @@
+# Exemplo inativo. Gere as chaves localmente no equipamento que sera seu servidor.
+[Interface]
+PrivateKey = <CHAVE_PRIVADA_GERADA_LOCALMENTE>
+Address = 10.77.0.1/24
+ListenPort = 51820
+
+# Adicione um [Peer] somente quando houver um segundo equipamento proprio.
+# [Peer]
+# PublicKey = <CHAVE_PUBLICA_DO_SEGUNDO_EQUIPAMENTO>
+# AllowedIPs = 10.77.0.2/32

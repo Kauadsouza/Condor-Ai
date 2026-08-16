@@ -39,27 +39,6 @@ _BOOL = {"type": "boolean"}
 
 
 ESQUEMAS: list[dict] = [
-    # ── Shell e código ────────────────────────────────────────────────────
-    _f("executar_powershell",
-       "Roda um comando PowerShell no PC e devolve a saída. Use pra qualquer coisa "
-       "do Windows que não tenha ferramenta própria: consultar serviço, processo, "
-       "rede, registro, agendar tarefa, mexer em configuração. A janela nunca aparece.",
-       {"comando": {**_TXT, "description": "Comando PowerShell completo."}},
-       ["comando"]),
-
-    _f("executar_python",
-       "Executa código Python dentro do próprio Condor. Use pra cálculo, manipular "
-       "muitos arquivos de uma vez, processar dados, ou lógica que seria feia no shell. "
-       "Já tem os, sys, re, shutil, subprocess, Path, ROOT e DATA disponíveis. "
-       "Use print() pra ver qualquer resultado.",
-       {"codigo": {**_TXT, "description": "Código Python. Sempre imprima o resultado."}},
-       ["codigo"]),
-
-    _f("instalar_pacote",
-       "Instala um pacote Python com pip, caso precise de uma biblioteca que não tem.",
-       {"pacote": {**_TXT, "description": "Nome do pacote, ex: 'requests'."}},
-       ["pacote"]),
-
     # ── Arquivos ──────────────────────────────────────────────────────────
     _f("ler_arquivo",
        "Lê o conteúdo de um arquivo de texto, código ou config.",
@@ -166,13 +145,11 @@ ESQUEMAS: list[dict] = [
        ["consulta"]),
 ]
 
-
+# Shell, codigo arbitrario e instalacao em tempo de execucao nao ficam
+# disponiveis para a IA. Manutencao manual continua possivel fora do Condor.
 # ── Ligação nome → função ────────────────────────────────────────────────────
 
 FUNCOES: dict[str, Callable[..., dict]] = {
-    "executar_powershell": ex.executar_powershell,
-    "executar_python": ex.executar_python,
-    "instalar_pacote": ex.instalar_pacote,
     "ler_arquivo": ex.ler_arquivo,
     "escrever_arquivo": ex.escrever_arquivo,
     "listar_pasta": ex.listar_pasta,
@@ -199,9 +176,6 @@ FUNCOES: dict[str, Callable[..., dict]] = {
 
 # Como cada ferramenta aparece na interface enquanto roda.
 ROTULOS = {
-    "executar_powershell": "rodando comando",
-    "executar_python": "executando código",
-    "instalar_pacote": "instalando pacote",
     "ler_arquivo": "lendo arquivo",
     "escrever_arquivo": "escrevendo arquivo",
     "listar_pasta": "olhando a pasta",
@@ -242,9 +216,6 @@ async def executar(nome: str, argumentos: dict, contexto: dict | None = None) ->
     fn = FUNCOES.get(nome)
     if fn is None:
         return {"ok": False, "saida": f"Ferramenta desconhecida: {nome}"}
-
-    if nome == "executar_python":
-        argumentos = {**argumentos, "contexto": contexto.get("python_extra", {})}
 
     try:
         return await asyncio.to_thread(lambda: fn(**argumentos))

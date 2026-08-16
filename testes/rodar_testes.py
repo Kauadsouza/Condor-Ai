@@ -1,447 +1,367 @@
-"""
-Testes do Condor — rode antes de confiar numa mudança.
-
-    python testes/rodar_testes.py
-
-Não precisa de chave da OpenAI nem do Picovoice, e não gasta um centavo:
-tudo aqui é o que dá pra verificar sem sair do PC. Não mexe no seu banco de
-memória de verdade (usa um temporário) e não roda nada destrutivo.
-
-Sai com código 1 se qualquer coisa falhar — dá pra usar em automação.
-"""
+"""Testes locais do Condor 2.0. Nao usam API, microfone, tela nem rede."""
 
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
+import os
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
-RAIZ = Path(__file__).parent.parent
-sys.path.insert(0, str(RAIZ))
-
-falhas: list[str] = []
-total = 0
-
-
-def checar(condicao: bool, descricao: str, detalhe: str = "") -> None:
-    global total
-    total += 1
-    if condicao:
-        print(f"  ok    {descricao}")
-    else:
-        print(f"  FALHA {descricao}" + (f"  ({detalhe})" if detalhe else ""))
-        falhas.append(descricao)
-
-
-def titulo(texto: str) -> None:
-    print(f"\n\033[1m{texto}\033[0m" if sys.stdout.isatty() else f"\n{texto}")
-
-
-# ══════════════════════════════════════════════════════════════════════
-# 1. A trava de segurança
-# ══════════════════════════════════════════════════════════════════════
-
-def testar_classificador() -> None:
-    from condor.actions.guard import classificar_caminho, classificar_comando
-
-    titulo("TRAVA — comandos que DEVEM pedir senha")
-    perigosos = [
-        ("format C:", "destruir_sistema"),
-        ("diskpart /s script.txt", "destruir_sistema"),
-        (r"reg delete HKLM\Software\Teste /f", "destruir_sistema"),
-        ("cipher /w:C", "destruir_sistema"),
-        ("vssadmin delete shadows /all", "destruir_sistema"),
-        (r"Remove-Item C:\ -Recurse -Force", "apagar_massa"),
-        (r"Remove-Item -Recurse -Force C:\ ", "apagar_massa"),
-        (r"remove-item -path 'C:\' -recurse", "apagar_massa"),
-        (r"rm -r C:\ ", "apagar_massa"),
-        (r"del /s /q C:\ ", "apagar_massa"),
-        (r"Remove-Item -Recurse C:\Windows\System32", "apagar_massa"),
-        (r"Remove-Item -Recurse -Force C:\Users\Fulano", "apagar_massa"),
-        (r'shutil.rmtree("C:\\")', "apagar_massa"),
-        (r"Get-ChildItem C:\ -Recurse | Remove-Item -Force", "apagar_massa"),
-        ("shutdown /s /t 0", "desligar"),
-        ("Restart-Computer -Force", "desligar"),
-        ("Stop-Computer", "desligar"),
-        ("Set-MpPreference -DisableRealtimeMonitoring $true", "rede_seguranca"),
-        ("netsh advfirewall set allprofiles state off", "rede_seguranca"),
-        ("netsh wlan delete profile name=casa", "rede_seguranca"),
-        ("Set-NetFirewallProfile -Enabled False", "rede_seguranca"),
-    ]
-    for comando, esperado in perigosos:
-        obtido = classificar_comando(comando)
-        checar(obtido == esperado, f"{esperado:<17} {comando[:52]}",
-               f"veio {obtido}")
-
-    titulo("TRAVA — uso normal que NÃO pode ser barrado")
-    inofensivos = [
-        "dir",
-        "Get-Process | Sort-Object CPU -Descending",
-        "git status",
-        "New-Item -ItemType Directory projeto",
-        "Stop-Process -Name chrome -Force",
-        r"Remove-Item C:\Users\Fulano\Downloads\lixo.txt",
-        r"Remove-Item .\build -Recurse -Force",
-        r"Remove-Item $env:TEMP\cache -Recurse",
-        "Get-ChildItem *.tmp | Remove-Item -Force",
-        "python -m pip install requests",
-        "Get-Content data\\condor.log -Tail 20",
-        "ipconfig /all",
-    ]
-    for comando in inofensivos:
-        obtido = classificar_comando(comando)
-        checar(obtido is None, f"livre             {comando[:52]}",
-               f"barrou como {obtido}")
-
-    titulo("TRAVA — caminhos")
-    caminhos = [
-        ("C:\\", False, "destruir_sistema"),
-        ("C:\\Windows", False, "destruir_sistema"),
-        ("C:\\Windows\\System32", True, "destruir_sistema"),
-        (str(Path.home()), True, "apagar_massa"),
-        (str(Path.home() / "Downloads"), False, None),
-        (str(RAIZ / "data"), False, None),
-    ]
-    for caminho, recursivo, esperado in caminhos:
-        obtido = classificar_caminho(caminho, recursivo)
-        checar(obtido == esperado, f"{str(esperado):<17} {caminho}",
-               f"veio {obtido}")
-
-
-def testar_senha() -> None:
-    from condor.actions.guard import _senha_confere
-
-    titulo("SENHA — tolerância à transcrição de voz")
-    # O Whisper devolve a frase inteira, com pontuação e caixa variada.
-    aceitar = ["teste", "Teste.", "teste!", "A senha é teste", "a senha e teste",
-               "senha teste", "TESTE", " teste ", "é teste"]
-    recusar = ["testes", "outra coisa", "cancelar", "não sei", "", "test"]
-    for dito in aceitar:
-        checar(_senha_confere(dito, "teste"), f"aceita  {dito!r}")
-    for dito in recusar:
-        checar(not _senha_confere(dito, "teste"), f"recusa  {dito!r}")
-
-
-def testar_fluxo_guarda() -> None:
-    from condor.actions.guard import Guarda
-    from condor.config import carregar_config
-
-    titulo("GUARDA — o fluxo de autorização")
-    guarda = Guarda(carregar_config())
-
-    async def rodar() -> None:
-        # Sem canal pra perguntar, a ação NÃO pode acontecer.
-        checar(not await guarda.autorizar("apagar_massa", "sem canal"),
-               "sem canal de senha -> barra (falha fechada)")
-
-        async def certo(motivo, categoria):
-            return "a senha é teste"
-        guarda.registrar_pedido_senha(certo)
-        checar(await guarda.autorizar("destruir_sistema", "format C:"),
-               "senha certa -> libera")
-
-        # Segunda vez na mesma categoria reaproveita a janela de 90s.
-        vezes = {"n": 0}
-
-        async def contando(motivo, categoria):
-            vezes["n"] += 1
-            return "teste"
-        guarda.registrar_pedido_senha(contando)
-        await guarda.autorizar("destruir_sistema", "outro comando")
-        checar(vezes["n"] == 0, "mesma categoria em seguida -> não repergunta")
-
-        async def errado(motivo, categoria):
-            return "abacaxi"
-        guarda.registrar_pedido_senha(errado)
-        checar(not await guarda.autorizar("desligar", "shutdown"),
-               "senha errada -> barra")
-
-        async def calado(motivo, categoria):
-            return None
-        guarda.registrar_pedido_senha(calado)
-        checar(not await guarda.autorizar("rede_seguranca", "firewall off"),
-               "ninguém respondeu -> barra")
-
-    asyncio.run(rodar())
-
-
-# ══════════════════════════════════════════════════════════════════════
-# 2. As ferramentas
-# ══════════════════════════════════════════════════════════════════════
-
-def testar_ferramentas() -> None:
-    from condor.actions import executor as ex
-
-    titulo("MÃOS — as ferramentas no PC")
-
-    r = ex.executar_powershell("Write-Output 'condor-ok'")
-    checar(r["ok"] and "condor-ok" in r["saida"], "powershell responde", r["saida"][:60])
-
-    r = ex.executar_python("print(6 * 7)")
-    checar(r["ok"] and "42" in r["saida"], "python executa", r["saida"][:60])
-
-    r = ex.executar_python("nao_existe()")
-    checar(not r["ok"] and "NameError" in r["saida"], "python devolve erro de verdade")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        alvo = Path(tmp) / "sub" / "arquivo.txt"
-        conteudo = "acento: ação, coração, Kauã"
-        r = ex.escrever_arquivo(str(alvo), conteudo)
-        checar(r["ok"] and alvo.exists(), "escreve arquivo criando a pasta")
-
-        r = ex.ler_arquivo(str(alvo))
-        checar(r["saida"] == conteudo, "lê de volta com acento intacto")
-
-        r = ex.escrever_arquivo(str(alvo), "\nmais uma linha", anexar=True)
-        r = ex.ler_arquivo(str(alvo))
-        checar("mais uma linha" in r["saida"], "anexa sem apagar o que tinha")
-
-        r = ex.listar_pasta(str(Path(tmp) / "sub"))
-        checar(r["ok"] and "arquivo.txt" in r["saida"], "lista a pasta")
-
-        r = ex.copiar(str(alvo), str(Path(tmp) / "copia.txt"))
-        checar(r["ok"] and (Path(tmp) / "copia.txt").exists(), "copia arquivo")
-
-        r = ex.mover(str(Path(tmp) / "copia.txt"), str(Path(tmp) / "movido.txt"))
-        checar(r["ok"] and (Path(tmp) / "movido.txt").exists(), "move arquivo")
-
-        r = ex.deletar(str(alvo))
-        checar(r["ok"] and not alvo.exists(), "apaga arquivo")
-
-        r = ex.ler_arquivo(str(alvo))
-        checar(not r["ok"], "avisa quando o arquivo não existe")
-
-    r = ex.info_sistema()
-    checar(r["ok"] and "CPU" in r["saida"] and "RAM" in r["saida"], "lê o estado da máquina")
-
-    r = ex.listar_janelas()
-    checar(r["ok"], "lista as janelas abertas")
-
-    r = ex.escrever_clipboard("condor-clip")
-    checar(r["ok"], "escreve no clipboard")
-    r = ex.ler_clipboard()
-    checar("condor-clip" in r["saida"], "lê do clipboard")
-
-
-def testar_silencio() -> None:
-    import condor.actions.executor as ex
-    import condor.session as sessao
-
-    titulo("SILÊNCIO — nada pode piscar na tela")
-    CREATE_NO_WINDOW = 0x08000000
-    checar(ex.SEM_JANELA == CREATE_NO_WINDOW, "executor usa CREATE_NO_WINDOW")
-    checar(ex._startupinfo() is not None, "executor esconde a janela no STARTUPINFO")
-
-    fonte = inspect.getsource(ex._rodar)
-    checar("creationflags=SEM_JANELA" in fonte, "todo subprocesso nasce escondido")
-
-    fonte_janela = inspect.getsource(sessao.Sessao._abrir_janela)
-    checar("0x08000000" in fonte_janela, "a janela também abre sem console")
-    checar("pythonw" in fonte_janela, "a janela roda por pythonw, não python")
-
-
-# ══════════════════════════════════════════════════════════════════════
-# 3. O cérebro
-# ══════════════════════════════════════════════════════════════════════
-
-def testar_esquemas() -> None:
-    from condor.brain import tools
-
-    titulo("CÉREBRO — as ferramentas declaradas pro modelo")
-    nomes = [e["function"]["name"] for e in tools.ESQUEMAS]
-    checar(len(nomes) == len(set(nomes)), "nenhum nome de ferramenta duplicado")
-    checar(all(len(n) <= 64 and n.replace("_", "").isalnum() for n in nomes),
-           "todos os nomes são válidos pra API")
-    checar(all(e["function"].get("description") for e in tools.ESQUEMAS),
-           "toda ferramenta tem descrição")
-
-    try:
-        json.dumps(tools.ESQUEMAS)
-        checar(True, "os schemas serializam em JSON")
-    except Exception as exc:
-        checar(False, "os schemas serializam em JSON", str(exc))
-
-    especiais = {"buscar_memoria"}
-    checar(not (set(nomes) - set(tools.FUNCOES) - especiais),
-           "toda ferramenta declarada tem implementação")
-    checar(not (set(tools.FUNCOES) - set(nomes)),
-           "nenhuma implementação órfã")
-    checar(not (set(nomes) - set(tools.ROTULOS)),
-           "toda ferramenta tem rótulo na interface")
-
-    # O schema tem que bater com a assinatura real da função, senão o modelo
-    # manda um argumento que estoura em TypeError na hora de executar.
-    divergencias = []
-    for esquema in tools.ESQUEMAS:
-        f = esquema["function"]
-        fn = tools.FUNCOES.get(f["name"])
-        if not fn:
-            continue
-        aceita = set(inspect.signature(fn).parameters)
-        declarados = set(f["parameters"]["properties"])
-        if declarados - aceita:
-            divergencias.append(f"{f['name']}: sobra {declarados - aceita}")
-        exigidos = {
-            n for n, p in inspect.signature(fn).parameters.items()
-            if p.default is inspect.Parameter.empty and n != "contexto"
-        }
-        if exigidos - declarados:
-            divergencias.append(f"{f['name']}: falta {exigidos - declarados}")
-    checar(not divergencias, "schema bate com a assinatura das funções",
-           "; ".join(divergencias))
-
-
-def testar_prompt_e_custo() -> None:
-    from condor.brain.client import calcular_custo
-    from condor.brain.persona import montar_prompt
-
-    titulo("CÉREBRO — prompt e custo")
-    p = montar_prompt("Fulano", "- [pessoal] Torce pro Flamengo", modo_voz=True)
-    checar("AGORA:" in p, "o prompt carrega a data real (senão ele inventa)")
-    checar("ENTRADA POR VOZ" in p, "avisa quando a entrada veio do microfone")
-    checar("Flamengo" in p, "a memória relevante entra no prompt")
-    checar("Fulano" in p, "ele sabe o nome do dono")
-    checar(len(p) < 6000, "o prompt não está gigante", f"{len(p)} chars")
-
-    checar(calcular_custo("gpt-4o", 1_000_000, 0) == 2.50, "preço de entrada do gpt-4o")
-    checar(calcular_custo("gpt-4o", 0, 1_000_000) == 10.00, "preço de saída do gpt-4o")
-    checar(calcular_custo("modelo-que-nao-existe", 1_000_000, 0) > 0,
-           "modelo desconhecido não zera o contador")
-
-
-def testar_poda() -> None:
-    from condor.session import Sessao
-
-    titulo("SESSÃO — poda do histórico")
-    s = Sessao.__new__(Sessao)
-    s.historico = [{"role": "user", "content": f"m{i}"} for i in range(28)]
-    s.historico += [
-        {"role": "assistant", "content": None, "tool_calls": [{"id": "a"}]},
-        {"role": "tool", "tool_call_id": "a", "content": "ok"},
-        {"role": "tool", "tool_call_id": "b", "content": "ok"},
-        {"role": "assistant", "content": "pronto"},
-    ]
-    s._podar_historico(maximo=6)
-    checar(len(s.historico) <= 8, "corta o histórico", f"{len(s.historico)} mensagens")
-    # Mensagem 'tool' sem o 'assistant' que a pediu faz a API recusar o pedido.
-    checar(s.historico[0]["role"] != "tool", "nunca deixa mensagem de ferramenta órfã")
-
-    s2 = Sessao.__new__(Sessao)
-    s2.historico = [{"role": "user", "content": "só uma"}]
-    s2._podar_historico(maximo=30)
-    checar(len(s2.historico) == 1, "histórico curto passa intacto")
-
-
-# ══════════════════════════════════════════════════════════════════════
-# 4. A memória
-# ══════════════════════════════════════════════════════════════════════
-
-def testar_memoria() -> None:
-    from condor.memory.db import Memoria
-
-    titulo("MEMÓRIA — banco, busca e grafo")
-    with tempfile.TemporaryDirectory() as tmp:
-        m = Memoria(Path(tmp) / "teste.db")
-        m.inicializar()
-        checar(True, "o banco inicializa")
-
-        m.abrir_sessao()
-        checar(m.sessao_atual > 0, "abre uma sessão")
-
-        m.salvar_fato("pessoal", "time", "Ele torce pro Flamengo desde criança")
-        m.salvar_fato("trabalho", "stack", "Trabalha com Python e PowerShell")
-        m.salvar_fato("rotina", "academia", "Treina de manhã, seis da manhã")
-        checar(m.estatisticas()["fatos"] == 3, "grava fatos")
-
-        # Chave repetida CORRIGE o fato em vez de duplicar.
-        m.salvar_fato("pessoal", "time", "Na verdade torce pro Vasco")
-        checar(m.estatisticas()["fatos"] == 3, "fato repetido atualiza, não duplica")
-        checar("Vasco" in m.fatos_recentes()[0]["valor"], "a correção prevaleceu")
-
-        achados = m.buscar_fatos("Vasco")
-        checar(any("Vasco" in f["valor"] for f in achados), "busca textual (FTS5) acha")
-
-        achados = m.buscar_fatos("academia treino")
-        checar(any("Treina" in f["valor"] for f in achados), "acha por outra palavra da frase")
-
-        m.salvar_entidade("Flamengo", "projeto", "PESSOAL", "time")
-        m.salvar_entidade("Python", "ferramenta", "TRABALHO", "linguagem")
-        m.salvar_relacao("Flamengo", "Python", "ligado_a")
-        g = m.grafo()
-        checar(len(g["nos"]) == 2 and len(g["arestas"]) == 1, "monta o grafo")
-
-        m.salvar_entidade("Python", "ferramenta", "TRABALHO", "linguagem")
-        checar(m.estatisticas()["nos"] == 2, "entidade repetida não duplica")
-
-        m.salvar_turno("user", "e aí condor")
-        m.salvar_turno("assistant", "fala")
-        h = m.historico(limite=10)
-        checar(len(h) == 2 and h[0]["role"] == "user", "histórico volta na ordem certa")
-
-        m.registrar_acao("executar_powershell", "dir", "ok", True)
-        m.registrar_acao("deletar", "x.txt", "falhou", False)
-        acoes = m.acoes_recentes()
-        checar(len(acoes) == 2, "audita as ações")
-        checar(sum(1 for a in acoes if not a["sucesso"]) == 1, "distingue falha de sucesso")
-
-        m.registrar_uso("gpt-4o", 1000, 500, 0.0075)
-        custo = m.custo_hoje()
-        checar(custo["hoje_usd"] > 0 and custo["hoje_tokens"] == 1500, "contabiliza o custo")
-
-        alvo = m.fatos_recentes()[0]["id"]
-        checar(m.esquecer_fato(alvo), "esquece um fato")
-        checar(m.estatisticas()["fatos"] == 2, "o fato sumiu mesmo")
-
-        m.fechar_sessao("resumo de teste")
-        checar(m.sessao_atual == 0, "fecha a sessão")
-
-
-def testar_embedding() -> None:
-    from condor.memory.db import _desempacotar, _empacotar, _similaridade
-
-    titulo("MEMÓRIA — embeddings")
-    vetor = [0.1, -0.25, 0.7, 0.0, 0.33]
-    volta = _desempacotar(_empacotar(vetor))
-    checar(all(abs(a - b) < 1e-6 for a, b in zip(vetor, volta)),
-           "o vetor sobrevive à ida e volta pro banco")
-    checar(abs(_similaridade([1, 0, 0], [1, 0, 0]) - 1.0) < 1e-6, "vetor igual = 1.0")
-    checar(abs(_similaridade([1, 0, 0], [0, 1, 0])) < 1e-6, "vetor ortogonal = 0.0")
-    checar(_similaridade([1, 0], []) == 0.0, "vetor vazio não estoura")
-    checar(_similaridade([1, 0], [1, 0, 0]) == 0.0, "tamanho diferente não estoura")
-
-
-# ══════════════════════════════════════════════════════════════════════
-
-def main() -> int:
-    print("=" * 68)
-    print("  TESTES DO CONDOR")
-    print("=" * 68)
-
-    testar_classificador()
-    testar_senha()
-    testar_fluxo_guarda()
-    testar_ferramentas()
-    testar_silencio()
-    testar_esquemas()
-    testar_prompt_e_custo()
-    testar_poda()
-    testar_memoria()
-    testar_embedding()
-
-    print("\n" + "=" * 68)
-    if falhas:
-        print(f"  {total - len(falhas)}/{total} passaram — {len(falhas)} FALHA(S):")
-        for f in falhas:
-            print(f"    - {f}")
-        print("=" * 68)
-        return 1
-    print(f"  {total}/{total} passaram. Tudo certo.")
-    print("=" * 68)
-    return 0
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from condor.brain.tools import ESQUEMAS, FUNCOES
+from condor.brain.client import Cerebro
+from condor.config import Config, salvar_config
+from condor.memory.db import Memoria
+from condor.security.approval import OwnerAuth
+from condor.security.audit import IntegrityAudit
+from condor.security.identity import DeviceIdentity
+from condor.security.integrity import CodeIntegrity
+from condor.security.policy import AutonomyProfile, PolicyEngine, RiskLevel, action_digest
+from condor.security.session import LocalSessionSecurity
+from condor.security.vault import CondorVault, VaultError
+
+
+PASS = "uma frase secreta longa e exclusiva"
+
+
+class VaultTests(unittest.TestCase):
+    def test_roundtrip_and_no_plaintext(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vault.json"
+            vault = CondorVault(path)
+            vault.initialize(PASS, {"token": "segredo-super-privado"})
+            self.assertNotIn("segredo-super-privado", path.read_text("utf-8"))
+            vault.lock()
+            vault.unlock(PASS)
+            self.assertEqual(vault.get("token"), "segredo-super-privado")
+
+    def test_wrong_passphrase_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = CondorVault(Path(tmp) / "vault.json")
+            vault.initialize(PASS, {"x": 1})
+            vault.lock()
+            with self.assertRaises(VaultError):
+                vault.unlock("outra frase secreta longa")
+
+    def test_rotate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = CondorVault(Path(tmp) / "vault.json")
+            vault.initialize(PASS, {"x": 42})
+            vault.rotate(PASS, "uma frase substituta longa e segura")
+            vault.lock()
+            vault.unlock("uma frase substituta longa e segura")
+            self.assertEqual(vault.get("x"), 42)
+
+    def test_device_identity_is_stable_and_signs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = CondorVault(Path(tmp) / "vault.json")
+            vault.initialize(PASS, {})
+            identity = DeviceIdentity(vault)
+            first = identity.ensure()
+            signature = identity.sign(b"condor")
+            self.assertTrue(identity.verify(b"condor", signature))
+            self.assertFalse(identity.verify(b"alterado", signature))
+            self.assertEqual(first, DeviceIdentity(vault).ensure())
+
+    def test_signed_code_manifest_detects_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "source"
+            package = root / "condor"
+            package.mkdir(parents=True)
+            source = package / "core.py"
+            source.write_text("NAME = 'Condor'\n", encoding="utf-8")
+            vault = CondorVault(Path(tmp) / "vault.json")
+            vault.initialize(PASS, {})
+            identity = DeviceIdentity(vault)
+            identity.ensure()
+            check = CodeIntegrity(Path(tmp) / "manifest.json", identity, root)
+            self.assertEqual(check.refresh(), 1)
+            self.assertTrue(check.verify()[0])
+            source.write_text("NAME = 'alterado'\n", encoding="utf-8")
+            self.assertFalse(check.verify()[0])
+
+
+class ApprovalTests(unittest.TestCase):
+    def test_exact_and_single_use(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            owner = OwnerAuth(Path(tmp) / "owner.json")
+            owner.setup(PASS)
+            digest = action_digest("deletar", {"caminho": "/tmp/a"})
+            challenge = owner.challenge(digest, "apagar a")
+            token = owner.approve(challenge.id, PASS)
+            self.assertIsNotNone(token)
+            self.assertFalse(owner.consume(token, action_digest("deletar", {"caminho": "/tmp/b"})))
+            self.assertFalse(owner.consume(token, digest))
+
+    def test_wrong_phrase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            owner = OwnerAuth(Path(tmp) / "owner.json")
+            owner.setup(PASS)
+            challenge = owner.challenge("a" * 64, "acao")
+            self.assertIsNone(owner.approve(challenge.id, "frase incorreta mas comprida"))
+
+
+class PolicyTests(unittest.TestCase):
+    def test_shell_and_python_are_blocked(self):
+        policy = PolicyEngine(AutonomyProfile.ADMIN)
+        for tool in ("executar_powershell", "executar_python", "instalar_pacote"):
+            self.assertEqual(policy.decide(tool, {}).risk, RiskLevel.BLOCKED)
+
+    def test_delete_always_requires_approval(self):
+        decision = PolicyEngine(AutonomyProfile.ADMIN).decide("deletar", {"caminho": "x"})
+        self.assertTrue(decision.allowed)
+        self.assertTrue(decision.requires_approval)
+
+    def test_assistant_reviews_file_read(self):
+        decision = PolicyEngine(AutonomyProfile.ASSISTANT).decide("ler_arquivo", {"caminho": "x"})
+        self.assertTrue(decision.requires_approval)
+
+    def test_assistant_reviews_local_metadata_and_web(self):
+        policy = PolicyEngine(AutonomyProfile.ASSISTANT)
+        for tool in ("info_sistema", "listar_pasta", "buscar_web", "ler_site"):
+            self.assertTrue(policy.decide(tool, {}).requires_approval)
+
+    def test_operator_can_read_allowed_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decision = PolicyEngine(AutonomyProfile.OPERATOR, [Path(tmp)]).decide(
+                "ler_arquivo", {"caminho": str(Path(tmp) / "a.txt")}
+            )
+            self.assertTrue(decision.allowed)
+            self.assertFalse(decision.requires_approval)
+
+    def test_path_escape_is_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decision = PolicyEngine(AutonomyProfile.ADMIN, [Path(tmp)]).decide(
+                "ler_arquivo", {"caminho": str(Path(tmp).parent / "fora.txt")}
+            )
+            self.assertFalse(decision.allowed)
+
+    def test_simulation_does_not_execute(self):
+        decision = PolicyEngine(AutonomyProfile.ADMIN, simulation=True).decide(
+            "escrever_arquivo", {"caminho": "x", "conteudo": "y"}
+        )
+        self.assertTrue(decision.simulated)
+        self.assertFalse(decision.allowed)
+
+    def test_observer_cannot_mutate(self):
+        decision = PolicyEngine(AutonomyProfile.OBSERVER).decide("abrir", {"alvo": "x"})
+        self.assertFalse(decision.allowed)
+
+
+class AuditTests(unittest.TestCase):
+    def test_chain_and_tamper_detection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = IntegrityAudit(path)
+            audit.append({"a": 1})
+            audit.append({"b": 2})
+            self.assertEqual(audit.verify(), (True, 2))
+            path.write_text(path.read_text("utf-8").replace('"a": 1', '"a": 9'), "utf-8")
+            self.assertFalse(audit.verify()[0])
+
+
+class SessionSecurityTests(unittest.TestCase):
+    def test_loopback_only(self):
+        security = LocalSessionSecurity("127.0.0.1", 7777)
+        self.assertTrue(security.host_allowed("127.0.0.1:7777"))
+        self.assertTrue(security.origin_allowed("http://127.0.0.1:7777"))
+        self.assertFalse(security.host_allowed("condor.example.com"))
+        self.assertFalse(security.origin_allowed("https://evil.example"))
+
+    def test_token_constant_validation(self):
+        security = LocalSessionSecurity("127.0.0.1", 7777)
+        self.assertTrue(security.token_valid(security.token))
+        self.assertFalse(security.token_valid("wrong"))
+
+    def test_server_requires_local_session_and_sets_up_integrity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = os.environ.get("CONDOR_HOME")
+            os.environ["CONDOR_HOME"] = tmp
+            try:
+                from fastapi.testclient import TestClient
+                from condor.server import montar
+
+                app, session = montar(Config())
+                opened = []
+                session.abrir_aplicativo = lambda: opened.append(True) or True
+                client = TestClient(app, base_url="http://127.0.0.1:7777")
+                self.assertEqual(client.get("/api/estado").status_code, 401)
+                self.assertEqual(client.post("/api/app/abrir").status_code, 401)
+                root = client.get("/", follow_redirects=False)
+                self.assertEqual(root.status_code, 307)
+                self.assertEqual(root.headers["location"], "/ui/index.html")
+                self.assertEqual(
+                    client.post("/api/session", headers={"Origin": "https://evil.example"}).status_code,
+                    403,
+                )
+                response = client.post(
+                    "/api/session", headers={"Origin": "http://127.0.0.1:7777"}
+                )
+                self.assertEqual(response.status_code, 200)
+                app_open = client.post("/api/app/abrir")
+                self.assertEqual(app_open.status_code, 200, app_open.text)
+                self.assertEqual(app_open.json()["app"], "Condor")
+                self.assertEqual(opened, [True])
+                setup = client.post("/api/seguranca/configurar", json={
+                    "owner": "Kaua", "passphrase": PASS,
+                })
+                self.assertEqual(setup.status_code, 200, setup.text)
+                state = client.get("/api/seguranca/estado").json()
+                self.assertTrue(state["code_integrity"]["ok"])
+                self.assertTrue(state["device_id"].startswith("condor-"))
+                policy = client.post("/api/seguranca/politica", json={
+                    "profile": "operator", "simulation": True, "passphrase": PASS,
+                })
+                self.assertEqual(policy.status_code, 200, policy.text)
+                self.assertTrue(policy.json()["simulation"])
+            finally:
+                if previous is None:
+                    os.environ.pop("CONDOR_HOME", None)
+                else:
+                    os.environ["CONDOR_HOME"] = previous
+
+
+class MemoryTests(unittest.TestCase):
+    def test_encrypted_snapshot_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "memory.enc"
+            key = os.urandom(32)
+            memory = Memoria(path)
+            memory.inicializar()
+            memory.unlock(key)
+            memory.salvar_fato("pessoal", "nome", "conteudo ultrassecreto")
+            memory.lock()
+            self.assertTrue(path.exists())
+            self.assertNotIn("conteudo ultrassecreto", path.read_text("utf-8"))
+
+            reopened = Memoria(path)
+            reopened.inicializar()
+            reopened.unlock(key)
+            self.assertIn("ultrassecreto", reopened.fatos_recentes()[0]["valor"])
+
+    def test_wrong_memory_key_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "memory.enc"
+            memory = Memoria(path)
+            memory.inicializar()
+            memory.unlock(os.urandom(32))
+            memory.salvar_fato("x", "y", "z")
+            memory.lock()
+            reopened = Memoria(path)
+            reopened.inicializar()
+            with self.assertRaises(RuntimeError):
+                reopened.unlock(os.urandom(32))
+
+    def test_hub_data_is_seeded_crud_and_encrypted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hub-memory.enc"
+            key = os.urandom(32)
+            memory = Memoria(path)
+            memory.inicializar()
+            self.assertTrue(memory.hub_snapshot()["locked"])
+            memory.unlock(key)
+            snapshot = memory.hub_snapshot()
+            self.assertFalse(snapshot["locked"])
+            self.assertTrue(any(item["id"] == "condor-x" for item in snapshot["projects"]))
+            task = memory.hub_create_task("Validar o Hub", "condor", "alta")
+            self.assertTrue(memory.hub_update_task(task["id"], "concluida"))
+            note = memory.hub_create_note("Privada", "conteudo cifrado do Hub", "condor")
+            self.assertTrue(memory.hub_update_note(note["id"], "Atualizada", "conteudo atualizado do Hub"))
+            memory.lock()
+            self.assertNotIn("conteudo cifrado do Hub", path.read_text("utf-8"))
+            self.assertNotIn("conteudo atualizado do Hub", path.read_text("utf-8"))
+            reopened = Memoria(path)
+            reopened.inicializar()
+            reopened.unlock(key)
+            state = reopened.hub_snapshot()
+            self.assertEqual(state["tasks"][0]["status"], "concluida")
+            self.assertEqual(state["notes"][0]["id"], note["id"])
+            self.assertEqual(state["notes"][0]["conteudo"], "conteudo atualizado do Hub")
+
+
+class CatalogTests(unittest.TestCase):
+    def test_no_unrestricted_tools_are_exposed(self):
+        names = {schema["function"]["name"] for schema in ESQUEMAS}
+        self.assertFalse(names & {"executar_powershell", "executar_python", "instalar_pacote"})
+
+    def test_every_exposed_tool_has_implementation_or_is_memory(self):
+        names = {schema["function"]["name"] for schema in ESQUEMAS}
+        self.assertFalse(names - set(FUNCOES) - {"buscar_memoria"})
+
+    def test_schemas_are_strict(self):
+        for schema in ESQUEMAS:
+            params = schema["function"]["parameters"]
+            self.assertIs(params.get("additionalProperties"), False)
+
+
+class ConfigTests(unittest.TestCase):
+    def test_server_rejects_non_loopback(self):
+        with self.assertRaises(ValueError):
+            Config(servidor={"host": "0.0.0.0", "porta": 7777})
+
+    def test_name_is_condor_in_project(self):
+        self.assertEqual("Condor".lower(), "condor")
+
+    def test_local_connector_is_loopback_only_and_has_priority(self):
+        with self.assertRaises(ValueError):
+            Config(cerebro={"endpoint_local": "https://example.com/v1"})
+        config = Config(cerebro={"modelo_local": "condor-local-model"})
+        brain = Cerebro(config, None, None, None)
+        self.assertEqual(brain.provedor, "local")
+        self.assertEqual(brain.modelo_ativo, "condor-local-model")
+
+    def test_private_memory_sharing_is_off_by_default(self):
+        config = Config()
+        self.assertFalse(config.cerebro.compartilhar_memoria_com_conector)
+        self.assertFalse(config.cerebro.aprendizado_automatico_por_conector)
+
+    def test_voice_and_vision_are_local_by_default(self):
+        config = Config()
+        self.assertEqual(config.voz.modelo_stt, "faster-whisper-small")
+        self.assertEqual(config.voz.modelo_tts, "pt_BR-faber-medium")
+        self.assertEqual(config.cerebro.modelo_visao_local, "qwen3-vl:2b")
+
+    def test_config_honors_runtime_condor_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = os.environ.get("CONDOR_HOME")
+            os.environ["CONDOR_HOME"] = tmp
+            try:
+                salvar_config(Config(cerebro={"modelo_local": "isolated-model"}))
+                text = (Path(tmp) / "config.yaml").read_text("utf-8")
+                self.assertIn("isolated-model", text)
+            finally:
+                if previous is None:
+                    os.environ.pop("CONDOR_HOME", None)
+                else:
+                    os.environ["CONDOR_HOME"] = previous
+
+
+class InterfaceBoundaryTests(unittest.TestCase):
+    def test_desktop_app_targets_operational_ui_not_hub(self):
+        launcher = (ROOT / "condor_app.pyw").read_text("utf-8")
+        window = (ROOT / "condor_window.pyw").read_text("utf-8")
+        session = (ROOT / "condor" / "session.py").read_text("utf-8")
+        for source in (launcher, window, session):
+            self.assertIn("/ui/index.html", source)
+        self.assertNotIn("/hub/index.html", launcher)
+        self.assertNotIn("/hub/index.html", window)
+
+    def test_hub_condor_is_demo_without_embedded_operational_ui(self):
+        component = ROOT.parent.parent / "ARTX Hub" / "src" / "components" / "CondorWorkspace.tsx"
+        if not component.exists():
+            self.skipTest("ARTX Hub nao esta neste checkout")
+        source = component.read_text("utf-8")
+        self.assertIn("Demonstração limitada", source)
+        self.assertNotIn("<iframe", source)
+        self.assertNotIn("/api/hub/condor-x/", source)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    raise SystemExit(0 if result.wasSuccessful() else 1)

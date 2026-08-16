@@ -1,8 +1,7 @@
 """
-As mãos do Condor — acesso total ao PC, sem nada piscando na tela.
+As maos do Condor — capacidades especificas, limitadas pela politica local.
 
-Todo processo filho nasce com CREATE_NO_WINDOW: PowerShell, pip, o que for.
-Você nunca vê um prompt preto abrir e fechar.
+No Windows, processos auxiliares permitidos nascem sem uma janela de console.
 
 Cada função devolve sempre o mesmo formato:
     {"ok": bool, "saida": str}
@@ -19,22 +18,27 @@ import shutil
 import subprocess
 import sys
 import time
-from contextlib import redirect_stderr, redirect_stdout
+import platform
+import webbrowser
+import ipaddress
+import socket
+import uuid
+import json
 from pathlib import Path
-from typing import Any
+
+from condor.paths import CODE_ROOT, state_root
 
 log = logging.getLogger("condor.maos")
 
-ROOT = Path(__file__).parent.parent.parent
-DATA = ROOT / "data"
+ROOT = CODE_ROOT
+DATA = state_root()
 
 # A flag que impede a janela preta de aparecer.
 SEM_JANELA = 0x08000000 if sys.platform == "win32" else 0
 
 # User-Agent completo de navegador. Com um UA curto ("Mozilla/5.0") o
 # DuckDuckGo devolve uma página reduzida e a busca volta vazia.
-_NAVEGADOR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+_NAVEGADOR = "Condor/2.0 (assistente local; leitura publica)"
 
 
 def _startupinfo():
@@ -72,52 +76,6 @@ def _caminho(bruto: str) -> Path:
     return p if p.is_absolute() else (ROOT / p)
 
 
-# ── Shell e código ───────────────────────────────────────────────────────────
-
-def executar_powershell(comando: str, timeout: int = 90) -> dict:
-    try:
-        codigo, saida = _rodar(
-            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-             "-Command", comando],
-            timeout=timeout)
-        return {"ok": codigo == 0, "saida": (saida or "(sem saída)")[:6000]}
-    except subprocess.TimeoutExpired:
-        return _erro(f"Timeout de {timeout}s estourado.")
-    except Exception as exc:
-        return _erro(f"{type(exc).__name__}: {exc}")
-
-
-def executar_python(codigo: str, contexto: dict | None = None) -> dict:
-    """Roda Python no processo do Condor — enxerga a memória e o projeto."""
-    saida_buf, erro_buf = io.StringIO(), io.StringIO()
-    globais: dict[str, Any] = {
-        "__builtins__": __builtins__,
-        "ROOT": ROOT, "DATA": DATA, "Path": Path,
-        "os": os, "sys": sys, "re": re, "subprocess": subprocess, "shutil": shutil,
-    }
-    if contexto:
-        globais.update(contexto)
-    try:
-        with redirect_stdout(saida_buf), redirect_stderr(erro_buf):
-            exec(compile(codigo, "<condor>", "exec"), globais)
-        texto = (saida_buf.getvalue() + erro_buf.getvalue()).strip()
-        return _ok(texto[:6000] or "(rodou, sem saída)")
-    except Exception as exc:
-        return _erro(f"{type(exc).__name__}: {exc}\n{erro_buf.getvalue()[:1000]}")
-
-
-def instalar_pacote(pacote: str) -> dict:
-    if not re.fullmatch(r"[A-Za-z0-9._\-\[\]=<>,]+", pacote.strip()):
-        return _erro("Nome de pacote inválido.")
-    try:
-        codigo, saida = _rodar(
-            [sys.executable, "-m", "pip", "install", "--quiet",
-             "--disable-pip-version-check", pacote.strip()], timeout=300)
-        return {"ok": codigo == 0, "saida": (saida or f"{pacote} instalado.")[:1500]}
-    except Exception as exc:
-        return _erro(str(exc))
-
-
 # ── Arquivos ─────────────────────────────────────────────────────────────────
 
 def ler_arquivo(caminho: str, max_chars: int = 12000) -> dict:
@@ -138,6 +96,11 @@ def escrever_arquivo(caminho: str, conteudo: str, anexar: bool = False) -> dict:
     try:
         p = _caminho(caminho)
         p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and not anexar:
+            version_dir = DATA / "versions" / time.strftime("%Y-%m-%d")
+            version_dir.mkdir(parents=True, exist_ok=True)
+            backup = version_dir / f"{int(time.time())}_{uuid.uuid4().hex[:8]}_{p.name}"
+            shutil.copy2(p, backup)
         with open(p, "a" if anexar else "w", encoding="utf-8") as f:
             f.write(conteudo)
         verbo = "Anexado a" if anexar else "Escrito em"
@@ -197,18 +160,22 @@ def buscar_arquivos(padrao: str, raiz: str = "", limite: int = 60) -> dict:
 
 
 def deletar(caminho: str, recursivo: bool = False) -> dict:
+    """Move para a lixeira administrada pelo Condor; nao destroi imediatamente."""
     try:
         p = _caminho(caminho)
         if not p.exists():
             return _erro(f"Não existe: {p}")
-        if p.is_dir():
-            if recursivo:
-                shutil.rmtree(p)
-                return _ok(f"Pasta apagada: {p}")
-            p.rmdir()
-            return _ok(f"Pasta vazia apagada: {p}")
-        p.unlink()
-        return _ok(f"Arquivo apagado: {p}")
+        if p.is_dir() and any(p.iterdir()) and not recursivo:
+            return _erro("A pasta tem conteudo; confirme com recursivo=true.")
+        trash = DATA / "trash" / time.strftime("%Y-%m-%d")
+        trash.mkdir(parents=True, exist_ok=True)
+        target = trash / f"{int(time.time())}_{uuid.uuid4().hex[:8]}_{p.name}"
+        shutil.move(str(p), str(target))
+        manifest = target.with_name(target.name + ".condor.json")
+        manifest.write_text(json.dumps({
+            "original": str(p), "trashed": str(target), "timestamp": time.time()
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        return _ok(f"Movido para a lixeira do Condor: {p} -> {target}")
     except Exception as exc:
         return _erro(f"{type(exc).__name__}: {exc}")
 
@@ -239,13 +206,30 @@ def copiar(origem: str, destino: str) -> dict:
 def baixar(url: str, destino: str) -> dict:
     try:
         import urllib.request
+        _validar_url_publica(url)
         p = _caminho(destino)
         p.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Condor)"})
-        with urllib.request.urlopen(req, timeout=120) as r, open(p, "wb") as f:
-            shutil.copyfileobj(r, f)
+        temporary = p.with_name(p.name + f".{uuid.uuid4().hex}.part")
+        with _urlopen_public(req, timeout=120) as r, open(temporary, "wb") as f:
+            _validar_url_publica(r.geturl())
+            total = 0
+            while True:
+                chunk = r.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 100 * 1024 * 1024:
+                    raise ValueError("Download excede o limite seguro de 100 MB.")
+                f.write(chunk)
+        os.replace(temporary, p)
         return _ok(f"Baixado: {p} ({p.stat().st_size / 1024:.1f} KB)")
     except Exception as exc:
+        try:
+            if 'temporary' in locals() and temporary.exists():
+                temporary.unlink()
+        except OSError:
+            pass
         return _erro(f"{type(exc).__name__}: {exc}")
 
 
@@ -274,13 +258,21 @@ def abrir(alvo: str) -> dict:
     try:
         if re.match(r"^(https?://|www\.)", alvo) or re.match(r"^[\w-]+\.(com|br|org|net|io|dev)", alvo):
             url = alvo if alvo.startswith("http") else f"https://{alvo}"
-            os.startfile(url)
+            _validar_url_publica(url)
+            webbrowser.open(url)
             return _ok(f"Abri {url}")
 
         p = _caminho(alvo)
         if p.exists():
-            os.startfile(str(p))
+            _abrir_path(p)
             return _ok(f"Abri {p}")
+
+        if platform.system() != "Windows":
+            subprocess.Popen(
+                [alvo], cwd=str(ROOT), start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            return _ok(f"Abri {alvo}")
 
         # Nome de app: tenta o atalho do menu iniciar, depois o executável direto
         codigo, saida = _rodar(
@@ -308,6 +300,16 @@ def abrir(alvo: str) -> dict:
 
 def fechar_app(nome: str) -> dict:
     try:
+        if platform.system() != "Windows":
+            import psutil
+            matches = []
+            wanted = nome.lower().removesuffix(".exe")
+            for process in psutil.process_iter(["name"]):
+                current = (process.info.get("name") or "").lower().removesuffix(".exe")
+                if current == wanted:
+                    process.terminate()
+                    matches.append(str(process.pid))
+            return _ok(f"Solicitei encerramento de {len(matches)} processo(s): {nome}") if matches else _erro(f"Nao achei {nome}.")
         codigo, saida = _rodar(
             ["powershell", "-NoProfile", "-Command",
              f"Stop-Process -Name '{nome.replace('.exe', '')}' -Force -ErrorAction Stop"],
@@ -319,6 +321,10 @@ def fechar_app(nome: str) -> dict:
 
 def listar_janelas() -> dict:
     try:
+        if platform.system() != "Windows":
+            import psutil
+            names = sorted({(p.info.get("name") or "") for p in psutil.process_iter(["name"]) if p.info.get("name")})
+            return _ok("Processos visiveis no sistema:\n" + "\n".join(names[:120]))
         _, saida = _rodar(
             ["powershell", "-NoProfile", "-Command",
              "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | "
@@ -331,6 +337,8 @@ def listar_janelas() -> dict:
 
 def focar_janela(titulo: str) -> dict:
     try:
+        if platform.system() != "Windows":
+            return _erro("Focar janela requer um adaptador grafico especifico do Linux/macOS.")
         seguro = titulo.replace("'", "''")
         _, saida = _rodar(
             ["powershell", "-NoProfile", "-Command",
@@ -353,7 +361,7 @@ def info_sistema() -> dict:
         linhas = [
             f"CPU: {cpu:.0f}%  ({psutil.cpu_count(logical=True)} threads)",
             f"RAM: {ram.percent:.0f}% — {ram.used/1e9:.1f} de {ram.total/1e9:.1f} GB",
-            f"Disco C: {disco.percent:.0f}% — {disco.free/1e9:.1f} GB livres",
+            f"Disco principal: {disco.percent:.0f}% — {disco.free/1e9:.1f} GB livres",
             f"Ligado há {(time.time() - psutil.boot_time())/3600:.1f} h",
         ]
         try:
@@ -406,7 +414,7 @@ def screenshot() -> dict:
 def clicar(x: int, y: int, botao: str = "left", duplo: bool = False) -> dict:
     try:
         import pyautogui
-        pyautogui.FAILSAFE = False
+        pyautogui.FAILSAFE = True
         if duplo:
             pyautogui.doubleClick(x=x, y=y)
         else:
@@ -419,7 +427,7 @@ def clicar(x: int, y: int, botao: str = "left", duplo: bool = False) -> dict:
 def digitar(texto: str) -> dict:
     try:
         import pyautogui
-        pyautogui.FAILSAFE = False
+        pyautogui.FAILSAFE = True
         # write() não dá conta de acento; pro texto com acento vai pelo clipboard.
         if any(ord(c) > 127 for c in texto):
             escrever_clipboard(texto)
@@ -435,7 +443,7 @@ def atalho(teclas: str) -> dict:
     """Ex.: 'ctrl+c', 'alt+tab', 'win+d', 'enter'."""
     try:
         import pyautogui
-        pyautogui.FAILSAFE = False
+        pyautogui.FAILSAFE = True
         partes = [t.strip().lower() for t in re.split(r"[+\-]", teclas) if t.strip()]
         if not partes:
             return _erro("Combinação vazia.")
@@ -485,7 +493,7 @@ def buscar_web(consulta: str, limite: int = 6) -> dict:
         import urllib.request
         url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(consulta)
         req = urllib.request.Request(url, headers={"User-Agent": _NAVEGADOR})
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with _urlopen_public(req, timeout=20) as r:
             corpo = r.read().decode("utf-8", errors="replace")
 
         def _limpar(s: str) -> str:
@@ -507,8 +515,10 @@ def ler_site(url: str, max_chars: int = 8000) -> dict:
     try:
         import html
         import urllib.request
+        _validar_url_publica(url)
         req = urllib.request.Request(url, headers={"User-Agent": _NAVEGADOR})
-        with urllib.request.urlopen(req, timeout=25) as r:
+        with _urlopen_public(req, timeout=25) as r:
+            _validar_url_publica(r.geturl())
             corpo = r.read().decode("utf-8", errors="replace")
         corpo = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", corpo,
                        flags=re.DOTALL | re.IGNORECASE)
@@ -518,3 +528,45 @@ def ler_site(url: str, max_chars: int = 8000) -> dict:
         return _ok(texto[:max_chars])
     except Exception as exc:
         return _erro(f"{type(exc).__name__}: {exc}")
+
+
+def _abrir_path(path: Path) -> None:
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(str(path))
+    elif system == "Darwin":
+        subprocess.Popen(["open", str(path)], start_new_session=True)
+    else:
+        subprocess.Popen(["xdg-open", str(path)], start_new_session=True)
+
+
+def _validar_url_publica(url: str) -> None:
+    """Bloqueia acesso do agente a localhost, LAN e metadados de nuvem."""
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Somente URLs HTTP/HTTPS publicas sao permitidas.")
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or 443)}
+    except socket.gaierror as exc:
+        raise ValueError("Nao foi possivel resolver o endereco.") from exc
+    for raw in addresses:
+        ip = ipaddress.ip_address(raw)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise ValueError("O Condor bloqueou acesso a endereco interno ou reservado.")
+
+
+def _urlopen_public(request, timeout: int):
+    """Valida a URL inicial e cada redirecionamento antes de fazer a conexao."""
+    import urllib.request
+
+    initial = request.full_url if hasattr(request, "full_url") else str(request)
+    _validar_url_publica(initial)
+
+    class SafeRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            _validar_url_publica(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return urllib.request.build_opener(SafeRedirect()).open(request, timeout=timeout)

@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from condor.brain.offline import responder_offline
+
 log = logging.getLogger("condor.sessao")
 
 ROOT = Path(__file__).parent.parent
@@ -131,11 +133,12 @@ class Sessao:
             self.ultimo_contato = time.time()
 
             if not self.cerebro.pronto:
-                aviso = ("Não tem chave da OpenAI no arquivo .env, então eu não "
-                         "consigo pensar. Põe a chave lá que eu volto a funcionar.")
-                await self._evento("resposta.fim", texto=aviso)
+                resposta = await responder_offline(texto, self.memoria, self.guarda)
+                self.memoria.salvar_turno("user", texto)
+                self.memoria.salvar_turno("assistant", resposta)
+                await self._evento("resposta.fim", texto=resposta)
                 if por_voz:
-                    await self.voz.falar(aviso)
+                    await self.voz.falar(resposta)
                 await self._mudar_estado(OUVINDO)
                 return
 
@@ -144,7 +147,9 @@ class Sessao:
             self.historico.append({"role": "user", "content": texto})
             self._podar_historico()
 
-            referencia = await self.recall.contexto_para(texto)
+            referencia = ""
+            if self._cfg.cerebro.compartilhar_memoria_com_conector:
+                referencia = await self.recall.contexto_para(texto)
 
             async def on_token(t: str) -> None:
                 await self._evento("resposta.token", texto=t)
@@ -160,8 +165,8 @@ class Sessao:
             self.memoria.salvar_turno("assistant", resposta)
             self.ultimo_contato = time.time()
 
-            # Aprende em segundo plano — você não espera por isso.
-            self.extrator.enfileirar(texto, resposta)
+            if self._cfg.cerebro.aprendizado_automatico_por_conector:
+                self.extrator.enfileirar(texto, resposta)
 
             if por_voz and resposta:
                 await self._mudar_estado(FALANDO)
@@ -242,23 +247,31 @@ class Sessao:
     # ── A janela ───────────────────────────────────────────────────────────
 
     def _abrir_janela(self) -> None:
-        if self._janela is not None and self._janela.poll() is None:
-            return    # já está aberta
         script = ROOT / "condor_window.pyw"
         if not script.exists():
             return
         pythonw = Path(sys.executable).with_name("pythonw.exe")
-        executavel = str(pythonw if pythonw.exists() else sys.executable)
-        url = f"http://{self._cfg.servidor.host}:{self._cfg.servidor.porta}"
+        executavel = str(pythonw if sys.platform == "win32" and pythonw.exists() else sys.executable)
+        url = f"http://{self._cfg.servidor.host}:{self._cfg.servidor.porta}/ui/index.html"
         try:
-            self._janela = subprocess.Popen(
-                [executavel, str(script), url],
-                cwd=str(ROOT),
-                creationflags=0x08000000,      # CREATE_NO_WINDOW
-            )
-            log.info("Janela aberta.")
+            options = {"cwd": str(ROOT)}
+            if sys.platform == "win32":
+                options["creationflags"] = 0x08000000
+            else:
+                options["start_new_session"] = True
+            process = subprocess.Popen([executavel, str(script), url], **options)
+            if self._janela is None or self._janela.poll() is not None:
+                self._janela = process
+                log.info("Aplicativo local aberto.")
+            else:
+                log.info("Aplicativo local trazido para frente.")
         except Exception as exc:
             log.error("Não consegui abrir a janela: %s", exc)
+
+    def abrir_aplicativo(self) -> bool:
+        """Abre ou traz para frente somente a interface operacional local."""
+        self._abrir_janela()
+        return self._janela is not None and self._janela.poll() is None
 
     def _fechar_janela(self) -> None:
         if self._janela is None:
@@ -276,48 +289,27 @@ class Sessao:
 
     # ── A senha ────────────────────────────────────────────────────────────
 
-    async def _pedir_senha(self, motivo: str, categoria: str) -> str | None:
-        """Chamado pela guarda quando a ação é catastrófica.
-        Ouve por voz e aceita digitado na janela — o que vier primeiro."""
+    async def _pedir_senha(self, motivo: str, desafio: str) -> str | None:
+        """Aprovacao local digitada.
+
+        Voz nunca autoriza uma acao sensivel: gravacoes podem ser reproduzidas
+        e transcricoes passam por um provedor externo.
+        """
         estado_antes = self.estado
         await self._mudar_estado(SENHA)
-        await self._evento("senha.pedido", motivo=motivo, categoria=categoria)
+        await self._evento("senha.pedido", motivo=motivo, desafio=desafio)
 
         laco = asyncio.get_running_loop()
         self._futuro_senha = laco.create_future()
 
-        self.escuta.silenciar()
-        await self.voz.falar(motivo)
-        self.escuta.voltar_a_ouvir()
-
-        async def _por_voz() -> str | None:
-            wav = await asyncio.to_thread(
-                self.escuta.capturar_fala, float(self._cfg.seguranca.timeout_senha))
-            if not wav:
-                return None
-            return await self.ouvidos.transcrever(wav)
-
-        tarefa_voz = asyncio.create_task(_por_voz())
-        tarefas = {tarefa_voz, self._futuro_senha}
-
         try:
-            prontas, _ = await asyncio.wait(
-                tarefas, timeout=float(self._cfg.seguranca.timeout_senha),
-                return_when=asyncio.FIRST_COMPLETED)
-            resposta = None
-            for t in prontas:
-                try:
-                    valor = t.result()
-                except Exception:
-                    valor = None
-                if valor:
-                    resposta = valor
-                    break
-            return resposta
+            return await asyncio.wait_for(
+                self._futuro_senha,
+                timeout=float(self._cfg.seguranca.timeout_aprovacao),
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            return None
         finally:
-            for t in tarefas:
-                if not t.done():
-                    t.cancel()
             self._futuro_senha = None
             await self._evento("senha.fim")
             await self._mudar_estado(estado_antes if self.acordado else DORMINDO)
@@ -335,9 +327,12 @@ class Sessao:
             "acordado": self.acordado,
             "restam": self.segundos_restantes(),
             "escuta_ativa": self.escuta.ativa if self.escuta else False,
+            "stt_local_pronto": bool(getattr(self.ouvidos, "pronto", False)),
+            "tts_local_pronto": bool(getattr(self.voz, "pronto", False)),
             "palavra": self.escuta.palavra if self.escuta else "",
             "motivo_escuta": self.escuta.motivo_inativa if self.escuta else "",
-            "modelo": self._cfg.cerebro.modelo,
+            "modelo": self.cerebro.modelo_ativo,
+            "provedor": self.cerebro.provedor,
             "cerebro_pronto": self.cerebro.pronto,
             "timeout": self._cfg.sessao.timeout_segundos,
         }

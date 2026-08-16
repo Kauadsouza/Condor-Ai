@@ -38,14 +38,14 @@ const CondorErros = (() => {
     const cartoes = [];
 
     if (!s.cerebro) {
-      cartoes.push(cartao('crit', 'SEM CÉREBRO', 'OPENAI',
-        'Não tem chave da OpenAI configurada — sem ela eu não penso.',
-        'Abra o arquivo .env na pasta do Condor e preencha OPENAI_API_KEY=sk-...'));
+      cartoes.push(cartao('warn', 'MODO LOCAL', 'CONDOR',
+        'Nenhum conector generativo está ativo. Os comandos locais seguros continuam disponíveis.',
+        'Desbloqueie o cofre e adicione uma chave opcional se quiser raciocínio generativo.'));
     }
     if (!s.escuta) {
       cartoes.push(cartao('warn', 'ESCUTA DESLIGADA', 'VOZ',
         s.motivo_escuta || 'O detector de voz não subiu.',
-        'Preencha PICOVOICE_ACCESS_KEY no .env (a conta é grátis em console.picovoice.ai).'));
+        'Adicione a chave opcional ao cofre e um arquivo condor*.ppn em ~/.condor/wake.'));
     }
 
     (s.falhas || []).forEach(f => {

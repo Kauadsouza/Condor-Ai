@@ -1,23 +1,22 @@
-# CONDOR — instale com:  pip install -r requirements.txt
+# Condor - faixas travadas por versao principal para reduzir risco de supply chain.
+openai>=2.50,<3
+cryptography>=48,<49
 
-# Cérebro
-openai>=1.55.0
-python-dotenv>=1.0.0
+fastapi>=0.136,<1
+uvicorn[standard]>=0.47,<1
+pywebview>=6.2,<7
+pydantic>=2.13,<3
+pyyaml>=6.0,<7
 
-# Servidor e interface
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
-pywebview>=5.0            # a janela própria, sem barra de navegador
-pydantic>=2.6.0
-pyyaml>=6.0
+pvporcupine>=4.0,<5
+pvrecorder>=1.2,<2
 
-# Escuta sempre ligada (wake word local)
-pvporcupine>=3.0.0
-pvrecorder>=1.2.0
+psutil>=7.2,<8
+pyautogui>=0.9.54,<1
+pyperclip>=1.11,<2
+pillow>=12.2,<13
+pypdf>=6.14,<7
 
-# Mãos no PC
-psutil>=5.9.0             # estado da máquina
-pyautogui>=0.9.54         # mouse e teclado
-pyperclip>=1.8.2          # área de transferência
-pillow>=10.0.0            # screenshot
-pypdf>=4.0.0              # ler PDF
+# Voz totalmente local. Os modelos ficam fora do repositorio em ~/.condor/models.
+faster-whisper>=1.2,<2
+piper-tts>=1.7,<2

@@ -11,7 +11,8 @@ const CondorWS = (() => {
   const inscritos = {};
   const URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
 
-  function conectar() {
+  async function conectar() {
+    await CondorSession.ready;
     ws = new WebSocket(URL);
 
     ws.onopen = () => {

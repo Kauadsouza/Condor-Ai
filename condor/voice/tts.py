@@ -1,21 +1,22 @@
-"""
-Voz — o Condor falando, pela API da OpenAI.
-
-O áudio toca direto no alto-falante pelo winsound (nativo do Windows, sem
-dependência e sem janela). Enquanto ele fala, a escuta fica muda: senão a
-própria voz dele no alto-falante dispararia a wake word de novo.
-"""
+"""Voz neural privada do Condor com Piper executado no próprio PC."""
 
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import threading
+import wave
+from pathlib import Path
+
+from condor.paths import state_root
 
 log = logging.getLogger("condor.voz")
-
-CUSTO_POR_MILHAO_CHARS = 15.0     # tts-1
 
 if sys.platform == "win32":
     import winsound
@@ -24,14 +25,12 @@ else:
 
 
 def _preparar(texto: str) -> str:
-    """Tira o que não se fala: markdown, caminho gigante, bloco de código."""
     t = re.sub(r"```.*?```", " (código na tela) ", texto, flags=re.DOTALL)
     t = re.sub(r"`([^`]*)`", r"\1", t)
     t = re.sub(r"[*_#>|]", "", t)
     t = re.sub(r"https?://\S+", "o link que está na tela", t)
     t = re.sub(r"[A-Za-z]:\\[^\s]{25,}", "o caminho que está na tela", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
+    return re.sub(r"\s+", " ", t).strip()
 
 
 class Voz:
@@ -39,63 +38,100 @@ class Voz:
         self._cfg = config
         self._cerebro = cerebro
         self._tocando = False
+        self._voice = None
+        self._lock = threading.Lock()
+
+    @property
+    def model_path(self) -> Path:
+        configured = str(self._cfg.voz.modelo_tts or "").strip()
+        if configured in {"", "tts-1", "pt_BR-faber-medium"}:
+            configured = "pt_BR-faber-medium"
+        candidate = Path(configured).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return state_root() / "models" / "tts" / f"{configured}.onnx"
+
+    @property
+    def pronto(self) -> bool:
+        return self.model_path.is_file() and Path(str(self.model_path) + ".json").is_file()
 
     @property
     def tocando(self) -> bool:
         return self._tocando
 
+    def _carregar(self):
+        if self._voice is not None:
+            return self._voice
+        if not self.pronto:
+            raise RuntimeError(f"voz Piper ausente em {self.model_path}")
+        from piper import PiperVoice
+
+        self._voice = PiperVoice.load(self.model_path, use_cuda=False)
+        return self._voice
+
+    def _sintetizar_local(self, texto: str) -> bytes:
+        from piper.config import SynthesisConfig
+
+        with self._lock:
+            voice = self._carregar()
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as wav_file:
+                voice.synthesize_wav(
+                    texto,
+                    wav_file,
+                    syn_config=SynthesisConfig(
+                        length_scale=max(0.55, min(1.8, 1 / self._cfg.voz.velocidade)),
+                        normalize_audio=True,
+                        volume=1.0,
+                    ),
+                )
+            return buffer.getvalue()
+
     async def sintetizar(self, texto: str) -> bytes | None:
         limpo = _preparar(texto)
         if not limpo:
             return None
-        # Resposta muito longa vira maratona falada. Corta no fim de frase.
         if len(limpo) > 1200:
             corte = limpo[:1200].rsplit(".", 1)[0]
             limpo = (corte or limpo[:1200]) + ". O resto está na tela."
-
         try:
-            resposta = await self._cerebro.cliente.audio.speech.create(
-                model=self._cfg.voz.modelo_tts,
-                voice=self._cfg.voz.voz,
-                input=limpo,
-                speed=self._cfg.voz.velocidade,
-                response_format="wav",
-            )
-            audio = resposta.content
+            return await asyncio.to_thread(self._sintetizar_local, limpo)
         except Exception as exc:
-            log.error("TTS falhou: %s", exc)
+            log.error("TTS local falhou: %s", exc)
             return None
 
+    def _tocar_bloqueante(self, audio: bytes) -> bool:
         try:
-            self._cerebro.memoria.registrar_uso(
-                self._cfg.voz.modelo_tts, 0, 0,
-                len(limpo) * CUSTO_POR_MILHAO_CHARS / 1_000_000)
-        except Exception:
-            pass
-        return audio
-
-    def _tocar_bloqueante(self, audio: bytes) -> None:
-        if winsound is None:
-            return
-        try:
-            winsound.PlaySound(audio, winsound.SND_MEMORY)
+            if winsound is not None:
+                winsound.PlaySound(audio, winsound.SND_MEMORY)
+                return True
+            player = next((name for name in ("pw-play", "paplay", "aplay", "afplay") if shutil.which(name)), None)
+            if not player:
+                log.error("Nenhum tocador WAV local encontrado.")
+                return False
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as stream:
+                stream.write(audio)
+                temporary = Path(stream.name)
+            try:
+                result = subprocess.run([player, str(temporary)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180, check=False)
+                return result.returncode == 0
+            finally:
+                temporary.unlink(missing_ok=True)
         except Exception as exc:
-            log.error("Não consegui tocar o áudio: %s", exc)
+            log.error("Nao consegui tocar o audio: %s", exc)
+            return False
 
     async def falar(self, texto: str) -> bool:
-        """Sintetiza e toca até o fim. Devolve se conseguiu falar."""
         audio = await self.sintetizar(texto)
         if not audio:
             return False
         self._tocando = True
         try:
-            await asyncio.to_thread(self._tocar_bloqueante, audio)
+            return await asyncio.to_thread(self._tocar_bloqueante, audio)
         finally:
             self._tocando = False
-        return True
 
     def calar(self) -> None:
-        """Corta a fala no meio — usado quando você chama ele de novo."""
         if winsound is not None:
             try:
                 winsound.PlaySound(None, winsound.SND_PURGE)

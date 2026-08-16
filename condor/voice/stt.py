@@ -1,23 +1,19 @@
-"""
-Ouvidos — transforma o WAV gravado em texto, pela API da OpenAI.
-
-Só o trecho que você falou depois de chamar o Condor sobe pra nuvem.
-O resto do tempo o microfone fica sendo processado localmente pelo Porcupine.
-"""
+"""Transcrição privada do Condor com Faster Whisper executado no próprio PC."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
+import os
+import threading
 import wave
+from pathlib import Path
+
+from condor.paths import state_root
 
 log = logging.getLogger("condor.ouvidos")
 
-# whisper-1 cobra por minuto de áudio.
-CUSTO_POR_MINUTO = 0.006
-
-# Alucinação clássica do Whisper em áudio curto/silencioso: ele "ouve" a
-# assinatura de legendas de vídeo. Se vier só isso, foi ruído.
 LIXO = {
     "legendas pela comunidade amara.org", "legendado pela comunidade amara.org",
     "subtitles by the amara.org community", "obrigado", "tchau", "...",
@@ -25,51 +21,81 @@ LIXO = {
 }
 
 
-def _duracao(wav: bytes) -> float:
+def _duracao(wav: bytes) -> float | None:
+    """Duração quando é WAV. WebM/Opus do navegador é aceito pelo PyAV depois."""
     try:
-        with wave.open(io.BytesIO(wav), "rb") as w:
-            return w.getnframes() / float(w.getframerate() or 16000)
+        with wave.open(io.BytesIO(wav), "rb") as stream:
+            return stream.getnframes() / float(stream.getframerate() or 16000)
     except Exception:
-        return 0.0
+        return None
 
 
 class Ouvidos:
     def __init__(self, config, cerebro) -> None:
         self._cfg = config
         self._cerebro = cerebro
+        self._model = None
+        self._lock = threading.Lock()
+
+    @property
+    def model_path(self) -> Path:
+        configured = str(self._cfg.voz.modelo_stt or "").strip()
+        if configured in {"", "whisper-1", "small", "faster-whisper-small"}:
+            configured = "faster-whisper-small"
+        candidate = Path(configured).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return state_root() / "models" / "stt" / configured
+
+    @property
+    def pronto(self) -> bool:
+        return (self.model_path / "model.bin").is_file()
+
+    def _carregar(self):
+        if self._model is not None:
+            return self._model
+        if not self.pronto:
+            raise RuntimeError(f"modelo STT local ausente em {self.model_path}")
+        from faster_whisper import WhisperModel
+
+        # A GPU fica reservada ao cérebro/visão; o STT int8 evita estouro de VRAM.
+        self._model = WhisperModel(
+            str(self.model_path),
+            device="cpu",
+            compute_type="int8",
+            cpu_threads=max(2, min(8, (os.cpu_count() or 4) - 1)),
+            num_workers=1,
+            local_files_only=True,
+        )
+        return self._model
+
+    def _transcrever_local(self, audio: bytes) -> str:
+        with self._lock:
+            model = self._carregar()
+            segments, _info = model.transcribe(
+                io.BytesIO(audio),
+                language="pt",
+                beam_size=5,
+                best_of=5,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 420},
+                condition_on_previous_text=False,
+                initial_prompt="Condor, Kauã, Oxford, computador, Linux, projeto e canal KauaArtx.",
+            )
+            return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
 
     async def transcrever(self, wav: bytes) -> str:
         if not wav:
             return ""
-
         segundos = _duracao(wav)
-        if segundos < 0.35:
-            return ""      # clique, tosse, batida na mesa
-
-        arquivo = io.BytesIO(wav)
-        arquivo.name = "fala.wav"
-
+        if segundos is not None and segundos < 0.35:
+            return ""
         try:
-            resposta = await self._cerebro.cliente.audio.transcriptions.create(
-                model=self._cfg.voz.modelo_stt,
-                file=arquivo,
-                language=self._cfg.voz.idioma,
-                # Dá contexto ao Whisper: nomes próprios que ele erraria sozinho.
-                prompt="Condor, Kauã, PowerShell, Windows, Python, arquivo, pasta.",
-            )
+            texto = await asyncio.to_thread(self._transcrever_local, wav)
         except Exception as exc:
-            log.error("Transcrição falhou: %s", exc)
+            log.error("Transcrição local falhou: %s", exc)
             return ""
-
-        try:
-            self._cerebro.memoria.registrar_uso(
-                self._cfg.voz.modelo_stt, 0, 0, (segundos / 60) * CUSTO_POR_MINUTO)
-        except Exception:
-            pass
-
-        texto = (getattr(resposta, "text", "") or "").strip()
         if texto.lower().strip(" .!") in LIXO:
-            log.debug("Transcrição descartada (alucinação de silêncio): %r", texto)
             return ""
-        log.info("Ouvi: %s", texto[:120])
+        log.info("Ouvi localmente: %s", texto[:120])
         return texto

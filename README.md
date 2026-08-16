@@ -1,182 +1,149 @@
-# 🦅 CONDOR
+# Condor 2.0
 
-Assistente pessoal com acesso total ao seu PC. Fica dormindo no fundo do
-Windows até você chamar pelo nome. Aí ele acorda, escuta, resolve e volta a
-dormir sozinho.
+Condor e um assistente pessoal local, portavel e controlado pelo proprio dono.
+O mesmo codigo roda em Windows e Linux; configuracoes e dados privados ficam em
+`~/.condor` (ou no caminho definido por `CONDOR_HOME`). O nucleo nao usa conta
+Microsoft, celular, nuvem obrigatoria nem servico de login externo.
 
-Cérebro: **GPT-4o** (API da OpenAI).
-Memória: **SQLite na sua máquina** — ele aprende sobre você e nunca esquece.
+## O que esta pronto
 
----
+- servidor FastAPI apenas em `127.0.0.1`, protegido por sessao local e politica
+  de origem;
+- interface local autocontida, sem CDN;
+- cofre AES-256-GCM com chave derivada por Scrypt;
+- memoria SQLite somente em RAM durante o uso e snapshot cifrado em disco;
+- identidade Ed25519 propria do dispositivo;
+- manifesto assinado para detectar alteracoes no codigo;
+- auditoria encadeada por hash;
+- perfis de autonomia, simulacao e pastas permitidas;
+- aprovacoes sensiveis exatas, digitadas, temporarias e de uso unico;
+- interruptor de emergencia;
+- exclusao recuperavel pela lixeira privada do Condor;
+- ferramentas de shell, Python arbitrario e instalacao automatica fora do
+  catalogo da IA;
+- modo local deterministico quando nenhuma IA estiver conectada;
+- conector generativo local por loopback, sem login externo, para qualquer
+  servidor compativel com a Responses API;
+- ARTX Hub original servido localmente em `/hub`, mantendo Site, Videos, SAT e
+  University Path independentes;
+- aba exclusiva do Condor dentro do Hub como demonstracao limitada, sem acesso
+  a conversa, memoria, arquivos ou acoes do PC;
+- aplicativo Condor em janela propria, aberto pelo atalho do sistema e com
+  conversa, memoria, projetos, diagnostico e controle local de autonomia;
+- Condor X como unico projeto atual do laboratorio, com digital twin 3D e
+  modulos corporais clicaveis;
+- voz privada com Faster Whisper e Piper, incluindo push-to-talk no navegador;
+- visao privada com `qwen3-vl:2b` para capturas autorizadas;
+- conector opcional pela Responses API, sempre com `store=false`;
+- memoria antiga e aprendizado por conector desligados por padrao, para fatos
+  pessoais nao sairem do PC sem escolha explicita;
+- palavra de ativacao passiva opcional e exclusivamente **Condor**; o clique no
+  orbe funciona sem chave ou conta externa.
 
-## Como funciona no dia a dia
+## Limites honestos
 
+O Condor e independente na identidade, memoria, politica, interface, voz,
+visao e execucao. Os modelos instalados neste PC funcionam sem internet depois
+do download inicial. Sem um modelo generativo, o modo deterministico continua
+disponivel.
+
+Para um modelo no proprio PC, configure em `~/.condor/config.yaml`:
+
+```yaml
+cerebro:
+  endpoint_local: http://127.0.0.1:11434/v1
+  modelo_local: nome-do-modelo-instalado
 ```
-   DORMINDO ──── você fala "Condor, ..." ────► ACORDADO
-      ▲                                            │
-      └────────── 2 min sem te ouvir ──────────────┘
+
+Quando `modelo_local` esta preenchido, o conector local tem prioridade sobre a
+chave externa. O servidor local escolhido precisa implementar a Responses API.
+Neste PC, o perfil validado usa `qwen3:4b-instruct` e `qwen3-vl:2b`; os pesos ficam em
+`~/.condor/models`, fora do repositorio e sob controle local.
+
+VPN nao aumenta a seguranca de um programa que roda em um unico PC. Por isso,
+esta versao escuta somente no proprio computador. A pasta `deploy/wireguard`
+deixa a ligacao privada preparada para quando existir um segundo computador ou
+servidor que tambem seja seu.
+
+## Instalar
+
+Requer Python 3.11 ou superior.
+
+Windows (PowerShell):
+
+```powershell
+.\scripts\install.ps1
+.\scripts\install_local_ai.ps1
+# Em outro terminal, apenas se o modelo ainda nao estiver instalado:
+.\scripts\run_local_ai.ps1
+.\scripts\pull_local_model.ps1
+# Depois, o comando abaixo inicia Condor e a IA local juntos:
+.\scripts\run.ps1
 ```
 
-1. Ele fica ouvindo o microfone o tempo todo, **localmente**, esperando a
-   palavra de chamada. Dormindo não gasta um centavo de API.
-2. Você fala **"Condor"** e emenda o pedido. Ele grava até você parar de falar.
-3. A janela abre, ele pensa, age no PC se precisar e responde falando.
-4. Passados 2 minutos sem você chamar de novo, a janela fecha e ele dorme.
+O instalador cria o atalho **Condor** na Area de Trabalho. Ele inicia o nucleo
+local quando necessario e abre diretamente o aplicativo, sem passar pelo Hub.
 
-Todo pedido começa chamando o nome dele. É isso que separa "estou falando com
-o Condor" de "estou falando na sala".
-
----
-
-## O que ele faz no PC
-
-Acesso total, de verdade. Nenhuma janela preta piscando na tela — todo
-processo filho nasce escondido.
-
-| | |
-|---|---|
-| **Shell** | qualquer comando PowerShell |
-| **Código** | executa Python na hora |
-| **Arquivos** | ler, escrever, criar, mover, copiar, apagar, procurar no PC inteiro |
-| **Programas** | abrir, fechar, listar e trazer janelas pra frente |
-| **Tela** | tira print e **enxerga** o que tem nela |
-| **Mouse e teclado** | clicar, digitar, atalhos |
-| **Web** | buscar e ler páginas |
-| **Sistema** | CPU, RAM, disco, bateria, processos |
-| **Memória** | consultar tudo que já aprendeu sobre você |
-
----
-
-## A única trava
-
-Ele faz tudo sozinho, sem pedir licença. **Exceto** quatro coisas, que exigem
-sua senha falada em voz alta:
-
-- destruir o sistema (`format`, `diskpart`, apagar o registro)
-- apagar arquivos em massa (remoção recursiva de pasta grande ou raiz de disco)
-- desligar ou reiniciar o PC
-- mexer em firewall, antivírus ou redes salvas
-
-Ele fala *"isso vai apagar arquivos em massa, me diz a senha"*, você responde
-falando (ou digita na janela). Errou ou ficou quieto, a ação não acontece.
-
-Toda ação — liberada ou barrada — fica registrada em `data/auditoria.log`.
-
-Senha inicial: `teste`. Troque em `.env` (`CONDOR_SENHA`).
-
----
-
-## Memória
-
-Ele aprende sozinho. Depois de cada conversa, um modelo barato relê o que foi
-dito e decide o que vale guardar pra sempre: quem você é, no que trabalha, o
-que prefere, sua rotina, seus projetos, o que vocês combinaram.
-
-Nada disso é regra fixa — é julgamento do modelo, e por isso não enche o banco
-de lixo.
-
-Guardado em `data/condor.db` (SQLite, na sua máquina):
-
-| tabela | o que é |
-|---|---|
-| `fatos` | o que ele sabe sobre você, com busca por texto e por significado |
-| `entidades` / `relacoes` | pessoas, projetos e lugares, e como se ligam (o grafo da tela Memória) |
-| `conversas` | histórico completo, por sessão |
-| `acoes` | auditoria de tudo que ele rodou no PC |
-| `uso_api` | quanto cada chamada custou |
-
----
-
-## Instalação
-
-Veja **[COMO_USAR.md](COMO_USAR.md)** — passo a passo, do zero, incluindo como
-pegar a chave da OpenAI e como treinar a palavra "Condor".
-
-Resumo:
+Linux:
 
 ```bash
-pip install -r requirements.txt
+bash scripts/install.sh
+# Em outro terminal, apenas se o modelo ainda nao estiver instalado:
+bash scripts/run_local_ai.sh
+bash scripts/pull_local_model.sh
+# Depois, o comando abaixo inicia Condor e a IA local juntos:
+bash scripts/run.sh
 ```
 
-Preencha o `.env`, depois dois cliques em `condor_launcher.pyw`.
+O instalador cria **Condor** no menu de aplicativos Linux e, quando existir,
+na pasta Desktop.
 
----
+No primeiro acesso, crie uma frase secreta com pelo menos 12 caracteres. Nao
+existe recuperacao por Microsoft, Google, celular ou por uma empresa externa.
+Guarde essa frase fora do PC.
 
-## Estrutura
+## Testar
 
-```
-condor/
-├── config.py          configuração (data/config.yaml + .env)
-├── session.py         o ciclo dormir/acordar
-├── server.py          FastAPI + WebSocket
-├── brain/
-│   ├── client.py      OpenAI: streaming e loop de ferramentas
-│   ├── tools.py       as 26 ferramentas que o modelo pode chamar
-│   └── persona.py     quem ele é
-├── actions/
-│   ├── executor.py    as mãos: shell, arquivos, mouse, tela, web
-│   └── guard.py       a trava por senha + auditoria
-├── memory/
-│   ├── db.py          SQLite com FTS5 e embeddings
-│   ├── recall.py      o que entra na conversa
-│   └── extractor.py   o que vale guardar pra sempre
-├── voice/
-│   ├── wake.py        a escuta local sempre ligada
-│   ├── stt.py         transcrição
-│   └── tts.py         a voz dele
-└── ui/                a interface (HUD)
-
-testes/
-└── rodar_testes.py    119 testes, sem gastar API
+```powershell
+.\.venv\Scripts\python.exe testes\rodar_testes.py
 ```
 
----
-
-## Testes
+ou, no Linux:
 
 ```bash
-python testes/rodar_testes.py
+.venv/bin/python testes/rodar_testes.py
 ```
 
-119 verificações que rodam **sem chave nenhuma e sem gastar um centavo**:
-usam um banco temporário, não tocam na sua memória e não rodam nada
-destrutivo. Sai com código 1 se algo quebrar.
+Os testes nao usam microfone, tela, rede nem API paga.
 
-O que eles cobrem:
+## Estado privado
 
-- **A trava** — 21 comandos catastróficos que *têm* que pedir senha e 12 de
-  uso normal que *não podem* ser barrados. Foi esse teste que pegou o furo
-  em que remoção recursiva na raiz do disco passava livre.
-- **A senha** — as variações que o Whisper produz ao transcrever sua voz
-  ("A senha é teste", "Teste.", "TESTE").
-- **O fluxo da guarda** — inclusive falha fechada: sem canal pra perguntar, a
-  ação não acontece.
-- **As ferramentas** — shell, Python, arquivos com acento, clipboard, sistema.
-- **O silêncio** — garante que nenhum subprocesso pode abrir janela.
-- **Os schemas** — cada ferramenta declarada bate com a assinatura real da
-  função Python. Sem isso o modelo manda argumento que estoura na execução.
-- **A memória** — gravar, corrigir sem duplicar, buscar por texto, grafo,
-  auditoria, custo e embeddings.
+Estrutura padrao:
 
-Rode antes de confiar em qualquer mudança sua no código.
+```text
+~/.condor/
+  config.yaml
+  security/vault.json
+  security/owner.json
+  security/code-manifest.json
+  memory/condor.memory.enc
+  audit/actions.jsonl
+  trash/
+  versions/
+  logs/
+  wake/condor*.ppn
+```
 
----
+Para usar um volume proprio:
 
-## Privacidade — leia
+```powershell
+$env:CONDOR_HOME = "D:\MeuCofre\Condor"
+```
 
-A versão antiga rodava um modelo local e nada saía do PC. **Esta não.**
+```bash
+export CONDOR_HOME="/mnt/meu-cofre/condor"
+```
 
-Vai pra OpenAI: o que você fala depois de chamar ele, as respostas, e os fatos
-da memória que forem relevantes pro pedido (entram como contexto).
-
-**Não** vai: o áudio enquanto ele está dormindo (o detector é local), nem o
-conteúdo do seu PC que ele não precisou abrir pra te responder.
-
-Seu banco de memória, os logs e a auditoria ficam só na sua máquina.
-
----
-
-## Custo
-
-Você paga por uso à OpenAI. O contador na tela mostra o gasto do dia.
-Dormindo, o custo é zero — é por isso que a sessão fecha sozinha.
+Veja [SECURITY.md](SECURITY.md), [ARCHITECTURE.md](ARCHITECTURE.md),
+[COMO_USAR.md](COMO_USAR.md), [OPERATIONS.md](OPERATIONS.md) e
+[CONDOR_X.md](CONDOR_X.md).

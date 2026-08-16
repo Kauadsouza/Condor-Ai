@@ -1,21 +1,17 @@
 # ── Segredos — NUNCA subir ────────────────────────────────────────
 .env
+.env.*
+!.env.example
 *.key
+*.pem
 *.secret
-# A palavra treinada é vinculada à SUA conta Picovoice — não sobe.
-# O LEIA-ME da pasta continua versionado pra explicar o que vai ali.
-data/wake/*.ppn
-data/wake/*.pv
 
 # ── Dados pessoais ────────────────────────────────────────────────
-# A memória é sua: o que ele aprendeu sobre você não vai pro repositório.
-data/*.db
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
-data/config.yaml
-data/screenshots/
-data/auditoria.log
+# O padrao e ~/.condor, mas esta regra protege quem apontar CONDOR_HOME
+# para dentro do checkout.
+/.condor/
+/runtime/
+/data/
 
 # ── Logs e temporários ────────────────────────────────────────────
 *.log
@@ -34,6 +30,9 @@ build/
 .venv/
 venv/
 env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # ── OS ────────────────────────────────────────────────────────────
 .DS_Store
@@ -42,5 +41,6 @@ desktop.ini
 
 # ── IDE ───────────────────────────────────────────────────────────
 .vscode/settings.json
+.claude/
 .idea/
 *.sublime-workspace

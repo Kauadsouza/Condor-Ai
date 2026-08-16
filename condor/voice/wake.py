@@ -8,9 +8,9 @@ Uma thread só, dona do microfone, fazendo duas coisas:
 Enquanto ela espera, nada sai do PC: o Porcupine roda local. Só o trecho
 gravado depois do chamado é enviado pra transcrição.
 
-A palavra "Condor" precisa ser treinada por você no console.picovoice.ai
-(grátis) e o arquivo .ppn colocado em data/wake/. Sem ele, cai na palavra
-embutida do config (padrão: "jarvis").
+A palavra "Condor" precisa de um modelo local .ppn compativel com o sistema,
+colocado em ~/.condor/wake/. Sem esse arquivo, a ativacao por palavra fica
+desligada. O assistente nunca responde por outro nome.
 """
 
 from __future__ import annotations
@@ -25,11 +25,13 @@ import wave
 from pathlib import Path
 from typing import Callable
 
+from condor.paths import state_root
+
 log = logging.getLogger("condor.escuta")
 
 TAXA = 16000        # Porcupine só trabalha em 16 kHz mono
 ROOT = Path(__file__).parent.parent.parent
-PASTA_WAKE = ROOT / "data" / "wake"
+PASTA_WAKE = state_root() / "wake"
 
 
 def _para_wav(quadros: list[list[int]]) -> bytes:
@@ -115,7 +117,7 @@ class Escuta(threading.Thread):
 
         chave = self._cfg.chave_picovoice
         if not chave:
-            self.motivo_inativa = "sem PICOVOICE_ACCESS_KEY no .env"
+            self.motivo_inativa = "chave local do detector de voz ausente no cofre"
             log.warning("Escuta desligada: %s", self.motivo_inativa)
             return
 
@@ -183,27 +185,23 @@ class Escuta(threading.Thread):
     # ── Peças ──────────────────────────────────────────────────────────────
 
     def _criar_porcupine(self, pvporcupine, chave: str):
-        """Prefere a palavra 'Condor' treinada por você; senão usa a embutida."""
+        """Carrega exclusivamente um modelo treinado para a palavra Condor."""
         PASTA_WAKE.mkdir(parents=True, exist_ok=True)
-        ppn = sorted(PASTA_WAKE.glob("*.ppn"))
+        ppn = sorted(PASTA_WAKE.glob("condor*.ppn"))
         pv = sorted(PASTA_WAKE.glob("*.pv"))
 
-        if ppn:
-            self.palavra = ppn[0].stem.split("_")[0].capitalize()
-            log.info("Usando palavra treinada: %s", ppn[0].name)
-            return pvporcupine.create(
-                access_key=chave,
-                keyword_paths=[str(p) for p in ppn],
-                model_path=str(pv[0]) if pv else None,
-                sensitivities=[self._cfg.escuta.sensibilidade] * len(ppn),
+        if not ppn:
+            raise RuntimeError(
+                f"modelo condor*.ppn ausente em {PASTA_WAKE}; "
+                "ativacao por palavra desabilitada"
             )
 
-        self.palavra = self._cfg.escuta.palavra_embutida
-        log.warning("Nenhum .ppn em data/wake/ — usando a palavra embutida '%s'. "
-                    "Treine 'Condor' no console.picovoice.ai pra trocar.", self.palavra)
+        self.palavra = "Condor"
+        log.info("Usando modelo de ativacao Condor: %s", ppn[0].name)
         return pvporcupine.create(
             access_key=chave,
-            keywords=[self.palavra],
+            keyword_paths=[str(ppn[0])],
+            model_path=str(pv[0]) if pv else None,
             sensitivities=[self._cfg.escuta.sensibilidade],
         )
 

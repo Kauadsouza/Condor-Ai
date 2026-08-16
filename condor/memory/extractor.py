@@ -1,7 +1,7 @@
 """
 Extrator — como o Condor aprende.
 
-Depois de cada troca, uma chamada barata (gpt-4o-mini) relê a conversa e decide
+Depois de cada troca, o modelo rapido configurado rele a conversa e decide
 o que vale guardar pra sempre. Roda em segundo plano: você nunca espera por ela.
 
 Isso substitui o regex da versão antiga, que enchia o banco de lixo tipo

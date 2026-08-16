@@ -12,20 +12,19 @@ Instância única: chamar de novo com a janela aberta só traz ela pra frente.
 
 from __future__ import annotations
 
-import ctypes
+import os
 import sys
 
 import webview
 
-URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:7777"
+URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:7777/ui/index.html"
 
 TITULO = "Condor"
-MUTEX = "CondorWindowSingleton"
-JA_EXISTE = 183
-
-
 def _trazer_pra_frente() -> None:
     try:
+        if os.name != "nt":
+            return
+        import ctypes
         user32 = ctypes.windll.user32
         janela = user32.FindWindowW(None, TITULO)
         if janela:
@@ -36,11 +35,8 @@ def _trazer_pra_frente() -> None:
 
 
 def main() -> None:
-    # use_last_error + get_last_error é a forma confiável de ler o
-    # ERROR_ALREADY_EXISTS logo após o CreateMutexW.
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW(None, False, MUTEX)
-    if ctypes.get_last_error() == JA_EXISTE:
+    from condor.instance import acquire
+    if not acquire("condor-window"):
         _trazer_pra_frente()
         sys.exit(0)
 
@@ -52,7 +48,10 @@ def main() -> None:
     )
     # private_mode=True  → perfil descartável, sem cache velho
     # gui="edgechromium" → WebView2, o runtime nativo do Windows
-    webview.start(private_mode=True, gui="edgechromium")
+    options = {"private_mode": True}
+    if os.name == "nt":
+        options["gui"] = "edgechromium"
+    webview.start(**options)
 
 
 if __name__ == "__main__":
