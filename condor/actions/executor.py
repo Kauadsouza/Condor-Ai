@@ -52,11 +52,17 @@ def _startupinfo():
     return si
 
 
-def _rodar(args: list[str], timeout: int = 60, entrada: str | None = None) -> tuple[int, str]:
+def _rodar(
+    args: list[str],
+    timeout: int = 60,
+    entrada: str | None = None,
+    environment: dict[str, str] | None = None,
+) -> tuple[int, str]:
     p = subprocess.run(
         args, capture_output=True, text=True, timeout=timeout, input=entrada,
         encoding="utf-8", errors="replace", cwd=str(ROOT),
         creationflags=SEM_JANELA, startupinfo=_startupinfo(),
+        env=environment,
     )
     return p.returncode, (p.stdout + p.stderr).strip()
 
@@ -267,6 +273,12 @@ def abrir(alvo: str) -> dict:
             _abrir_path(p)
             return _ok(f"Abri {p}")
 
+        # Nomes de aplicativo passam como um unico argumento em todos os SOs.
+        # Caminhos existentes ja foram tratados acima; metacaracteres de shell
+        # nunca sao aceitos nesta borda.
+        if not re.fullmatch(r"[\w .()+-]{1,120}", alvo, flags=re.UNICODE):
+            return _erro("Nome de aplicativo invalido.")
+
         if platform.system() != "Windows":
             subprocess.Popen(
                 [alvo], cwd=str(ROOT), start_new_session=True,
@@ -274,23 +286,26 @@ def abrir(alvo: str) -> dict:
             )
             return _ok(f"Abri {alvo}")
 
+        child_environment = os.environ.copy()
+        child_environment["CONDOR_APP_TARGET"] = alvo
         # Nome de app: tenta o atalho do menu iniciar, depois o executável direto
         codigo, saida = _rodar(
             ["powershell", "-NoProfile", "-Command",
-             f"Start-Process '{alvo}' -ErrorAction Stop"], timeout=20)
+             "Start-Process -FilePath $env:CONDOR_APP_TARGET -ErrorAction Stop"],
+            timeout=20, environment=child_environment)
         if codigo == 0:
             return _ok(f"Abri {alvo}")
 
         codigo, saida = _rodar(
             ["powershell", "-NoProfile", "-Command",
-             "$alvo='" + alvo.replace("'", "''") + "'; "
+             "$alvo=$env:CONDOR_APP_TARGET; "
              "$m = Get-ChildItem -Path "
              "\"$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\","
              "\"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\" "
              "-Recurse -Include *.lnk -ErrorAction SilentlyContinue | "
-             "Where-Object { $_.BaseName -like \"*$alvo*\" } | Select-Object -First 1; "
+             "Where-Object { $_.BaseName -like ('*' + [WildcardPattern]::Escape($alvo) + '*') } | Select-Object -First 1; "
              "if ($m) { Start-Process $m.FullName; $m.BaseName } else { 'NAOACHEI' }"],
-            timeout=45)
+            timeout=45, environment=child_environment)
         if "NAOACHEI" in saida or not saida:
             return _erro(f"Não achei '{alvo}' instalado.")
         return _ok(f"Abri {saida.strip()}")
@@ -300,21 +315,17 @@ def abrir(alvo: str) -> dict:
 
 def fechar_app(nome: str) -> dict:
     try:
-        if platform.system() != "Windows":
-            import psutil
-            matches = []
-            wanted = nome.lower().removesuffix(".exe")
-            for process in psutil.process_iter(["name"]):
-                current = (process.info.get("name") or "").lower().removesuffix(".exe")
-                if current == wanted:
-                    process.terminate()
-                    matches.append(str(process.pid))
-            return _ok(f"Solicitei encerramento de {len(matches)} processo(s): {nome}") if matches else _erro(f"Nao achei {nome}.")
-        codigo, saida = _rodar(
-            ["powershell", "-NoProfile", "-Command",
-             f"Stop-Process -Name '{nome.replace('.exe', '')}' -Force -ErrorAction Stop"],
-            timeout=20)
-        return {"ok": codigo == 0, "saida": f"Fechei {nome}" if codigo == 0 else saida[:400]}
+        if not re.fullmatch(r"[\w .()+-]{1,120}", nome, flags=re.UNICODE):
+            return _erro("Nome de processo invalido.")
+        import psutil
+        matches = []
+        wanted = nome.lower().removesuffix(".exe")
+        for process in psutil.process_iter(["name"]):
+            current = (process.info.get("name") or "").lower().removesuffix(".exe")
+            if current == wanted:
+                process.terminate()
+                matches.append(str(process.pid))
+        return _ok(f"Solicitei encerramento de {len(matches)} processo(s): {nome}") if matches else _erro(f"Nao achei {nome}.")
     except Exception as exc:
         return _erro(str(exc))
 
@@ -337,14 +348,17 @@ def listar_janelas() -> dict:
 
 def focar_janela(titulo: str) -> dict:
     try:
+        if not re.fullmatch(r"[\w .()+-]{1,160}", titulo, flags=re.UNICODE):
+            return _erro("Titulo de janela invalido.")
         if platform.system() != "Windows":
             return _erro("Focar janela requer um adaptador grafico especifico do Linux/macOS.")
-        seguro = titulo.replace("'", "''")
+        child_environment = os.environ.copy()
+        child_environment["CONDOR_WINDOW_TITLE"] = titulo
         _, saida = _rodar(
             ["powershell", "-NoProfile", "-Command",
-             "$w = New-Object -ComObject WScript.Shell; "
-             f"if ($w.AppActivate('{seguro}')) {{ 'OK' }} else {{ 'NAOACHEI' }}"],
-            timeout=15)
+             "$w = New-Object -ComObject WScript.Shell; $titulo=$env:CONDOR_WINDOW_TITLE; "
+             "if ($w.AppActivate($titulo)) { 'OK' } else { 'NAOACHEI' }"],
+            timeout=15, environment=child_environment)
         if "OK" in saida:
             return _ok(f"Janela '{titulo}' em foco.")
         return _erro(f"Não achei janela com '{titulo}' no título.")

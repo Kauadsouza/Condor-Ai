@@ -9,7 +9,8 @@ ARTX Hub /hub
         -> Condor X (unico projeto atual)
 
 Aplicativo Condor -> janela nativa -> /ui
-  -> sessao local HttpOnly + Host/Origin
+  -> sessao local HttpOnly de 4 h + Host/Origin/Client exatos
+  -> limites de corpo, frequencia, conexoes e tentativas de autenticacao
   -> controle local de autonomia
   -> Sessao Condor
      -> modo offline deterministico
@@ -50,7 +51,9 @@ portateis de Python e formatos abertos.
 2. concluido: STT, TTS, push-to-talk e visao totalmente locais;
 3. concluido: ARTX Hub original local, aba demonstrativa do Condor e digital twin do Condor X;
 4. concluido: aplicativo Condor em janela propria, separado do Hub e portavel entre Windows e Linux;
-5. futuro: segundo equipamento Condor em hardware proprio via WireGuard;
-6. futuro: sincronizacao cifrada ponta a ponta entre identidades autorizadas;
-7. regra permanente: modulos fisicos apenas inertes e seguros. O projeto nao inclui dispositivo
+5. iniciado: armadura digital passiva Fase 01 sobre o corpo humano de referencia de 1,80 m e 85 kg;
+6. concluido: marca luminosa C como identidade permanente do Condor X no torax;
+7. futuro: segundo equipamento Condor em hardware proprio via WireGuard;
+8. futuro: sincronizacao cifrada ponta a ponta entre identidades autorizadas;
+9. regra permanente: modulos fisicos apenas inertes e seguros. O projeto nao inclui dispositivo
    vestivel com chama, gas pressurizado ou agente incendiario.

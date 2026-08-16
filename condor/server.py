@@ -83,6 +83,10 @@ class Conexoes:
         if ws in self._sockets:
             self._sockets.remove(ws)
 
+    @property
+    def total(self) -> int:
+        return len(self._sockets)
+
     async def transmitir(self, msg: dict) -> None:
         texto = json.dumps(msg, ensure_ascii=False)
         for ws in list(self._sockets):
@@ -164,15 +168,83 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             status_code=423,
         )
 
+    def _passphrase(payload: dict, minimum: int = 1) -> str:
+        value = str(payload.get("passphrase") or "")
+        if len(value) < minimum or len(value) > 512:
+            raise ValueError("frase secreta fora do limite seguro")
+        return value
+
+    def _auth_wait(action: str) -> JSONResponse | None:
+        allowed, wait = local_security.auth_allowed(action)
+        if allowed:
+            return None
+        return JSONResponse(
+            {"erro": "autenticacao temporariamente bloqueada"},
+            status_code=429,
+            headers={"Retry-After": str(max(1, wait))},
+        )
+
+    def _auth_failed(action: str) -> JSONResponse:
+        delay = local_security.auth_failed(action)
+        guarda.auditar("security", action, "DENIED", False, True)
+        return JSONResponse(
+            {"erro": "frase secreta incorreta"},
+            status_code=403,
+            headers={"Retry-After": str(delay)} if delay else None,
+        )
+
+    def _verify_owner(action: str, payload: dict) -> JSONResponse | None:
+        if response := _auth_wait(action):
+            return response
+        try:
+            passphrase = _passphrase(payload)
+        except ValueError:
+            return _auth_failed(action)
+        if not guarda.owner.verify(passphrase):
+            return _auth_failed(action)
+        local_security.auth_succeeded(action)
+        return None
+
     @app.middleware("http")
     async def _sem_cache(request, call_next):
         if not local_security.host_allowed(request.headers.get("host")):
             return JSONResponse({"erro": "host local invalido"}, status_code=400)
-        if request.url.path.startswith("/api/") and request.url.path != "/api/session":
-            if not local_security.token_valid(request.cookies.get(local_security.COOKIE)):
-                return JSONResponse({"erro": "sessao local ausente"}, status_code=401)
+        path = request.url.path
+        try:
+            content_length = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            return JSONResponse({"erro": "tamanho de requisicao invalido"}, status_code=400)
+        body_limit = 20 * 1024 * 1024 if path == "/api/voice/transcribe" else 1024 * 1024
+        if content_length < 0 or content_length > body_limit:
+            return JSONResponse({"erro": "requisicao excede o limite seguro"}, status_code=413)
+        if path.startswith("/api/"):
+            if path == "/api/session":
+                if not local_security.rate_allowed("session", 30, 60):
+                    return JSONResponse(
+                        {"erro": "muitas tentativas de sessao"},
+                        status_code=429,
+                        headers={"Retry-After": "60"},
+                    )
+            else:
+                if not local_security.request_allowed(
+                    request.headers.get("origin"),
+                    request.headers.get("referer"),
+                    request.headers.get("sec-fetch-site"),
+                    request.method,
+                ):
+                    return JSONResponse({"erro": "origem local invalida"}, status_code=403)
+                if not local_security.token_valid(request.cookies.get(local_security.COOKIE)):
+                    return JSONResponse({"erro": "sessao local ausente ou expirada"}, status_code=401)
+                bucket = "api-write" if request.method not in {"GET", "HEAD", "OPTIONS"} else "api-read"
+                limit = 180 if bucket == "api-write" else 600
+                if not local_security.rate_allowed(bucket, limit, 60):
+                    return JSONResponse(
+                        {"erro": "limite local temporariamente atingido"},
+                        status_code=429,
+                        headers={"Retry-After": "60"},
+                    )
         resposta = await call_next(request)
-        if request.url.path.startswith(("/ui", "/hub")):
+        if path.startswith(("/api", "/ui", "/hub")):
             resposta.headers["Cache-Control"] = "no-store, must-revalidate"
             resposta.headers["Pragma"] = "no-cache"
         script_sources = "'self'"
@@ -188,28 +260,38 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "frame-src 'self' https://kauaartx.vercel.app https://sistema-videos.vercel.app "
             "https://sat-simulado.vercel.app https://university-path-six.vercel.app; "
             "media-src 'self' blob:; worker-src 'self' blob:; "
-            "object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
+            "object-src 'none'; base-uri 'none'; form-action 'self'; "
+            "manifest-src 'self'; frame-ancestors 'self'"
         )
+        resposta.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        resposta.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         resposta.headers["X-Content-Type-Options"] = "nosniff"
         resposta.headers["X-Frame-Options"] = "SAMEORIGIN"
+        resposta.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+        resposta.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
         resposta.headers["Referrer-Policy"] = "no-referrer"
         resposta.headers["Permissions-Policy"] = (
-            "camera=(self), microphone=(self), geolocation=(), payment=()"
+            "camera=(), display-capture=(), microphone=(self), geolocation=(), "
+            "payment=(), usb=(), serial=(), bluetooth=()"
         )
         return resposta
 
     @app.post("/api/session")
     async def api_session(request: Request):
-        if not local_security.origin_allowed(request.headers.get("origin")):
+        if (
+            not local_security.origin_allowed(request.headers.get("origin"))
+            or not local_security.client_allowed(request.headers.get("x-condor-client"))
+        ):
             return JSONResponse({"erro": "origem local invalida"}, status_code=403)
         response = JSONResponse({"ok": True, "nome": "Condor"})
         response.set_cookie(
             local_security.COOKIE,
-            local_security.token,
+            local_security.issue(),
             httponly=True,
             secure=False,
             samesite="strict",
             path="/",
+            max_age=local_security.SESSION_TTL_SECONDS,
         )
         return response
 
@@ -263,19 +345,21 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     async def api_security_setup(payload: dict):
         if guarda.configurada or vault.exists:
             return JSONResponse({"erro": "seguranca ja configurada"}, status_code=409)
-        passphrase = str(payload.get("passphrase") or "")
+        if response := _auth_wait("setup"):
+            return response
         try:
+            passphrase = _passphrase(payload, 12)
             brain_data = config.cerebro.model_dump()
-            brain_data["endpoint_local"] = str(
-                payload.get("local_endpoint") or brain_data["endpoint_local"]
-            )
-            brain_data["modelo_local"] = str(payload.get("local_model") or "").strip()
+            if payload.get("local_endpoint"):
+                brain_data["endpoint_local"] = _texto(payload, "local_endpoint", 500)
+            if "local_model" in payload:
+                brain_data["modelo_local"] = _texto(payload, "local_model", 200, False)
             config.cerebro = type(config.cerebro)(**brain_data)
             guarda.configurar_dono(passphrase)
             vault.initialize(passphrase, {
-                "CONDOR_DONO": str(payload.get("owner") or "Kaua"),
-                "OPENAI_API_KEY": str(payload.get("openai_api_key") or ""),
-                "PICOVOICE_ACCESS_KEY": str(payload.get("picovoice_access_key") or ""),
+                "CONDOR_DONO": _texto(payload, "owner", 200, False) or "Kaua",
+                "OPENAI_API_KEY": _texto(payload, "openai_api_key", 16384, False),
+                "PICOVOICE_ACCESS_KEY": _texto(payload, "picovoice_access_key", 16384, False),
                 "CONDOR_SAFETY_ID": base64.urlsafe_b64encode(os.urandom(24)).decode(),
                 "MEMORY_KEY": base64.b64encode(os.urandom(32)).decode(),
             })
@@ -285,18 +369,25 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             salvar_config(config)
             await _ensure_voice()
         except (ValueError, VaultError) as exc:
+            local_security.auth_failed("setup")
             return JSONResponse({"erro": str(exc)}, status_code=400)
+        local_security.auth_succeeded("setup")
         return {"ok": True}
 
     @app.post("/api/seguranca/desbloquear")
     async def api_security_unlock(payload: dict):
+        if response := _auth_wait("unlock"):
+            return response
         try:
-            vault.unlock(str(payload.get("passphrase") or ""))
+            vault.unlock(_passphrase(payload))
             identity.ensure()
             memoria.unlock(base64.b64decode(vault.get("MEMORY_KEY")))
             await _ensure_voice()
-        except VaultError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=403)
+            if not guarda.stopped:
+                escuta.voltar_a_ouvir()
+        except (ValueError, VaultError):
+            return _auth_failed("unlock")
+        local_security.auth_succeeded("unlock")
         return {"ok": True}
 
     @app.post("/api/seguranca/bloquear")
@@ -309,14 +400,14 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     async def api_security_secrets(payload: dict):
         if not vault.unlocked:
             return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
-        if not guarda.owner.verify(str(payload.get("passphrase") or "")):
-            return JSONResponse({"erro": "frase secreta incorreta"}, status_code=403)
+        if response := _verify_owner("secret_update", payload):
+            return response
         try:
             brain_data = config.cerebro.model_dump()
             if "local_endpoint" in payload:
-                brain_data["endpoint_local"] = str(payload.get("local_endpoint") or "")
+                brain_data["endpoint_local"] = _texto(payload, "local_endpoint", 500, False)
             if "local_model" in payload:
-                brain_data["modelo_local"] = str(payload.get("local_model") or "").strip()
+                brain_data["modelo_local"] = _texto(payload, "local_model", 200, False)
             config.cerebro = type(config.cerebro)(**brain_data)
         except ValueError as exc:
             return JSONResponse({"erro": str(exc)}, status_code=400)
@@ -326,7 +417,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             ("picovoice_access_key", "PICOVOICE_ACCESS_KEY"),
         ):
             if field in payload:
-                vault.set(secret_name, str(payload.get(field) or "").strip())
+                vault.set(secret_name, _texto(payload, field, 16384, False))
                 changed.append(secret_name)
         salvar_config(config)
         cerebro.reset_connection()
@@ -342,27 +433,46 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     @app.post("/api/emergencia/parar")
     async def api_emergency_stop():
         guarda.emergency_stop()
+        escuta.silenciar()
+        voz.calar()
         await sessao.dormir("interruptor de emergencia")
+        memoria.lock()
+        vault.lock()
         return {"ok": True}
 
     @app.post("/api/emergencia/retomar")
     async def api_emergency_resume(payload: dict):
-        ok = guarda.emergency_resume(str(payload.get("passphrase") or ""))
-        return JSONResponse({"ok": ok}, status_code=200 if ok else 403)
+        if response := _auth_wait("emergency_resume"):
+            return response
+        try:
+            passphrase = _passphrase(payload)
+        except ValueError:
+            return _auth_failed("emergency_resume")
+        ok = guarda.emergency_resume(passphrase)
+        if not ok:
+            return _auth_failed("emergency_resume")
+        local_security.auth_succeeded("emergency_resume")
+        return {"ok": True, "vault_unlocked": False}
 
     @app.post("/api/seguranca/politica")
     async def api_security_policy(payload: dict):
+        if response := _auth_wait("policy_update"):
+            return response
         profile = str(payload.get("profile") or "")
-        try:
-            ok = guarda.update_policy(
-                profile,
-                bool(payload.get("simulation")),
-                str(payload.get("passphrase") or ""),
-            )
-        except ValueError:
+        if profile not in {"observer", "assistant", "operator", "admin"}:
             return JSONResponse({"erro": "perfil de autonomia invalido"}, status_code=400)
+        try:
+            passphrase = _passphrase(payload)
+        except ValueError:
+            return _auth_failed("policy_update")
+        ok = guarda.update_policy(
+            profile,
+            bool(payload.get("simulation")),
+            passphrase,
+        )
         if not ok:
-            return JSONResponse({"erro": "frase secreta incorreta"}, status_code=403)
+            return _auth_failed("policy_update")
+        local_security.auth_succeeded("policy_update")
         if "memory_sharing" in payload:
             config.cerebro.compartilhar_memoria_com_conector = bool(payload["memory_sharing"])
         if "connector_learning" in payload:
@@ -380,8 +490,8 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     async def api_integrity_refresh(payload: dict):
         if not vault.unlocked:
             return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
-        if not guarda.owner.verify(str(payload.get("passphrase") or "")):
-            return JSONResponse({"erro": "frase secreta incorreta"}, status_code=403)
+        if response := _verify_owner("integrity_refresh", payload):
+            return response
         count = integrity.refresh()
         guarda.auditar("security", "integrity_refresh", f"{count} arquivos", True, True)
         return {"ok": True, "files": count}
@@ -618,6 +728,8 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             not local_security.host_allowed(socket.headers.get("host"))
             or not local_security.origin_allowed(socket.headers.get("origin"))
             or not local_security.token_valid(socket.cookies.get(local_security.COOKIE))
+            or not local_security.rate_allowed("ws-connect", 20, 60)
+            or conexoes.total >= 4
         ):
             await socket.close(code=1008)
             return
@@ -632,9 +744,23 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
             while True:
                 bruto = await socket.receive_text()
+                if len(bruto) > 64 * 1024:
+                    await socket.close(code=1009)
+                    return
+                if (
+                    not local_security.token_valid(socket.cookies.get(local_security.COOKIE))
+                    or not local_security.rate_allowed("ws-message", 180, 60)
+                ):
+                    await socket.close(code=1008)
+                    return
                 try:
                     msg = json.loads(bruto)
                 except json.JSONDecodeError:
+                    continue
+                if msg.get("tipo") == "senha" and not local_security.rate_allowed("ws-password", 10, 60):
+                    await socket.send_text(json.dumps({
+                        "tipo": "erro", "mensagem": "Muitas tentativas de aprovação. Aguarde."
+                    }, ensure_ascii=False))
                     continue
                 await _tratar(msg, sessao, socket)
         except WebSocketDisconnect:
@@ -686,6 +812,11 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
 
     if tipo == "texto":
         texto = (msg.get("texto") or "").strip()
+        if len(texto) > 8000:
+            await socket.send_text(json.dumps({
+                "tipo": "erro", "mensagem": "Mensagem excede 8000 caracteres."
+            }, ensure_ascii=False))
+            return
         if texto:
             # Solto numa tarefa pra não travar o WebSocket enquanto ele pensa —
             # é o que mantém a interface respondendo durante a resposta.
@@ -694,7 +825,9 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
             tarefa.add_done_callback(_EM_VOO.discard)
 
     elif tipo == "senha":
-        sessao.responder_senha((msg.get("texto") or "").strip())
+        texto = (msg.get("texto") or "").strip()
+        if 0 < len(texto) <= 512:
+            sessao.responder_senha(texto)
 
     elif tipo == "acordar":
         await sessao.acordar()
@@ -708,8 +841,12 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
 
 async def rodar(app: FastAPI, config: Config) -> None:
     cfg = uvicorn.Config(app, host=config.servidor.host, port=config.servidor.porta,
-                         log_config=None, log_level="warning",
-                         ws_ping_interval=20, ws_ping_timeout=40)
+                          log_config=None, log_level="warning",
+                          server_header=False, date_header=False,
+                          ws_max_size=1024 * 1024,
+                          ws_ping_interval=20, ws_ping_timeout=40,
+                          limit_concurrency=64, backlog=32,
+                          timeout_keep_alive=5)
     servidor = uvicorn.Server(cfg)
     servidor.install_signal_handlers = lambda: None
     await servidor.serve()

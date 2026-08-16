@@ -33,6 +33,8 @@ def _unb64(value: str) -> bytes:
 def _derive(passphrase: str, salt: bytes) -> bytes:
     if len(passphrase) < 12:
         raise VaultError("A frase secreta precisa ter pelo menos 12 caracteres.")
+    if len(passphrase) > 512:
+        raise VaultError("A frase secreta excede o limite seguro.")
     return Scrypt(salt=salt, length=32, n=2**15, r=8, p=1).derive(
         passphrase.encode("utf-8")
     )

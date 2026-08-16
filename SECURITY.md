@@ -19,9 +19,17 @@ aceita como aprovacao.
 ## Rede
 
 O servidor aceita somente `127.0.0.1`, `localhost` ou `::1`. Requisicoes exigem
-cookie HttpOnly aleatorio, origem local e Host local. WebSocket aplica as mesmas
-regras. A politica de conteudo bloqueia scripts externos e objetos; frames sao
-permitidos somente na mesma origem para o Hub incorporar a interface do Condor.
+cookie HttpOnly aleatorio com validade de quatro horas, origem local exata e Host
+local. A emissao da sessao tambem exige a identidade da interface (`desktop-ui`
+ou `hub-local`). Isso bloqueia inclusive ataques entre portas diferentes do
+loopback. WebSocket aplica as mesmas regras, aceita no maximo quatro conexoes e
+limita tamanho e frequencia das mensagens.
+
+Requisicoes de API tem limite de tamanho, frequencia de leitura e frequencia de
+escrita. Tentativas de frase secreta recebem espera exponencial de ate cinco
+minutos. A politica de conteudo bloqueia scripts externos, objetos, formularios
+fora da origem e captura de tela, camera, USB, serial e Bluetooth pelo navegador.
+Respostas privadas nunca sao armazenadas em cache nem indexadas.
 
 STT, TTS e visao usam modelos locais. O push-to-talk envia o audio apenas para
 `127.0.0.1`; capturas de tela continuam passando pela politica local antes de
@@ -33,6 +41,17 @@ escolha consciente no arquivo de configuracao.
 
 Leituras e downloads web rejeitam localhost, rede privada, enderecos reservados
 e redirecionamentos para esses destinos. Downloads tem limite de 100 MB.
+
+## Execucao local e parada de emergencia
+
+Ferramentas nao recebem shell arbitrario. Nomes de aplicativo e janela aceitam
+somente caracteres controlados; no Windows os valores atravessam variaveis de
+ambiente, sem interpolacao no PowerShell. Fechamento de aplicativo compara o
+nome exato do processo por uma biblioteca portavel.
+
+O interruptor de emergencia encerra voz e sessao, silencia o microfone, bloqueia
+a memoria e fecha o cofre. Retomar exige a frase do dono e mantem o cofre
+bloqueado ate um novo desbloqueio consciente.
 
 ## O que ainda depende do dono
 

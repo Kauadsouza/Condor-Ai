@@ -150,7 +150,10 @@ const CondorSeguranca = (() => {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ passphrase }),
       });
-      if (response.ok) setStopped(false);
+      if (response.ok) {
+        setStopped(false);
+        window.location.reload();
+      }
       else window.alert('Frase secreta incorreta. O Condor continua parado.');
     });
     document.body.appendChild(stop);

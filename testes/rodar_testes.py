@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from condor.brain.tools import ESQUEMAS, FUNCOES
 from condor.brain.client import Cerebro
+from condor.actions import executor
 from condor.config import Config, salvar_config
 from condor.memory.db import Memoria
 from condor.security.approval import OwnerAuth
@@ -152,6 +153,12 @@ class PolicyTests(unittest.TestCase):
         decision = PolicyEngine(AutonomyProfile.OBSERVER).decide("abrir", {"alvo": "x"})
         self.assertFalse(decision.allowed)
 
+    def test_application_names_reject_command_injection(self):
+        malicious = "calc'; Start-Process powershell #"
+        self.assertFalse(executor.abrir(malicious)["ok"])
+        self.assertFalse(executor.fechar_app(malicious)["ok"])
+        self.assertFalse(executor.focar_janela(malicious)["ok"])
+
 
 class AuditTests(unittest.TestCase):
     def test_chain_and_tamper_detection(self):
@@ -177,6 +184,37 @@ class SessionSecurityTests(unittest.TestCase):
         security = LocalSessionSecurity("127.0.0.1", 7777)
         self.assertTrue(security.token_valid(security.token))
         self.assertFalse(security.token_valid("wrong"))
+        security._expires_at = 0
+        self.assertFalse(security.token_valid(security.token))
+
+    def test_same_origin_client_and_rate_controls(self):
+        security = LocalSessionSecurity("127.0.0.1", 7777)
+        self.assertTrue(security.client_allowed("desktop-ui"))
+        self.assertTrue(security.client_allowed("hub-local"))
+        self.assertFalse(security.client_allowed("website"))
+        self.assertTrue(security.request_allowed(
+            "http://127.0.0.1:7777", None, "same-origin", "POST"
+        ))
+        self.assertFalse(security.request_allowed(
+            "http://127.0.0.1:9999", None, "same-site", "POST"
+        ))
+        self.assertTrue(security.request_allowed(
+            None, "http://127.0.0.1:7777/ui/index.html", "same-origin", "GET"
+        ))
+        self.assertTrue(security.rate_allowed("test", 2, 60))
+        self.assertTrue(security.rate_allowed("test", 2, 60))
+        self.assertFalse(security.rate_allowed("test", 2, 60))
+
+    def test_authentication_backoff(self):
+        security = LocalSessionSecurity("127.0.0.1", 7777)
+        for _ in range(3):
+            self.assertEqual(security.auth_failed("unlock"), 0)
+        self.assertGreaterEqual(security.auth_failed("unlock"), 2)
+        allowed, wait = security.auth_allowed("unlock")
+        self.assertFalse(allowed)
+        self.assertGreaterEqual(wait, 1)
+        security.auth_succeeded("unlock")
+        self.assertEqual(security.auth_allowed("unlock"), (True, 0))
 
     def test_server_requires_local_session_and_sets_up_integrity(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -190,8 +228,8 @@ class SessionSecurityTests(unittest.TestCase):
                 opened = []
                 session.abrir_aplicativo = lambda: opened.append(True) or True
                 client = TestClient(app, base_url="http://127.0.0.1:7777")
-                self.assertEqual(client.get("/api/estado").status_code, 401)
-                self.assertEqual(client.post("/api/app/abrir").status_code, 401)
+                self.assertEqual(client.get("/api/estado").status_code, 403)
+                self.assertEqual(client.post("/api/app/abrir").status_code, 403)
                 root = client.get("/", follow_redirects=False)
                 self.assertEqual(root.status_code, 307)
                 self.assertEqual(root.headers["location"], "/ui/index.html")
@@ -199,14 +237,50 @@ class SessionSecurityTests(unittest.TestCase):
                     client.post("/api/session", headers={"Origin": "https://evil.example"}).status_code,
                     403,
                 )
+                self.assertEqual(
+                    client.post(
+                        "/api/session",
+                        headers={"Origin": "http://127.0.0.1:7777"},
+                    ).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    client.post(
+                        "/api/session",
+                        headers={
+                            "Origin": "http://127.0.0.1:7777",
+                            "X-Condor-Client": "desktop-ui",
+                            "Content-Length": str(1024 * 1024 + 1),
+                        },
+                    ).status_code,
+                    413,
+                )
                 response = client.post(
-                    "/api/session", headers={"Origin": "http://127.0.0.1:7777"}
+                    "/api/session", headers={
+                        "Origin": "http://127.0.0.1:7777",
+                        "X-Condor-Client": "desktop-ui",
+                    }
                 )
                 self.assertEqual(response.status_code, 200)
+                self.assertIn("HttpOnly", response.headers["set-cookie"])
+                self.assertIn("SameSite=strict", response.headers["set-cookie"])
+                client.headers.update({"Origin": "http://127.0.0.1:7777"})
+                self.assertEqual(
+                    client.post(
+                        "/api/emergencia/parar",
+                        headers={"Origin": "http://127.0.0.1:9999"},
+                    ).status_code,
+                    403,
+                )
                 app_open = client.post("/api/app/abrir")
                 self.assertEqual(app_open.status_code, 200, app_open.text)
                 self.assertEqual(app_open.json()["app"], "Condor")
                 self.assertEqual(opened, [True])
+                state_headers = client.get("/api/estado").headers
+                self.assertIn("form-action 'self'", state_headers["content-security-policy"])
+                self.assertEqual(state_headers["cross-origin-opener-policy"], "same-origin")
+                self.assertEqual(state_headers["cross-origin-resource-policy"], "same-origin")
+                self.assertEqual(state_headers["x-robots-tag"], "noindex, nofollow, noarchive")
                 setup = client.post("/api/seguranca/configurar", json={
                     "owner": "Kaua", "passphrase": PASS,
                 })
@@ -219,6 +293,16 @@ class SessionSecurityTests(unittest.TestCase):
                 })
                 self.assertEqual(policy.status_code, 200, policy.text)
                 self.assertTrue(policy.json()["simulation"])
+                stopped = client.post("/api/emergencia/parar")
+                self.assertEqual(stopped.status_code, 200, stopped.text)
+                stopped_state = client.get("/api/seguranca/estado").json()
+                self.assertTrue(stopped_state["emergency_stop"])
+                self.assertFalse(stopped_state["vault_unlocked"])
+                resumed = client.post("/api/emergencia/retomar", json={"passphrase": PASS})
+                self.assertEqual(resumed.status_code, 200, resumed.text)
+                self.assertFalse(resumed.json()["vault_unlocked"])
+                unlocked = client.post("/api/seguranca/desbloquear", json={"passphrase": PASS})
+                self.assertEqual(unlocked.status_code, 200, unlocked.text)
             finally:
                 if previous is None:
                     os.environ.pop("CONDOR_HOME", None)
@@ -359,6 +443,17 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertIn("Demonstração limitada", source)
         self.assertNotIn("<iframe", source)
         self.assertNotIn("/api/hub/condor-x/", source)
+
+    def test_condor_x_keeps_human_reference_c_mark_and_passive_armor(self):
+        component = ROOT.parent.parent / "ARTX Hub" / "src" / "components" / "CondorWorkspace.tsx"
+        if not component.exists():
+            self.skipTest("ARTX Hub nao esta neste checkout")
+        source = component.read_text("utf-8")
+        self.assertIn("const exactScale = 1.8 / naturalHeight", source)
+        self.assertIn("Núcleo C", source)
+        self.assertIn("const cArc", source)
+        self.assertIn("Armadura · Fase 01", source)
+        self.assertIn("sem armas, propulsão, chama", source)
 
 
 if __name__ == "__main__":

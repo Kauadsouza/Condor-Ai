@@ -45,3 +45,14 @@ fisico.
 
 No painel, um modulo de risco alto permanece bloqueado. Avancar a barra e
 registrar progresso nao autoriza fabricacao nem teste fisico.
+
+## Armadura — Fase 01 iniciada
+
+A primeira camada da armadura existe somente no digital twin. Ela acompanha o
+corpo humano de referencia de 1,80 m e 85 kg e pode ser ligada ou escondida para
+comparar encaixe, proporcao e mobilidade. A fase atual inclui carenagens
+transparentes de capacete, torso, ombros, antebracos, coxas e canelas.
+
+O nucleo do peito usa a letra **C** como marca permanente do Condor X. Nesta
+fase, o C e identidade visual e ponto de telemetria simulada; nao representa
+fonte de alta energia nem autoriza construcao eletrica vestivel.
