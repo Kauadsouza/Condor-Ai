@@ -126,6 +126,20 @@ class ServidorConfig(BaseModel):
         return value
 
 
+class VisualizacaoMovelConfig(BaseModel):
+    """Espelho sanitizado para o navegador de outro aparelho na rede privada."""
+
+    ativa: bool = True
+    porta: int = 7778
+
+    @field_validator("porta")
+    @classmethod
+    def _porta_valida(cls, value: int) -> int:
+        if value < 1024 or value > 65535:
+            raise ValueError("A porta da visualizacao movel precisa estar entre 1024 e 65535.")
+        return value
+
+
 class Config(BaseModel):
     cerebro: CerebroConfig = Field(default_factory=CerebroConfig)
     voz: VozConfig = Field(default_factory=VozConfig)
@@ -133,6 +147,9 @@ class Config(BaseModel):
     sessao: SessaoConfig = Field(default_factory=SessaoConfig)
     seguranca: SegurancaConfig = Field(default_factory=SegurancaConfig)
     servidor: ServidorConfig = Field(default_factory=ServidorConfig)
+    visualizacao_movel: VisualizacaoMovelConfig = Field(
+        default_factory=VisualizacaoMovelConfig
+    )
     _vault: Any = PrivateAttr(default=None)
 
     def ligar_cofre(self, vault: Any) -> None:

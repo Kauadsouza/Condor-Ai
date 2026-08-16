@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#02050b">
+  <link rel="icon" type="image/png" href="/assets/condor-logo.png">
+  <link rel="stylesheet" href="/mobile.css">
+  <title>Condor · Visualização móvel</title>
+</head>
+<body>
+  <div class="grid" aria-hidden="true"></div>
+  <main class="shell">
+    <header class="brand">
+      <img src="/assets/condor-logo.png" alt="Logo do Condor">
+      <div><small>CONDOR · REDE PRIVADA</small><strong>Visualização móvel</strong></div>
+      <span class="read-only">SOMENTE LEITURA</span>
+    </header>
+
+    <section class="pair-card" id="pairView">
+      <span class="eyebrow">PAREAMENTO LOCAL</span>
+      <h1>Veja o Condor pelo celular</h1>
+      <p>Digite o código de oito números mostrado no aplicativo Condor deste PC.</p>
+      <form id="pairForm">
+        <input id="pairCode" name="code" inputmode="numeric" autocomplete="one-time-code"
+               minlength="8" maxlength="8" pattern="[0-9]{8}" placeholder="00000000" required>
+        <button type="submit">ENTRAR PARA VISUALIZAR</button>
+      </form>
+      <div class="pair-error" id="pairError" role="alert"></div>
+      <small>O celular não recebe comandos, memória, arquivos ou acesso ao seu PC.</small>
+    </section>
+
+    <section class="app" id="mobileApp" hidden>
+      <nav class="tabs" aria-label="Áreas da visualização">
+        <button class="active" data-mobile-screen="overview">VISÃO</button>
+        <button data-mobile-screen="projects">PROJETOS</button>
+      </nav>
+
+      <section class="screen active" id="mobile-overview">
+        <article class="hero-card">
+          <div class="hero-copy">
+            <span class="eyebrow">NÚCLEO LOCAL</span>
+            <h1 id="mobileState">Conectando</h1>
+            <p id="mobileSummary">Lendo o estado sanitizado do Condor.</p>
+          </div>
+          <div class="pulse" aria-hidden="true"><span>C</span></div>
+        </article>
+
+        <div class="status-grid">
+          <article><small>PC</small><strong id="statusPc">—</strong><span>conexão local</span></article>
+          <article><small>IA</small><strong id="statusAi">—</strong><span id="statusModel">modelo</span></article>
+          <article><small>VOZ</small><strong id="statusVoice">—</strong><span>processamento local</span></article>
+          <article><small>INTEGRIDADE</small><strong id="statusIntegrity">—</strong><span>manifesto assinado</span></article>
+        </div>
+
+        <article class="privacy-card">
+          <span class="lock" aria-hidden="true">C</span>
+          <div><strong>Espelho protegido</strong><p>Este endereço mostra apenas estado técnico e projetos. Nenhuma ação pode ser executada pelo celular.</p></div>
+        </article>
+        <div class="last-update" id="lastUpdate">AGUARDANDO ATUALIZAÇÃO</div>
+      </section>
+
+      <section class="screen" id="mobile-projects" hidden>
+        <header class="project-heading">
+          <span class="eyebrow">PROJETOS · 01 ATIVO</span>
+          <h1>Condor X</h1>
+          <p>Protótipo humano de escala real, disponível para análise visual pelo celular.</p>
+        </header>
+
+        <section class="project-detail" id="projectDetail">
+          <div class="cx-stage">
+            <div class="cx-stage-head"><small>DIGITAL TWIN</small><strong>CONDOR X</strong><span>CX-01 · V2</span></div>
+            <div class="cx-viewport" id="condorXViewport" role="img" aria-label="Protótipo humanoide 3D do Condor X"></div>
+            <div class="cx-scale" aria-hidden="true"><span>180</span><span>135</span><span>90</span><span>45</span><span>0 cm</span></div>
+            <div class="cx-metrics"><span><small>ALTURA</small><strong>1,80 m</strong></span><span><small>MASSA</small><strong>85 kg</strong></span></div>
+            <div class="cx-hint">ARRASTE PARA GIRAR · TOQUE EM UM MÓDULO</div>
+          </div>
+
+          <div class="module-strip" aria-label="Módulos do protótipo">
+            <button data-cx-part="head">CABEÇA</button>
+            <button data-cx-part="chest" class="active">TÓRAX</button>
+            <button data-cx-part="left-arm">BRAÇO E.</button>
+            <button data-cx-part="right-arm">BRAÇO D.</button>
+            <button data-cx-part="legs">PERNAS</button>
+            <button data-cx-part="power">NÚCLEO C</button>
+          </div>
+
+          <article class="module-detail">
+            <small id="cxDetailZone">ESTRUTURA CENTRAL</small>
+            <h2 id="cxDetailTitle">Tórax</h2>
+            <p id="cxDetailText">Volume humano atlético, cintura anatômica, clavículas, peitoral e superfície tecnológica integrada.</p>
+            <ul id="cxDetailList"><li>Caixa torácica proporcional</li><li>Postura neutra real</li><li>Núcleo C integrado</li></ul>
+          </article>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <script src="/mobile.js"></script>
+  <script type="module" src="/scripts/condor-x.js"></script>
+</body>
+</html>

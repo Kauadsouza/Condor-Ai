@@ -31,6 +31,11 @@ def main() -> int:
     checks = {
         "platform": platform.platform(),
         "loopback_only": cfg.servidor.host in {"127.0.0.1", "localhost", "::1"},
+        "mobile_view_safe": (
+            cfg.visualizacao_movel.ativa
+            and cfg.visualizacao_movel.porta != cfg.servidor.porta
+            and (CODE_ROOT / "condor" / "mobile" / "index.html").is_file()
+        ),
         "state_root": str(state_root()),
         "hub_static_build": (hub / "index.html").is_file(),
         "ollama_online": bool(models),
@@ -42,7 +47,7 @@ def main() -> int:
     }
     for key, value in checks.items():
         print(f"{key:20} {'OK' if value is True else 'PENDENTE' if value is False else value}")
-    required = ("loopback_only", "hub_static_build", "ollama_online", "brain_model",
+    required = ("loopback_only", "mobile_view_safe", "hub_static_build", "ollama_online", "brain_model",
                 "vision_model", "stt_model", "tts_model")
     return 0 if all(checks[item] is True for item in required) else 1
 

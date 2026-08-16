@@ -35,4 +35,4 @@ condor = "condor.__main__:main"
 include = ["condor*"]
 
 [tool.setuptools.package-data]
-condor = ["ui/**/*"]
+condor = ["ui/**/*", "mobile/**/*"]

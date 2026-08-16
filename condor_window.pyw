@@ -18,6 +18,8 @@ from pathlib import Path
 
 import webview
 
+from condor.windows_identity import apply_window, prepare_process
+
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:7777/ui/index.html"
 
 TITULO = "Condor"
@@ -25,17 +27,6 @@ ROOT = Path(__file__).resolve().parent
 ICON_PATH = ROOT / "condor" / "ui" / "assets" / (
     "condor-logo.ico" if os.name == "nt" else "condor-logo.png"
 )
-
-
-def _preparar_identidade_windows() -> None:
-    if os.name != "nt":
-        return
-    try:
-        import ctypes
-
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ARTX.Condor.Local")
-    except Exception:
-        pass
 
 
 def _trazer_pra_frente() -> None:
@@ -55,7 +46,7 @@ def _trazer_pra_frente() -> None:
 def main() -> None:
     from condor.instance import acquire
 
-    _preparar_identidade_windows()
+    prepare_process()
     if not acquire("condor-window"):
         _trazer_pra_frente()
         sys.exit(0)
@@ -73,7 +64,7 @@ def main() -> None:
         options["icon"] = str(ICON_PATH)
     if os.name == "nt":
         options["gui"] = "edgechromium"
-    webview.start(**options)
+    webview.start(apply_window, args=(TITULO, ROOT), **options)
 
 
 if __name__ == "__main__":

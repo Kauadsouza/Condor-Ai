@@ -28,6 +28,7 @@ from condor.config import Config, salvar_config
 from condor.memory.db import Memoria
 from condor.memory.extractor import Extrator
 from condor.memory.recall import Recall
+from condor.mobile import MobileViewer
 from condor.paths import CODE_ROOT, state_path, state_root
 from condor.security.integrity import CodeIntegrity
 from condor.security.session import LocalSessionSecurity
@@ -151,6 +152,25 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     # ── App ────────────────────────────────────────────────────────────────
     app = FastAPI(title="CONDOR", docs_url=None, redoc_url=None)
+
+    def _mobile_snapshot() -> dict:
+        state = sessao.snapshot()
+        integrity_ok = integrity.verify()[0] if vault.unlocked else None
+        return {
+            "nome": "Condor",
+            "estado": state["estado"],
+            "acordado": state["acordado"],
+            "cerebro_pronto": state["cerebro_pronto"],
+            "modelo": state["modelo"],
+            "provedor": state["provedor"],
+            "voz_local_pronta": state["stt_local_pronto"] and state["tts_local_pronto"],
+            "integridade_ok": integrity_ok,
+            "modo": "somente leitura",
+            "projetos": [{"id": "condor-x", "nome": "Condor X", "versao": "V2"}],
+        }
+
+    mobile_viewer = MobileViewer(config.visualizacao_movel.porta, _mobile_snapshot)
+    app.state.mobile_viewer = mobile_viewer
 
     def _texto(payload: dict, campo: str, limite: int, obrigatorio: bool = True) -> str:
         valor = str(payload.get(campo) or "").strip()
@@ -341,6 +361,12 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 if vault.unlocked else {"ok": None, "detail": "cofre bloqueado", "files": 0}
             ),
         }
+
+    @app.get("/api/mobile/access")
+    async def api_mobile_access():
+        if not config.visualizacao_movel.ativa:
+            return JSONResponse({"erro": "visualizacao movel desativada"}, status_code=404)
+        return mobile_viewer.access.details()
 
     @app.post("/api/seguranca/configurar")
     async def api_security_setup(payload: dict):
@@ -823,4 +849,42 @@ async def rodar(app: FastAPI, config: Config) -> None:
                           timeout_keep_alive=5)
     servidor = uvicorn.Server(cfg)
     servidor.install_signal_handlers = lambda: None
-    await servidor.serve()
+    mobile_server = None
+    mobile_task = None
+    if config.visualizacao_movel.ativa:
+        mobile_cfg = uvicorn.Config(
+            app.state.mobile_viewer.app,
+            host="0.0.0.0",
+            port=config.visualizacao_movel.porta,
+            log_config=None,
+            log_level="error",
+            server_header=False,
+            date_header=False,
+            limit_concurrency=24,
+            backlog=16,
+            timeout_keep_alive=4,
+        )
+        mobile_server = uvicorn.Server(mobile_cfg)
+        mobile_server.install_signal_handlers = lambda: None
+
+        async def _serve_mobile() -> None:
+            try:
+                await mobile_server.serve()
+            except Exception:
+                log.exception(
+                    "A visualizacao movel nao iniciou na porta %s",
+                    config.visualizacao_movel.porta,
+                )
+
+        mobile_task = asyncio.create_task(_serve_mobile())
+        log.info(
+            "Visualizacao movel somente leitura preparada na porta %s",
+            config.visualizacao_movel.porta,
+        )
+
+    try:
+        await servidor.serve()
+    finally:
+        if mobile_server is not None and mobile_task is not None:
+            mobile_server.should_exit = True
+            await mobile_task

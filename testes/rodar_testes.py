@@ -19,6 +19,7 @@ from condor.actions import executor
 from condor.actions.guard import Guarda
 from condor.config import Config, salvar_config
 from condor.memory.db import Memoria
+from condor.mobile import MobileAccess, MobileViewer, private_client, private_host
 from condor.security.approval import OwnerAuth
 from condor.security.audit import IntegrityAudit
 from condor.security.identity import DeviceIdentity
@@ -253,6 +254,49 @@ class SessionSecurityTests(unittest.TestCase):
         security.auth_succeeded("unlock")
         self.assertEqual(security.auth_allowed("unlock"), (True, 0))
 
+    def test_mobile_view_accepts_only_private_network_and_dedicated_code(self):
+        self.assertTrue(private_client("127.0.0.1"))
+        self.assertTrue(private_client("192.168.1.25"))
+        self.assertTrue(private_client("10.12.0.8"))
+        self.assertFalse(private_client("8.8.8.8"))
+        self.assertTrue(private_host("192.168.1.10:7778"))
+        self.assertFalse(private_host("evil.example:7778"))
+
+        access = MobileAccess(7778)
+        access.code = "12345678"
+        self.assertEqual(access.pair("192.168.1.20", "00000000"), (None, 403))
+        token, status = access.pair("192.168.1.20", "12345678")
+        self.assertEqual(status, 200)
+        self.assertTrue(access.valid(token))
+        self.assertFalse(access.valid("wrong"))
+
+    def test_mobile_view_is_read_only_paired_and_sanitized(self):
+        from fastapi.testclient import TestClient
+
+        snapshot = {
+            "nome": "Condor", "estado": "dormindo", "acordado": False,
+            "cerebro_pronto": True, "modelo": "local", "provedor": "local",
+            "voz_local_pronta": True, "integridade_ok": True,
+            "modo": "somente leitura", "projetos": [],
+        }
+        viewer = MobileViewer(7778, lambda: snapshot)
+        viewer.access.code = "12345678"
+        client = TestClient(
+            viewer.app,
+            base_url="http://192.168.1.10:7778",
+            client=("192.168.1.25", 50000),
+        )
+        self.assertEqual(client.get("/api/status").status_code, 401)
+        paired = client.post("/api/pair", json={"code": "12345678"})
+        self.assertEqual(paired.status_code, 200, paired.text)
+        self.assertIn("HttpOnly", paired.headers["set-cookie"])
+        status = client.get("/api/status")
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json(), snapshot)
+        self.assertIn("frame-ancestors 'none'", status.headers["content-security-policy"])
+        self.assertEqual(status.headers["x-frame-options"], "DENY")
+        self.assertEqual(client.post("/api/status").status_code, 405)
+
     def test_server_requires_local_session_and_sets_up_integrity(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous = os.environ.get("CONDOR_HOME")
@@ -434,6 +478,13 @@ class ConfigTests(unittest.TestCase):
     def test_name_is_condor_in_project(self):
         self.assertEqual("Condor".lower(), "condor")
 
+    def test_mobile_view_has_a_separate_port_and_core_stays_loopback(self):
+        config = Config()
+        self.assertEqual(config.servidor.host, "127.0.0.1")
+        self.assertEqual(config.servidor.porta, 7777)
+        self.assertTrue(config.visualizacao_movel.ativa)
+        self.assertEqual(config.visualizacao_movel.porta, 7778)
+
     def test_authenticated_owner_profile_is_fixed_and_operational(self):
         config = Config()
         self.assertEqual(config.seguranca.perfil, "admin")
@@ -478,20 +529,51 @@ class InterfaceBoundaryTests(unittest.TestCase):
         assets = ROOT / "condor" / "ui" / "assets"
         interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
         window = (ROOT / "condor_window.pyw").read_text("utf-8")
+        windows_identity = (ROOT / "condor" / "windows_identity.py").read_text("utf-8")
         windows_shortcut = (ROOT / "scripts" / "install_app_shortcut.ps1").read_text("utf-8")
         linux_shortcut = (ROOT / "scripts" / "install_app_shortcut.sh").read_text("utf-8")
+        native_launcher = (ROOT / "windows" / "CondorLauncher.cs").read_text("utf-8")
+        shortcut_identity = (ROOT / "windows" / "ShortcutIdentity.cs").read_text("utf-8")
 
         self.assertTrue((assets / "condor-logo.png").is_file())
         self.assertTrue((assets / "condor-logo.ico").is_file())
         self.assertIn('href="assets/condor-logo.png"', interface)
         self.assertIn("condor-logo.ico", window)
         self.assertIn("condor-logo.png", window)
-        self.assertIn("SetCurrentProcessExplicitAppUserModelID", window)
+        self.assertIn("prepare_process", window)
+        self.assertIn("SHGetPropertyStoreForWindow", windows_identity)
+        self.assertIn("condor-logo.ico", windows_identity)
+        self.assertIn("ARTX.Condor.Local", windows_identity)
         self.assertIn('options["icon"]', window)
         self.assertIn("condor-logo.ico", windows_shortcut)
         self.assertNotIn('$Shortcut.IconLocation = "$Pythonw,0"', windows_shortcut)
+        self.assertIn("Condor.exe", windows_shortcut)
+        self.assertIn("ARTX.Condor.Local", windows_shortcut)
+        self.assertIn("SetCurrentProcessExplicitAppUserModelID", native_launcher)
+        self.assertIn("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3", shortcut_identity)
+        self.assertIn("ARTX.Condor.Local", native_launcher)
+        self.assertTrue((ROOT / "Condor.exe").is_file())
         self.assertIn("condor-logo.png", linux_shortcut)
         self.assertIn("Icon=%s", linux_shortcut)
+
+    def test_mobile_view_is_separate_from_full_condor_control(self):
+        mobile = (ROOT / "condor" / "mobile" / "index.html").read_text("utf-8")
+        mobile_script = (ROOT / "condor" / "mobile" / "mobile.js").read_text("utf-8")
+        desktop = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
+        desktop_script = (ROOT / "condor" / "ui" / "scripts" / "mobile-access.js").read_text("utf-8")
+        server = (ROOT / "condor" / "server.py").read_text("utf-8")
+        packaging = (ROOT / "pyproject.toml").read_text("utf-8")
+
+        self.assertIn("SOMENTE LEITURA", mobile)
+        self.assertIn("/api/pair", mobile_script)
+        self.assertIn("/api/status", mobile_script)
+        self.assertNotIn("/api/memoria", mobile_script)
+        self.assertNotIn("/api/seguranca", mobile_script)
+        self.assertIn('id="mobileAccessBtn"', desktop)
+        self.assertIn("/api/mobile/access", desktop_script)
+        self.assertIn('host="0.0.0.0"', server)
+        self.assertIn("config.visualizacao_movel.porta", server)
+        self.assertIn('"mobile/**/*"', packaging)
 
     def test_desktop_app_targets_operational_ui_not_hub(self):
         launcher = (ROOT / "condor_app.pyw").read_text("utf-8")

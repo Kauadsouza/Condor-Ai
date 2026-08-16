@@ -77,7 +77,20 @@ adaptador do ambiente grafico instalado.
 
 ## VPN
 
-Nao exponha a porta 7777 na rede. Enquanto o Condor estiver em um PC so, deixe
-o servidor no loopback. Quando houver outro equipamento seu, siga o modelo em
-`deploy/wireguard/README.md` e mantenha a aplicacao no loopback ou em um proxy
-local autenticado dentro do tunel.
+Nao exponha a porta 7777 na rede. O nucleo completo permanece no loopback.
+
+## Ver no celular sem instalar aplicativo
+
+1. Deixe o PC e o celular conectados a mesma rede Wi-Fi privada.
+2. Abra o aplicativo Condor no PC e clique em **CELULAR**.
+3. No navegador do celular, digite o endereco mostrado pelo Condor.
+4. Digite o codigo de oito numeros exibido no PC.
+
+O endereco da porta `7778` e um espelho separado e somente leitura. Ele mostra
+estado tecnico e projetos, incluindo o prototipo 3D, mas nao oferece conversa,
+memoria, arquivos, senha, cofre nem controle do PC. O codigo muda quando o
+nucleo do Condor reinicia e cinco erros de pareamento bloqueiam novas tentativas
+por dez minutos.
+
+Para visualizar fora da mesma rede, siga `deploy/wireguard/README.md` e mantenha
+o nucleo em loopback. Nunca encaminhe a porta `7777` pelo roteador.

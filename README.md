@@ -30,6 +30,10 @@ Microsoft, celular, nuvem obrigatoria nem servico de login externo.
   e abrir os sistemas ARTX, sem receber memoria, arquivos ou acoes do PC;
 - aplicativo Condor em janela propria, aberto pelo atalho do sistema e com
   conversa, memoria, projetos e diagnostico, sem seletor de autonomia;
+- inicializador nativo no Windows com a identidade `ARTX.Condor.Local`, logo
+  propria no executavel, no Menu Iniciar, no atalho e na barra de tarefas;
+- visualizacao movel separada na porta `7778`, restrita a rede privada,
+  pareada por codigo e limitada a estado sanitizado e projetos somente leitura;
 - aba **Projetos** como catalogo local: cada card abre sua propria ficha com
   informacoes e prototipo; o Condor X e o primeiro projeto, com digital twin
   3D e modulos corporais clicaveis;
@@ -61,10 +65,11 @@ chave externa. O servidor local escolhido precisa implementar a Responses API.
 Neste PC, o perfil validado usa `qwen3:4b-instruct` e `qwen3-vl:2b`; os pesos ficam em
 `~/.condor/models`, fora do repositorio e sob controle local.
 
-VPN nao aumenta a seguranca de um programa que roda em um unico PC. Por isso,
-esta versao escuta somente no proprio computador. A pasta `deploy/wireguard`
-deixa a ligacao privada preparada para quando existir um segundo computador ou
-servidor que tambem seja seu.
+O nucleo completo continua escutando somente no proprio computador, em
+`127.0.0.1:7777`. A visualizacao opcional do celular usa outro servidor em
+`7778`, sem rotas de comando, memoria, arquivos ou cofre. Para acesso fora da
+mesma rede Wi-Fi, use o modelo em `deploy/wireguard`; nunca publique a porta
+`7777` na internet.
 
 ## Instalar
 
