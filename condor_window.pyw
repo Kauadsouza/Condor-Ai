@@ -14,12 +14,30 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import webview
 
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:7777/ui/index.html"
 
 TITULO = "Condor"
+ROOT = Path(__file__).resolve().parent
+ICON_PATH = ROOT / "condor" / "ui" / "assets" / (
+    "condor-logo.ico" if os.name == "nt" else "condor-logo.png"
+)
+
+
+def _preparar_identidade_windows() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ARTX.Condor.Local")
+    except Exception:
+        pass
+
+
 def _trazer_pra_frente() -> None:
     try:
         if os.name != "nt":
@@ -36,6 +54,8 @@ def _trazer_pra_frente() -> None:
 
 def main() -> None:
     from condor.instance import acquire
+
+    _preparar_identidade_windows()
     if not acquire("condor-window"):
         _trazer_pra_frente()
         sys.exit(0)
@@ -49,6 +69,8 @@ def main() -> None:
     # private_mode=True  → perfil descartável, sem cache velho
     # gui="edgechromium" → WebView2, o runtime nativo do Windows
     options = {"private_mode": True}
+    if ICON_PATH.is_file():
+        options["icon"] = str(ICON_PATH)
     if os.name == "nt":
         options["gui"] = "edgechromium"
     webview.start(**options)

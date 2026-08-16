@@ -474,6 +474,25 @@ class ConfigTests(unittest.TestCase):
 
 
 class InterfaceBoundaryTests(unittest.TestCase):
+    def test_condor_universal_logo_is_used_by_app_and_shortcuts(self):
+        assets = ROOT / "condor" / "ui" / "assets"
+        interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
+        window = (ROOT / "condor_window.pyw").read_text("utf-8")
+        windows_shortcut = (ROOT / "scripts" / "install_app_shortcut.ps1").read_text("utf-8")
+        linux_shortcut = (ROOT / "scripts" / "install_app_shortcut.sh").read_text("utf-8")
+
+        self.assertTrue((assets / "condor-logo.png").is_file())
+        self.assertTrue((assets / "condor-logo.ico").is_file())
+        self.assertIn('href="assets/condor-logo.png"', interface)
+        self.assertIn("condor-logo.ico", window)
+        self.assertIn("condor-logo.png", window)
+        self.assertIn("SetCurrentProcessExplicitAppUserModelID", window)
+        self.assertIn('options["icon"]', window)
+        self.assertIn("condor-logo.ico", windows_shortcut)
+        self.assertNotIn('$Shortcut.IconLocation = "$Pythonw,0"', windows_shortcut)
+        self.assertIn("condor-logo.png", linux_shortcut)
+        self.assertIn("Icon=%s", linux_shortcut)
+
     def test_desktop_app_targets_operational_ui_not_hub(self):
         launcher = (ROOT / "condor_app.pyw").read_text("utf-8")
         window = (ROOT / "condor_window.pyw").read_text("utf-8")
