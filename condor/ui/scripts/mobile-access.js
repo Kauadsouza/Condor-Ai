@@ -7,6 +7,8 @@
   const code = document.getElementById('mobileAccessCode');
   const error = document.getElementById('mobileAccessError');
 
+  if (!button) return;
+
   async function open() {
     modal.hidden = false;
     error.textContent = '';

@@ -46,6 +46,51 @@ Modelos locais
 O pacote `condor/security` nao chama IA. Essa separacao impede que uma resposta
 do modelo mude permissao, desbloqueie o dono ou amplie o catalogo de ferramentas.
 
+## Condor Core
+
+O aplicativo operacional agora converge pelas seguintes camadas centrais:
+
+```text
+UI / Voz / Mobile / Dispositivos
+              |
+          Condor Core
+   +----------+----------+
+   |          |          |
+Context    Event Bus   AI Gateway
+Engine        |          |
+   |      Project      Provider
+   |       Engine       local
+   |          |
+   +---- Device Bridge
+             |
+      Action Safety Layer
+```
+
+- `ContextEngine`: estado estruturado do projeto, regiao, peca, arquivo,
+  dispositivo e modo atual, sem segredos ou biometria no contrato da IA;
+- `EventBus`: eventos persistidos no snapshot cifrado e transmitidos em tempo
+  real pela conexao WebSocket existente;
+- `AIGateway`: ponto unico para o provedor atual e para futuros provedores;
+- `ProjectEngine`: projetos, pecas, rascunhos, versoes e integracao explicita;
+- `DeviceBridge`: contratos modulares para Serial, Bluetooth e Wi-Fi;
+- `ActionSafetyLayer`: classificacao independente de nivel 0 a 5. Atuadores e
+  acoes perigosas permanecem bloqueados nesta versao.
+- `CameraBridge`: fontes RTSP/ONVIF/HTTP/MJPEG da rede privada, quadros
+  processados pelo modelo de visao local sem armazenamento e alertas de
+  possivel presenca humana transmitidos pelo Event Bus. Nao ha reconhecimento
+  facial nem envio de imagem para nuvem.
+
+Uma peca nasce com `status=draft` e `integrated=0`. Criar versoes nao altera o
+modelo principal. Somente a acao explicita `INTEGRAR AO MODELO` muda esse estado.
+O mapa humano e um contrato de dados em seis camadas: silhueta, estrutura,
+ossos, articulacoes, eixos de movimento e pontos tecnicos. Maos registram cada
+dedo, suas falanges e articulacoes separadamente.
+
+Na interface, o corpo permanece dentro de Projetos e o fluxo de pecas acontece
+na propria regiao selecionada. Programacao concentra editor, descoberta
+Serial/Arduino, Device Bridge, estado real de voz/gestos e Camera Bridge; nao
+existem abas paralelas de Desenvolvimento, Corpo ou Dispositivos.
+
 Adaptadores dependentes do sistema ficam nas bordas. O servidor, cofre,
 memoria, politica, identidade, auditoria e protocolo da interface usam recursos
 portateis de Python e formatos abertos.

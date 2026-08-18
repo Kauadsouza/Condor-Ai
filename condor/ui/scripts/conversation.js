@@ -37,6 +37,9 @@ const CondorConversa = (() => {
     CondorWS.ao('ferramenta.inicio', (m) => acaoIniciou(m));
     CondorWS.ao('ferramenta.fim', (m) => acaoTerminou(m));
     CondorWS.ao('erro', (m) => finalizar(m.mensagem || 'Deu ruim aqui.'));
+    // O servidor recusa um pedido novo enquanto termina o anterior. Sem isto a
+    // mensagem digitada sumia da tela sem explicacao nenhuma.
+    CondorWS.ao('ocupado', (m) => finalizar(m.mensagem || 'Ainda estou no pedido anterior.'));
     CondorWS.ao('dormiu', () => { marcarSessao('DORMIU'); fecharBolha(); });
     CondorWS.ao('acordou', () => marcarSessao('ACORDOU'));
   }

@@ -293,7 +293,7 @@ class Cerebro:
             }
         if decisao.requires_approval:
             descricao = _descrever(nome, args)
-            liberado = await self._guarda.autorizar(decisao, descricao)
+            liberado = await self._guarda.autorizar(decisao, descricao, nome)
             if not liberado:
                 return {
                     "ok": False,
@@ -429,7 +429,25 @@ def _resumir_args(args: dict) -> str:
 
 
 def _descrever(nome: str, args: dict) -> str:
-    alvo = (args.get("comando") or args.get("codigo") or args.get("caminho") or "")
+    """Resume a acao pro pedido de aprovacao.
+
+    Precisa mostrar o alvo de verdade: aprovar 'mover' sem ver origem e destino
+    nao e aprovacao, e adivinhacao.
+    """
+    if nome in {"mover", "copiar"}:
+        alvo = f"{args.get('origem', '')} -> {args.get('destino', '')}"
+    elif nome == "baixar":
+        alvo = f"{args.get('url', '')} -> {args.get('destino', '')}"
+    else:
+        alvo = (
+            args.get("caminho")
+            or args.get("nome")
+            or args.get("alvo")
+            or args.get("url")
+            or args.get("teclas")
+            or args.get("titulo")
+            or ""
+        )
     return f"{nome}: {str(alvo)[:150]}"
 
 

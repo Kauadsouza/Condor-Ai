@@ -13,6 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from condor.paths import resolver_alvo
+
 
 class RiskLevel(str, Enum):
     SAFE = "safe"
@@ -129,10 +131,18 @@ class PolicyEngine:
             raw = str(arguments.get(key) or "").strip()
             if not raw:
                 continue
+            # resolver_alvo e a mesma normalizacao que o executor aplica, entao
+            # os dois lados enxergam o mesmo destino. O .resolve() final segue
+            # link simbolico e junction — e exatamente onde o sistema vai gravar,
+            # que e o que precisa estar dentro das raizes. As raizes tambem sao
+            # guardadas resolvidas, entao pasta redirecionada (OneDrive) casa.
             try:
-                candidate = Path(raw).expanduser().resolve()
-            except OSError:
+                candidate = resolver_alvo(raw).resolve()
+            except (OSError, ValueError):
                 return f"Caminho invalido em {key}."
-            if not any(candidate == root or root in candidate.parents for root in self.allowed_roots):
+            if not any(
+                candidate == root or root in candidate.parents
+                for root in self.allowed_roots
+            ):
                 return f"{candidate} esta fora das pastas permitidas do Condor."
         return None

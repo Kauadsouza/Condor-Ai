@@ -156,6 +156,184 @@ CREATE TABLE IF NOT EXISTS condor_x_parts (
     atualizado REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS condor_x_region_items (
+    id       TEXT PRIMARY KEY,
+    regiao   TEXT NOT NULL,
+    tipo     TEXT NOT NULL,
+    titulo   TEXT NOT NULL,
+    detalhes TEXT NOT NULL DEFAULT '',
+    status   TEXT NOT NULL DEFAULT 'rascunho',
+    criado   REAL NOT NULL,
+    atualizado REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_condor_x_region_items
+ON condor_x_region_items(regiao, atualizado DESC);
+
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    active_version_id TEXT,
+    created REAL NOT NULL,
+    updated REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_versions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    notes TEXT NOT NULL DEFAULT '',
+    created REAL NOT NULL,
+    UNIQUE(project_id, number)
+);
+
+CREATE TABLE IF NOT EXISTS assemblies (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    parent_id TEXT REFERENCES assemblies(id) ON DELETE CASCADE,
+    region TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    created REAL NOT NULL,
+    updated REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS parts (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    assembly_id TEXT REFERENCES assemblies(id) ON DELETE SET NULL,
+    region TEXT NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'component',
+    status TEXT NOT NULL DEFAULT 'draft',
+    current_version_id TEXT,
+    material TEXT,
+    weight_g REAL,
+    dimensions_json TEXT NOT NULL DEFAULT '{}',
+    thickness_mm REAL,
+    position_json TEXT NOT NULL DEFAULT '{}',
+    rotation_json TEXT NOT NULL DEFAULT '{}',
+    integrated INTEGER NOT NULL DEFAULT 0,
+    created REAL NOT NULL,
+    updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_parts_project_region ON parts(project_id, region, updated DESC);
+
+CREATE TABLE IF NOT EXISTS part_versions (
+    id TEXT PRIMARY KEY,
+    part_id TEXT NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    number INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created REAL NOT NULL,
+    UNIQUE(part_id, number)
+);
+
+CREATE TABLE IF NOT EXISTS anchor_points (
+    id TEXT PRIMARY KEY,
+    part_id TEXT NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'mechanical',
+    position_json TEXT NOT NULL DEFAULT '{}',
+    rotation_json TEXT NOT NULL DEFAULT '{}',
+    created REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS part_dependencies (
+    part_id TEXT NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+    depends_on_part_id TEXT NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+    created REAL NOT NULL,
+    PRIMARY KEY(part_id, depends_on_part_id)
+);
+
+CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    connection TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'available',
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    permissions_json TEXT NOT NULL DEFAULT '[]',
+    last_seen REAL,
+    created REAL NOT NULL,
+    updated REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS device_sessions (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    started REAL NOT NULL,
+    ended REAL,
+    status TEXT NOT NULL DEFAULT 'connected'
+);
+
+CREATE TABLE IF NOT EXISTS permissions (
+    capability TEXT PRIMARY KEY,
+    allowed INTEGER NOT NULL DEFAULT 0,
+    scope TEXT NOT NULL DEFAULT 'local',
+    updated REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS core_events (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    project_id TEXT,
+    correlation_id TEXT,
+    payload_json TEXT NOT NULL,
+    timestamp REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_core_events_time ON core_events(timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS files (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    part_id TEXT REFERENCES parts(id) ON DELETE SET NULL,
+    path TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'document',
+    checksum TEXT NOT NULL DEFAULT '',
+    created REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS biometric_readings (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    recorded REAL NOT NULL,
+    consent_ref TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS camera_sources (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    zone TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'configured',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created REAL NOT NULL,
+    updated REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS security_alerts (
+    id TEXT PRIMARY KEY,
+    camera_id TEXT REFERENCES camera_sources(id) ON DELETE SET NULL,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    confidence REAL,
+    acknowledged INTEGER NOT NULL DEFAULT 0,
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_security_alerts_time ON security_alerts(created DESC);
+
 CREATE TABLE IF NOT EXISTS creator_items (
     id       TEXT PRIMARY KEY,
     titulo   TEXT NOT NULL,
@@ -205,6 +383,15 @@ DEFAULT_CONDOR_X_PARTS = (
     ("power", "Energia", "infraestrutura", "bloqueado", 8, "alto", "Somente fonte certificada e teste de bancada com protecao."),
 )
 
+DEFAULT_PERMISSIONS = (
+    ("microphone", 0, "local"),
+    ("camera", 0, "local"),
+    ("serial", 0, "device"),
+    ("bluetooth", 0, "device"),
+    ("health_data", 0, "private"),
+    ("robot_control", 0, "physical"),
+)
+
 FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS fatos_fts USING fts5(
     chave, valor, content='fatos', content_rowid='id', tokenize='unicode61'
@@ -250,11 +437,23 @@ class Memoria:
 
     @contextmanager
     def _conn(self):
+        """Abre o banco em RAM. So regrava o snapshot cifrado se algo mudou.
+
+        Antes toda saida deste bloco chamava ``_persist()`` — inclusive consulta
+        pura. Cada ``estatisticas()`` ou ``custo_hoje()`` serializava o banco
+        inteiro, cifrava em AES-GCM e dava fsync; com a interface consultando em
+        laco, eram centenas de KB reescritos por segundo sem nada ter mudado.
+
+        ``total_changes`` decide sozinho, em vez de cada metodo se declarar
+        leitura ou escrita: assim um metodo novo nao pode esquecer de persistir.
+        """
         with self._lock:
+            marca = self._database.total_changes
             try:
                 yield self._database
-                self._database.commit()
-                self._persist()
+                if self._database.total_changes != marca:
+                    self._database.commit()
+                    self._persist()
             except Exception:
                 self._database.rollback()
                 raise
@@ -344,6 +543,30 @@ class Memoria:
                        (id,nome,zona,status,progresso,risco,resumo,atualizado)
                        VALUES(?,?,?,?,?,?,?,?)""",
                     [(*item, agora) for item in DEFAULT_CONDOR_X_PARTS],
+                )
+                conn.execute(
+                    """INSERT OR IGNORE INTO projects
+                       (id,name,description,status,created,updated)
+                       VALUES('condor-x','Condor X · Modelo 01',
+                       'Ambiente técnico central para desenvolvimento digital e físico.',
+                       'active',?,?)""",
+                    (agora, agora),
+                )
+                conn.execute(
+                    """INSERT OR IGNORE INTO project_versions
+                       (id,project_id,number,label,status,notes,created)
+                       VALUES('project_version_condor_x_1','condor-x',1,'V1','active',
+                       'Base arquitetural inicial do Condor X.',?)""",
+                    (agora,),
+                )
+                conn.execute(
+                    """UPDATE projects SET active_version_id=COALESCE(active_version_id,
+                       'project_version_condor_x_1') WHERE id='condor-x'"""
+                )
+                conn.executemany(
+                    """INSERT OR IGNORE INTO permissions
+                       (capability,allowed,scope,updated) VALUES(?,?,?,?)""",
+                    [(*item, agora) for item in DEFAULT_PERMISSIONS],
                 )
         log.info("Memória pronta em RAM; snapshot cifrado: %s", self._path)
 
@@ -704,6 +927,296 @@ class Memoria:
                 (status, progresso, time.time(), item_id),
             )
             return result.rowcount > 0
+
+    def condor_x_region_items(self, regiao: str | None = None) -> list[dict]:
+        with self._conn() as conn:
+            if regiao:
+                rows = conn.execute(
+                    "SELECT * FROM condor_x_region_items WHERE regiao=? ORDER BY atualizado DESC",
+                    (regiao,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM condor_x_region_items ORDER BY atualizado DESC"
+                ).fetchall()
+            return [dict(row) for row in rows]
+
+    def condor_x_create_region_item(
+        self, regiao: str, tipo: str, titulo: str, detalhes: str
+    ) -> dict:
+        agora = time.time()
+        item_id = self._id("cx")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO condor_x_region_items
+                   (id,regiao,tipo,titulo,detalhes,status,criado,atualizado)
+                   VALUES(?,?,?,?,?,'rascunho',?,?)""",
+                (item_id, regiao, tipo, titulo, detalhes, agora, agora),
+            )
+            row = conn.execute(
+                "SELECT * FROM condor_x_region_items WHERE id=?", (item_id,)
+            ).fetchone()
+            return dict(row)
+
+    def condor_x_update_region_item(
+        self, item_id: str, titulo: str, detalhes: str, status: str
+    ) -> bool:
+        with self._conn() as conn:
+            result = conn.execute(
+                """UPDATE condor_x_region_items
+                   SET titulo=?, detalhes=?, status=?, atualizado=? WHERE id=?""",
+                (titulo, detalhes, status, time.time(), item_id),
+            )
+            return result.rowcount > 0
+
+    def condor_x_delete_region_item(self, item_id: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute(
+                "DELETE FROM condor_x_region_items WHERE id=?", (item_id,)
+            ).rowcount > 0
+
+    # ── Condor Core: projetos, peças, versões e eventos ──────────────────
+
+    @staticmethod
+    def _json_object(value) -> str:
+        return json.dumps(value if isinstance(value, dict) else {}, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _decode_json(value: str, fallback):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    def get_project(self, project_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT p.*, v.label AS active_version_label
+                   FROM projects p LEFT JOIN project_versions v ON v.id=p.active_version_id
+                   WHERE p.id=?""", (project_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def project_snapshot(self, project_id: str) -> dict:
+        if not self.unlocked:
+            return {"locked": True, "project": None, "parts": [], "versions": []}
+        with self._conn() as conn:
+            project = self.get_project(project_id)
+            if project is None:
+                return {"locked": False, "project": None, "parts": [], "versions": []}
+            parts = [dict(row) for row in conn.execute(
+                "SELECT * FROM parts WHERE project_id=? ORDER BY updated DESC", (project_id,)
+            ).fetchall()]
+            for part in parts:
+                part["dimensions"] = self._decode_json(part.pop("dimensions_json"), {})
+                part["position"] = self._decode_json(part.pop("position_json"), {})
+                part["rotation"] = self._decode_json(part.pop("rotation_json"), {})
+                part["integrated"] = bool(part["integrated"])
+            versions = [dict(row) for row in conn.execute(
+                "SELECT * FROM project_versions WHERE project_id=? ORDER BY number DESC", (project_id,)
+            ).fetchall()]
+            return {"locked": False, "project": project, "parts": parts, "versions": versions}
+
+    def create_part_draft(self, project_id: str, region: str, payload: dict) -> dict:
+        if self.get_project(project_id) is None:
+            raise KeyError("projeto não encontrado")
+        agora = time.time()
+        part_id = self._id("part")
+        version_id = self._id("partv")
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("name obrigatório")
+        part_type = str(payload.get("type") or "component").strip()[:50]
+        material = str(payload.get("material") or "").strip()[:120] or None
+        snapshot = {
+            "name": name[:180], "type": part_type, "region": region,
+            "material": material, "weight_g": payload.get("weight_g"),
+            "dimensions": payload.get("dimensions") if isinstance(payload.get("dimensions"), dict) else {},
+            "thickness_mm": payload.get("thickness_mm"),
+            "position": payload.get("position") if isinstance(payload.get("position"), dict) else {},
+            "rotation": payload.get("rotation") if isinstance(payload.get("rotation"), dict) else {},
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO parts
+                   (id,project_id,region,name,type,status,current_version_id,material,weight_g,
+                    dimensions_json,thickness_mm,position_json,rotation_json,integrated,created,updated)
+                   VALUES(?,?,?,?,?,'draft',?,?,?,?,?,?,?,0,?,?)""",
+                (part_id, project_id, region[:80], name[:180], part_type, version_id, material,
+                 payload.get("weight_g"), self._json_object(snapshot["dimensions"]),
+                 payload.get("thickness_mm"), self._json_object(snapshot["position"]),
+                 self._json_object(snapshot["rotation"]), agora, agora),
+            )
+            conn.execute(
+                """INSERT INTO part_versions
+                   (id,part_id,project_id,number,label,snapshot_json,notes,created)
+                   VALUES(?,?,?,1,'V1',?,?,?)""",
+                (version_id, part_id, project_id, json.dumps(snapshot, ensure_ascii=False),
+                 str(payload.get("notes") or "")[:4000], agora),
+            )
+        return self.project_snapshot(project_id)["parts"][0]
+
+    def create_part_version(self, part_id: str, payload: dict) -> dict:
+        agora = time.time()
+        with self._conn() as conn:
+            part = conn.execute("SELECT * FROM parts WHERE id=?", (part_id,)).fetchone()
+            if not part:
+                raise KeyError("peça não encontrada")
+            number = int(conn.execute(
+                "SELECT COALESCE(MAX(number),0)+1 FROM part_versions WHERE part_id=?", (part_id,)
+            ).fetchone()[0])
+            version_id = self._id("partv")
+            snapshot = dict(payload.get("snapshot") or {})
+            if not snapshot:
+                snapshot = {"name": part["name"], "type": part["type"], "region": part["region"]}
+            conn.execute(
+                """INSERT INTO part_versions
+                   (id,part_id,project_id,number,label,snapshot_json,notes,created)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (version_id, part_id, part["project_id"], number, f"V{number}",
+                 json.dumps(snapshot, ensure_ascii=False), str(payload.get("notes") or "")[:4000], agora),
+            )
+            conn.execute(
+                "UPDATE parts SET current_version_id=?, updated=? WHERE id=?",
+                (version_id, agora, part_id),
+            )
+            row = conn.execute("SELECT * FROM part_versions WHERE id=?", (version_id,)).fetchone()
+            result = dict(row)
+            result["snapshot"] = self._decode_json(result.pop("snapshot_json"), {})
+            return result
+
+    def integrate_part(self, part_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT project_id FROM parts WHERE id=?", (part_id,)).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "UPDATE parts SET status='integrated', integrated=1, updated=? WHERE id=?",
+                (time.time(), part_id),
+            )
+            return next((part for part in self.project_snapshot(row["project_id"])["parts"] if part["id"] == part_id), None)
+
+    def part_versions(self, part_id: str) -> list[dict]:
+        with self._conn() as conn:
+            result = []
+            for row in conn.execute(
+                "SELECT * FROM part_versions WHERE part_id=? ORDER BY number DESC", (part_id,)
+            ).fetchall():
+                item = dict(row)
+                item["snapshot"] = self._decode_json(item.pop("snapshot_json"), {})
+                result.append(item)
+            return result
+
+    def registrar_evento(self, event: dict) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO core_events
+                   (id,type,source,project_id,correlation_id,payload_json,timestamp)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (event["id"], event["type"], event["source"], event.get("project_id"),
+                 event.get("correlation_id"), json.dumps(event.get("payload", {}), ensure_ascii=False),
+                 event["timestamp"]),
+            )
+
+    def eventos_recentes(self, limite: int = 50) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM core_events ORDER BY timestamp DESC LIMIT ?", (max(1, min(limite, 250)),)
+            ).fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["payload"] = self._decode_json(item.pop("payload_json"), {})
+                result.append(item)
+            return result
+
+    def devices(self) -> list[dict]:
+        with self._conn() as conn:
+            result = []
+            for row in conn.execute("SELECT * FROM devices ORDER BY updated DESC").fetchall():
+                item = dict(row)
+                item["capabilities"] = self._decode_json(item.pop("capabilities_json"), [])
+                item["permissions"] = self._decode_json(item.pop("permissions_json"), [])
+                result.append(item)
+            return result
+
+    def permissions(self) -> list[dict]:
+        with self._conn() as conn:
+            return [
+                {**dict(row), "allowed": bool(row["allowed"])}
+                for row in conn.execute("SELECT * FROM permissions ORDER BY capability").fetchall()
+            ]
+
+    def set_permission(self, capability: str, allowed: bool) -> bool:
+        with self._conn() as conn:
+            result = conn.execute(
+                "UPDATE permissions SET allowed=?, updated=? WHERE capability=?",
+                (int(allowed), time.time(), capability),
+            )
+            return result.rowcount > 0
+
+    # ── Camera Bridge e alertas locais ───────────────────────────────────
+
+    def create_camera_source(self, name: str, protocol: str, endpoint: str, zone: str) -> dict:
+        agora = time.time()
+        camera_id = self._id("camera")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO camera_sources
+                   (id,name,protocol,endpoint,zone,status,enabled,created,updated)
+                   VALUES(?,?,?,?,?,'configured',1,?,?)""",
+                (camera_id, name, protocol, endpoint, zone, agora, agora),
+            )
+        return next(item for item in self.camera_sources() if item["id"] == camera_id)
+
+    def camera_sources(self) -> list[dict]:
+        with self._conn() as conn:
+            result = []
+            for row in conn.execute(
+                "SELECT id,name,protocol,zone,status,enabled,created,updated FROM camera_sources ORDER BY updated DESC"
+            ).fetchall():
+                item = dict(row)
+                item["enabled"] = bool(item["enabled"])
+                result.append(item)
+            return result
+
+    def camera_source_private(self, camera_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM camera_sources WHERE id=?", (camera_id,)).fetchone()
+            return dict(row) if row else None
+
+    def update_camera_status(self, camera_id: str, status: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute(
+                "UPDATE camera_sources SET status=?, updated=? WHERE id=?",
+                (status, time.time(), camera_id),
+            ).rowcount > 0
+
+    def create_security_alert(
+        self, camera_id: str | None, event_type: str, summary: str, confidence: float | None
+    ) -> dict:
+        alert_id = self._id("alert")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO security_alerts
+                   (id,camera_id,event_type,summary,confidence,acknowledged,created)
+                   VALUES(?,?,?,?,?,0,?)""",
+                (alert_id, camera_id, event_type, summary, confidence, time.time()),
+            )
+            row = conn.execute("SELECT * FROM security_alerts WHERE id=?", (alert_id,)).fetchone()
+            item = dict(row)
+            item["acknowledged"] = bool(item["acknowledged"])
+            return item
+
+    def security_alerts(self, limit: int = 50) -> list[dict]:
+        with self._conn() as conn:
+            return [
+                {**dict(row), "acknowledged": bool(row["acknowledged"])}
+                for row in conn.execute(
+                    "SELECT * FROM security_alerts ORDER BY created DESC LIMIT ?",
+                    (max(1, min(limit, 200)),),
+                ).fetchall()
+            ]
 
     def hub_create_creator_item(self, titulo: str, etapa: str, notas: str) -> dict:
         agora = time.time()

@@ -5,6 +5,7 @@ window.addEventListener('DOMContentLoaded', () => {
   CondorVoz.init();
   CondorMemoria.init();
   CondorProjetos.init();
+  CondorCoreUI.init();
   CondorErros.init();
   CondorWS.conectar();
 

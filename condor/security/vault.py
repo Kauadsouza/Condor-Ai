@@ -46,6 +46,7 @@ class CondorVault:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._key: bytearray | None = None
+        self._salt: bytes | None = None
         self._data: dict[str, Any] = {}
 
     @property
@@ -61,6 +62,7 @@ class CondorVault:
             raise VaultError("O cofre do Condor ja existe.")
         salt = os.urandom(16)
         self._key = bytearray(_derive(passphrase, salt))
+        self._salt = salt
         self._data = dict(initial or {})
         self._write(salt)
 
@@ -81,6 +83,7 @@ class CondorVault:
         except (InvalidTag, ValueError) as exc:
             raise VaultError("Frase secreta incorreta ou cofre alterado.") from exc
         self._key = bytearray(key)
+        self._salt = salt
         self._data = json.loads(plaintext.decode("utf-8"))
 
     def lock(self) -> None:
@@ -88,39 +91,45 @@ class CondorVault:
             for index in range(len(self._key)):
                 self._key[index] = 0
         self._key = None
+        self._salt = None
         self._data = {}
 
     def get(self, name: str, default: Any = None) -> Any:
         self._require_unlocked()
         return self._data.get(name, default)
 
+    # O salt vive na memoria junto com a chave. Reler do disco a cada gravacao
+    # deixava o cofre regravar com um salt vindo de arquivo possivelmente
+    # adulterado: a chave em memoria continuava certa, mas o proximo unlock
+    # derivava outra coisa e o cofre ficava inacessivel pra sempre.
     def set(self, name: str, value: Any) -> None:
         self._require_unlocked()
         self._data[name] = value
-        envelope = json.loads(self.path.read_text(encoding="utf-8"))
-        self._write(_unb64(envelope["salt"]))
+        self._write(self._salt)
 
     def delete(self, name: str) -> bool:
         self._require_unlocked()
         existed = name in self._data
         self._data.pop(name, None)
         if existed:
-            envelope = json.loads(self.path.read_text(encoding="utf-8"))
-            self._write(_unb64(envelope["salt"]))
+            self._write(self._salt)
         return existed
 
     def rotate(self, current: str, replacement: str) -> None:
         self.unlock(current)
         salt = os.urandom(16)
         self._key = bytearray(_derive(replacement, salt))
+        self._salt = salt
         self._write(salt)
 
     def _require_unlocked(self) -> None:
         if self._key is None:
             raise VaultError("O cofre do Condor esta bloqueado.")
 
-    def _write(self, salt: bytes) -> None:
+    def _write(self, salt: bytes | None) -> None:
         self._require_unlocked()
+        if not salt:
+            raise VaultError("Cofre sem salt em memoria; desbloqueie de novo.")
         nonce = os.urandom(12)
         plaintext = json.dumps(
             self._data, ensure_ascii=False, sort_keys=True, separators=(",", ":")

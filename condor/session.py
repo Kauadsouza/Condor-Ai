@@ -124,7 +124,15 @@ class Sessao:
 
     async def processar(self, texto: str, por_voz: bool) -> None:
         if self._ocupado.locked():
-            log.info("Já estou no meio de um pedido — ignorando o novo.")
+            # Antes isto era um return mudo: quem digitava durante uma resposta
+            # via a mensagem sumir da interface sem nenhum sinal, e nao tinha
+            # como saber se o Condor recebeu.
+            log.info("Já estou no meio de um pedido — avisando e ignorando o novo.")
+            await self._evento(
+                "ocupado",
+                mensagem="Ainda estou terminando o pedido anterior. Manda de novo daqui a pouco.",
+                texto=texto,
+            )
             return
 
         async with self._ocupado:

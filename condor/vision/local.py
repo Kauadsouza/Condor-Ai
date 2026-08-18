@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import time
 from urllib.parse import urlsplit
 
 import httpx
 
 
 class VisaoLocal:
+    # A interface consulta /api/hub em laco e cada consulta abria uma conexao
+    # nova com o Ollama so pra perguntar se o modelo existe (~390 ms).
+    VALIDADE_DISPONIBILIDADE = 30.0
+
     def __init__(self, config) -> None:
         self._cfg = config
+        self._pronto_cache: tuple[float, bool] | None = None
 
     @property
     def modelo(self) -> str:
@@ -53,11 +59,18 @@ class VisaoLocal:
     async def pronto(self) -> bool:
         if not self.modelo:
             return False
+        agora = time.monotonic()
+        if self._pronto_cache and agora < self._pronto_cache[0]:
+            return self._pronto_cache[1]
         parsed = urlsplit(self.endpoint)
         url = f"{parsed.scheme}://{parsed.netloc}/api/tags"
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 data = (await client.get(url)).json()
-            return any(str(item.get("name", "")) == self.modelo for item in data.get("models", []))
+            disponivel = any(
+                str(item.get("name", "")) == self.modelo for item in data.get("models", [])
+            )
         except Exception:
-            return False
+            disponivel = False
+        self._pronto_cache = (agora + self.VALIDADE_DISPONIBILIDADE, disponivel)
+        return disponivel

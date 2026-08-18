@@ -5,12 +5,12 @@ const pairCode = document.getElementById('pairCode');
 const pairError = document.getElementById('pairError');
 
 const MODULES = {
-  head: ['ANATOMIA CRANIOFACIAL', 'Cabeça', 'Crânio humano, mandíbula definida, olhos completos, nariz, orelhas e proporções faciais naturais.', ['Crânio e mandíbula', 'Olhos e pálpebras', 'Interface facial técnica']],
-  chest: ['ESTRUTURA CENTRAL', 'Tórax', 'Volume humano atlético, cintura anatômica, clavículas, peitoral e superfície tecnológica integrada.', ['Caixa torácica proporcional', 'Postura neutra real', 'Núcleo C integrado']],
-  'left-arm': ['MEMBRO SUPERIOR', 'Braço esquerdo', 'Ombro, braço, antebraço, punho articulado e mão com cinco dedos.', ['Deltoide anatômico', 'Volume muscular contínuo', 'Mão humana completa']],
-  'right-arm': ['MEMBRO SUPERIOR', 'Braço direito', 'Ombro, braço, antebraço, punho articulado e mão com cinco dedos.', ['Deltoide anatômico', 'Volume muscular contínuo', 'Mão humana completa']],
-  legs: ['BASE E LOCOMOÇÃO', 'Pernas', 'Quadril, coxas, joelhos, panturrilhas, tornozelos e pés seguem uma linha corporal humana contínua.', ['Quadríceps e posteriores', 'Patelas definidas', 'Pés proporcionais']],
-  power: ['IDENTIDADE CONDOR', 'Núcleo C', 'A letra C permanece como assinatura visual do Condor X, integrada ao centro do peito.', ['Marca C permanente', 'Halo de telemetria', 'Pulso visual local']],
+  head: ['ZONA DE PLANEJAMENTO', 'Cabeça', 'Referência visual para planejamento futuro. Nenhum componente, capacidade ou requisito foi definido.', ['Estado: não iniciado', 'Requisitos: não registrados', 'Testes: não registrados']],
+  chest: ['ZONA DE PLANEJAMENTO', 'Tórax', 'Referência visual para planejamento futuro. Nenhum componente, capacidade ou requisito foi definido.', ['Estado: não iniciado', 'Requisitos: não registrados', 'Testes: não registrados']],
+  'left-arm': ['ZONA DE PLANEJAMENTO', 'Braço esquerdo', 'Referência visual para planejamento futuro. Nenhum componente, capacidade ou requisito foi definido.', ['Estado: não iniciado', 'Requisitos: não registrados', 'Testes: não registrados']],
+  'right-arm': ['ZONA DE PLANEJAMENTO', 'Braço direito', 'Referência visual para planejamento futuro. Nenhum componente, capacidade ou requisito foi definido.', ['Estado: não iniciado', 'Requisitos: não registrados', 'Testes: não registrados']],
+  legs: ['ZONA DE PLANEJAMENTO', 'Pernas', 'Referência visual para planejamento futuro. Nenhum componente, capacidade ou requisito foi definido.', ['Estado: não iniciado', 'Requisitos: não registrados', 'Testes: não registrados']],
+  power: ['REFERÊNCIA VISUAL', 'Centro', 'Ponto central do modelo sem função técnica atribuída nesta V1.', ['Estado: referência visual', 'Função: não definida', 'Testes: não registrados']],
 };
 
 function selectModule(id) {

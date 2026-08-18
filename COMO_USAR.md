@@ -11,10 +11,6 @@
 4. Crie o cofre com seu nome e uma frase secreta exclusiva.
 5. Chaves externas sao opcionais e ficam cifradas no cofre.
 
-Se quiser conhecer o visual antes disso, use `VER A INTERFACE PRIMEIRO`. Esse
-modo e somente uma previa: conversa, memoria e acoes continuam bloqueadas ate o
-cofre ser criado. O aviso no topo permite voltar para a configuracao.
-
 Neste PC, a IA local ja foi validada com `qwen3:4b-instruct`. Depois da primeira
 instalacao, `scripts/run.ps1` inicia o Condor e a IA local juntos. No Linux, use
 `scripts/run.sh` e um Ollama instalado localmente.

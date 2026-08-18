@@ -18,9 +18,23 @@ from condor.security.policy import ActionDecision, AutonomyProfile, PolicyEngine
 
 PedidoAprovacao = Callable[[str, str], Awaitable[str | None]]
 
+# Ferramentas que continuam pedindo a frase secreta mesmo com a sessao do dono
+# aberta. Sao as de efeito irreversivel ou de alcance grande demais pra confiar
+# num planejador que le pagina da internet: uma instrucao escondida num site
+# lido pelo `ler_site` nao pode virar arquivo gravado ou processo encerrado sem
+# voce ver. As demais (screenshot, clicar, digitar, ler_clipboard) seguem
+# liberadas durante a sessao — se quiser endurecer, e so acrescentar aqui.
+SEMPRE_CONFIRMA = frozenset({
+    "escrever_arquivo",
+    "deletar",
+    "mover",
+    "baixar",
+    "fechar_app",
+})
+
 
 class Guarda:
-    def __init__(self, config, memoria=None) -> None:
+    def __init__(self, config, memoria=None, identity=None) -> None:
         self._cfg = config
         self._memoria = memoria
         roots = [Path(value) for value in config.seguranca.pastas_permitidas]
@@ -37,7 +51,9 @@ class Guarda:
             simulation=config.seguranca.simulacao,
         )
         self.owner = OwnerAuth(state_path("security", "owner.json"))
-        self._audit = IntegrityAudit(state_path("audit", "actions.jsonl"))
+        # A identidade Ed25519 assina a ancora da auditoria: sem ela, o log
+        # inteiro pode ser reconstruido do zero e ainda passar na verificacao.
+        self._audit = IntegrityAudit(state_path("audit", "actions.jsonl"), identity)
         self._pedir: PedidoAprovacao | None = None
         self._emergency_stop = False
         self._owner_session_active = False
@@ -54,12 +70,17 @@ class Guarda:
         self.owner.setup(passphrase)
 
     def unlock_owner_session(self) -> None:
-        """Uma autenticacao local valida ativa o unico perfil operacional."""
+        """Uma autenticacao local valida abre a sessao operacional do dono.
+
+        A sessao muda o runtime, nao o arquivo de configuracao. Antes daqui
+        forcava perfil=admin e simulacao=False no proprio ``config.yaml``: quem
+        escolhesse ``observer`` ou ligasse a simulacao via desbloqueio, perdia a
+        escolha no primeiro desbloqueio e nunca entendia por que. A preferencia
+        gravada e do dono; a sessao so a aplica.
+        """
         self._owner_session_active = True
-        self._policy.profile = AutonomyProfile.ADMIN
-        self._policy.simulation = False
-        self._cfg.seguranca.perfil = AutonomyProfile.ADMIN.value
-        self._cfg.seguranca.simulacao = False
+        self._policy.profile = AutonomyProfile(self._cfg.seguranca.perfil)
+        self._policy.simulation = self._cfg.seguranca.simulacao
 
     def lock_owner_session(self) -> None:
         self._owner_session_active = False
@@ -110,7 +131,9 @@ class Guarda:
     def stopped(self) -> bool:
         return self._emergency_stop
 
-    async def autorizar(self, decision: ActionDecision, descricao: str) -> bool:
+    async def autorizar(
+        self, decision: ActionDecision, descricao: str, ferramenta: str = ""
+    ) -> bool:
         if not decision.allowed or decision.simulated:
             self.auditar(
                 "policy", descricao,
@@ -120,7 +143,7 @@ class Guarda:
             return False
         if not decision.requires_approval:
             return True
-        if self._owner_session_active:
+        if self._owner_session_active and ferramenta not in SEMPRE_CONFIRMA:
             self.auditar("policy", descricao, "AUTORIZADO PELO DONO AUTENTICADO", True, True)
             return True
         if self._pedir is None or not self.owner.configured:

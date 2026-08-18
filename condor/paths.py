@@ -28,3 +28,21 @@ def state_path(*parts: str) -> Path:
     path = state_root().joinpath(*parts)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def resolver_alvo(bruto: str) -> Path:
+    """Resolucao unica de caminho para ferramentas do agente.
+
+    A politica e o executor precisam enxergar exatamente o mesmo destino. Quando
+    cada lado normalizava por conta propria, ``%USERPROFILE%`` passava batido na
+    politica (que so via um caminho relativo inofensivo) e virava a pasta pessoal
+    de verdade na hora de gravar. Todo mundo passa por aqui agora.
+
+    Nao chama ``resolve()``: quem valida precisa comparar as duas formas, com e
+    sem link simbolico seguido.
+    """
+    texto = os.path.expandvars(str(bruto).strip().strip('"').strip("'"))
+    caminho = Path(texto).expanduser()
+    if not caminho.is_absolute():
+        caminho = CODE_ROOT / caminho
+    return Path(os.path.normpath(caminho))

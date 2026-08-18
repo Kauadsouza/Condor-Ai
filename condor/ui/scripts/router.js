@@ -42,6 +42,7 @@ const CondorRouter = (() => {
     if (naTelaErros) CondorErros.atualizar();
     else if (tela === 'memoria') CondorMemoria.atualizar();
     else if (tela === 'projetos') CondorProjetos.atualizar();
+    else CondorCoreUI.atualizar(tela);
   }
 
   return { init, ir, atual: () => atual };

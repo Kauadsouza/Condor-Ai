@@ -75,7 +75,29 @@ mesma rede Wi-Fi, use o modelo em `deploy/wireguard`; nunca publique a porta
 
 Requer Python 3.11 ou superior.
 
-Windows (PowerShell):
+### Notebook Windows novo
+
+1. Entre na sua conta do GitHub e baixe o repositorio privado
+   `Kauadsouza/Condor-Ai` como ZIP ou clone com Git.
+2. Extraia o ZIP em uma pasta permanente.
+3. Abra o PowerShell nessa pasta e execute:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_new_windows_pc.ps1
+```
+
+Esse instalador unico cria o ambiente Python, instala as dependencias, baixa os
+modelos locais de voz, conversa e visao, executa os testes e cria o atalho
+**Condor** na Area de Trabalho. Os downloads iniciais sao grandes; depois disso,
+o Condor pode usar os modelos sem internet.
+
+O repositorio recupera o aplicativo, mas nao contem a pasta privada
+`~/.condor`, a frase secreta, memoria, configuracoes de camera nem chaves. Em um
+notebook novo, o primeiro acesso cria um cofre vazio. Para preservar o estado
+antigo, copie `~/.condor` separadamente usando um armazenamento cifrado sob seu
+controle; nunca envie essa pasta ao GitHub.
+
+### Instalacao manual no Windows
 
 ```powershell
 .\scripts\install.ps1

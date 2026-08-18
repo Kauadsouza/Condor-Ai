@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import platform
 import webbrowser
@@ -26,7 +27,7 @@ import uuid
 import json
 from pathlib import Path
 
-from condor.paths import CODE_ROOT, state_root
+from condor.paths import CODE_ROOT, resolver_alvo, state_root
 
 log = logging.getLogger("condor.maos")
 
@@ -39,6 +40,28 @@ SEM_JANELA = 0x08000000 if sys.platform == "win32" else 0
 # User-Agent completo de navegador. Com um UA curto ("Mozilla/5.0") o
 # DuckDuckGo devolve uma página reduzida e a busca volta vazia.
 _NAVEGADOR = "Condor/2.0 (assistente local; leitura publica)"
+
+# Teclado sintetizado escapa de qualquer trava de arquivo: a caixa Executar
+# roda o que quiser, sem passar pela politica. Bloqueadas as combinacoes que
+# abrem lancador de comando; win+d, win+l, win+e e alt+tab seguem liberadas.
+# Chaves guardadas com as teclas em ordem alfabetica pra casar 'r+win' e 'win+r'.
+_ATALHOS_BLOQUEADOS = frozenset({
+    "win",                    # menu Iniciar: digitar o nome ja executa
+    "r+win",                  # caixa Executar
+    "s+win", "q+win",         # busca do Windows
+    "win+x",                  # menu de energia: Terminal e PowerShell
+    "i+win",                  # Configuracoes
+    "u+win",                  # Acessibilidade
+    "ctrl+esc+shift",         # Gerenciador de Tarefas
+    "alt+ctrl+del",
+})
+
+# Sem isto, 'windows+r' passaria pela lista acima sem ser reconhecido.
+_APELIDOS_TECLA = {
+    "windows": "win", "winleft": "win", "winright": "win",
+    "super": "win", "cmd": "win", "meta": "win",
+    "control": "ctrl", "escape": "esc", "delete": "del",
+}
 
 
 def _startupinfo():
@@ -76,10 +99,13 @@ def _erro(saida: str) -> dict:
 
 
 def _caminho(bruto: str) -> Path:
-    """Aceita ~, variáveis do Windows (%USERPROFILE%) e caminho relativo."""
-    texto = os.path.expandvars(str(bruto).strip().strip('"').strip("'"))
-    p = Path(texto).expanduser()
-    return p if p.is_absolute() else (ROOT / p)
+    """Aceita ~, variáveis do Windows (%USERPROFILE%) e caminho relativo.
+
+    Delega para ``resolver_alvo`` — a mesma funcao que a politica usa pra decidir
+    se o destino esta dentro das pastas permitidas. Os dois lados precisam
+    enxergar o mesmo caminho, senao a trava de pastas nao vale nada.
+    """
+    return resolver_alvo(bruto)
 
 
 # ── Arquivos ─────────────────────────────────────────────────────────────────
@@ -366,10 +392,43 @@ def focar_janela(titulo: str) -> dict:
         return _erro(str(exc))
 
 
+# Varrer todos os processos custa ~1,6 s no Windows e a interface consulta a
+# saude em laco. Sem cache, cada consulta congelava o servidor inteiro por quase
+# dois segundos — inclusive o WebSocket que entrega a resposta do Condor.
+_CACHE_SISTEMA: dict[str, object] = {}
+_TRAVA_SISTEMA = threading.Lock()
+VALIDADE_INFO_SISTEMA = 6.0
+
+
 def info_sistema() -> dict:
+    def _do_cache() -> dict | None:
+        validade = _CACHE_SISTEMA.get("ate", 0.0)
+        if isinstance(validade, float) and time.monotonic() < validade:
+            return dict(_CACHE_SISTEMA["valor"])      # type: ignore[arg-type]
+        return None
+
+    if (pronto := _do_cache()) is not None:
+        return pronto
+    # A trava evita duas varreduras simultaneas: /api/saude e /api/hub sao
+    # consultados juntos e cada varredura segura o GIL por mais de um segundo,
+    # o que travava o laco de eventos mesmo rodando fora dele.
+    with _TRAVA_SISTEMA:
+        if (pronto := _do_cache()) is not None:
+            return pronto
+        resultado = _medir_sistema()
+        if resultado["ok"]:
+            _CACHE_SISTEMA.update(
+                {"valor": resultado, "ate": time.monotonic() + VALIDADE_INFO_SISTEMA}
+            )
+        return resultado
+
+
+def _medir_sistema() -> dict:
     try:
         import psutil
-        cpu = psutil.cpu_percent(interval=0.4)
+        # interval=None nao bloqueia: mede desde a chamada anterior. Com o cache
+        # acima o intervalo real fica em ~6 s, que e o que a leitura precisa.
+        cpu = psutil.cpu_percent(interval=None)
         ram = psutil.virtual_memory()
         disco = psutil.disk_usage("C:\\" if sys.platform == "win32" else "/")
         linhas = [
@@ -398,6 +457,24 @@ def info_sistema() -> dict:
 
 # ── Tela, mouse e teclado ────────────────────────────────────────────────────
 
+# Prints ficam em texto claro no disco e podem conter mais coisa sensivel que a
+# memoria cifrada inteira. Sem poda eles se acumulavam pra sempre.
+RETENCAO_PRINTS_DIAS = 7
+
+
+def _podar_prints(pasta: Path) -> None:
+    limite = time.time() - RETENCAO_PRINTS_DIAS * 86400
+    try:
+        for antigo in pasta.glob("tela_*.png"):
+            try:
+                if antigo.stat().st_mtime < limite:
+                    antigo.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
 def screenshot() -> dict:
     """Tira print e devolve o caminho + a imagem em base64 (o modelo enxerga)."""
     try:
@@ -405,6 +482,11 @@ def screenshot() -> dict:
         img = ImageGrab.grab(all_screens=True)
         pasta = DATA / "screenshots"
         pasta.mkdir(parents=True, exist_ok=True)
+        try:
+            pasta.chmod(0o700)
+        except OSError:
+            pass
+        _podar_prints(pasta)
         destino = pasta / f"tela_{int(time.time())}.png"
         img.save(destino)
 
@@ -461,6 +543,13 @@ def atalho(teclas: str) -> dict:
         partes = [t.strip().lower() for t in re.split(r"[+\-]", teclas) if t.strip()]
         if not partes:
             return _erro("Combinação vazia.")
+        normalizadas = [_APELIDOS_TECLA.get(t, t) for t in partes]
+        combinacao = "+".join(sorted(normalizadas))
+        if combinacao in _ATALHOS_BLOQUEADOS:
+            return _erro(
+                "Essa combinação abre um lançador de comandos do sistema e está "
+                "bloqueada: ela contornaria a trava de pastas do Condor."
+            )
         if len(partes) == 1:
             pyautogui.press(partes[0])
         else:
@@ -554,8 +643,27 @@ def _abrir_path(path: Path) -> None:
         subprocess.Popen(["xdg-open", str(path)], start_new_session=True)
 
 
+def _garantir_ip_publico(bruto: str) -> None:
+    """Recusa loopback, LAN, link-local e metadados de nuvem."""
+    ip = ipaddress.ip_address(bruto.split("%", 1)[0])
+    # IPv6 embrulhando IPv4 (::ffff:127.0.0.1) precisa ser julgado pelo IPv4.
+    mapeado = getattr(ip, "ipv4_mapped", None)
+    if mapeado is not None:
+        ip = mapeado
+    if (
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+    ):
+        raise ValueError("O Condor bloqueou acesso a endereco interno ou reservado.")
+
+
 def _validar_url_publica(url: str) -> None:
-    """Bloqueia acesso do agente a localhost, LAN e metadados de nuvem."""
+    """Checagem antecipada: da erro claro antes de abrir socket.
+
+    Nao e a barreira final — o nome pode mudar de IP entre esta consulta e a
+    conexao (DNS rebinding). Quem realmente barra e ``_conectar_validado``, que
+    olha o endereco ja conectado.
+    """
     from urllib.parse import urlsplit
 
     parsed = urlsplit(url)
@@ -566,21 +674,56 @@ def _validar_url_publica(url: str) -> None:
     except socket.gaierror as exc:
         raise ValueError("Nao foi possivel resolver o endereco.") from exc
     for raw in addresses:
-        ip = ipaddress.ip_address(raw)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            raise ValueError("O Condor bloqueou acesso a endereco interno ou reservado.")
+        _garantir_ip_publico(raw)
+
+
+def _conectar_validado(address, timeout=None, source_address=None):
+    """Valida o IP realmente conectado, antes do TLS e de qualquer byte HTTP.
+
+    Aqui nao existe janela pra DNS rebinding: o endereco vem do proprio socket,
+    nao de uma consulta que pode ter mudado de resposta desde a validacao.
+    """
+    if timeout is None:
+        timeout = socket._GLOBAL_DEFAULT_TIMEOUT
+    sock = socket.create_connection(address, timeout, source_address)
+    try:
+        _garantir_ip_publico(sock.getpeername()[0])
+    except BaseException:
+        sock.close()
+        raise
+    return sock
 
 
 def _urlopen_public(request, timeout: int):
-    """Valida a URL inicial e cada redirecionamento antes de fazer a conexao."""
+    """Abre a URL com validacao de endereco na conexao e em cada redirecionamento."""
+    import http.client
     import urllib.request
 
     initial = request.full_url if hasattr(request, "full_url") else str(request)
     _validar_url_publica(initial)
+
+    class _HTTPValidado(http.client.HTTPConnection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._create_connection = _conectar_validado
+
+    class _HTTPSValidado(http.client.HTTPSConnection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._create_connection = _conectar_validado
+
+    class _HandlerHTTP(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(_HTTPValidado, req)
+
+    class _HandlerHTTPS(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(_HTTPSValidado, req, context=self._context)
 
     class SafeRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             _validar_url_publica(newurl)
             return super().redirect_request(req, fp, code, msg, headers, newurl)
 
-    return urllib.request.build_opener(SafeRedirect()).open(request, timeout=timeout)
+    opener = urllib.request.build_opener(_HandlerHTTP(), _HandlerHTTPS(), SafeRedirect())
+    return opener.open(request, timeout=timeout)

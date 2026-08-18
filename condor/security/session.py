@@ -3,21 +3,33 @@
 from __future__ import annotations
 
 import hmac
+import os
 import secrets
+import stat
 import threading
 import time
 from collections import deque
 from urllib.parse import urlsplit
 
+from condor.paths import state_path
+
 
 class LocalSessionSecurity:
     COOKIE = "condor_session"
+    CLIENT_HEADER = "x-condor-token"
     SESSION_TTL_SECONDS = 4 * 60 * 60
 
     def __init__(self, host: str, port: int) -> None:
         self.host = host
         self.port = port
         self.token = secrets.token_urlsafe(48)
+        # Segredo de boot entregue pelo sistema de arquivos, nao pela rede.
+        # Antes bastava mandar dois cabecalhos fixos ('Origin' e
+        # 'X-Condor-Client') pra ganhar uma sessao completa da API — qualquer
+        # programa rodando na maquina conseguia ler a memoria do Condor. Agora o
+        # cliente precisa provar que consegue LER um arquivo do perfil do dono.
+        self.boot_token = secrets.token_urlsafe(32)
+        self._publish_boot_token()
         self._expires_at = time.monotonic() + self.SESSION_TTL_SECONDS
         self._rate_windows: dict[str, deque[float]] = {}
         self._auth_failures: dict[str, tuple[int, float, float]] = {}
@@ -27,6 +39,40 @@ class LocalSessionSecurity:
             f"http://localhost:{port}",
             f"http://[::1]:{port}",
         }
+
+    # ── Segredo de boot ────────────────────────────────────────────────────
+
+    @staticmethod
+    def boot_token_path():
+        return state_path("security", "ui-token")
+
+    def _publish_boot_token(self) -> None:
+        """Grava o segredo do boot so pro dono, substituindo o da execucao antiga."""
+        path = self.boot_token_path()
+        try:
+            descriptor = os.open(
+                path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(self.boot_token)
+                stream.flush()
+                os.fsync(stream.fileno())
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            # Sem o arquivo a janela nao consegue abrir sessao; melhor falhar
+            # ruidosamente no boot do que servir a API sem essa prova.
+            raise
+
+    def discard_boot_token(self) -> None:
+        try:
+            self.boot_token_path().unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def boot_token_valid(self, supplied: str | None) -> bool:
+        return bool(supplied and hmac.compare_digest(supplied, self.boot_token))
+
+    # ── Origem e sessao ────────────────────────────────────────────────────
 
     def origin_allowed(self, origin: str | None) -> bool:
         return bool(origin and origin.rstrip("/") in self.allowed_origins)

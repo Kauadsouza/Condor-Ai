@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -18,8 +19,12 @@ from condor.brain.client import Cerebro
 from condor.actions import executor
 from condor.actions.guard import Guarda
 from condor.config import Config, salvar_config
+from condor.core import AIGateway, ContextEngine, EventBus, ProjectEngine
+from condor.development import human_model_contract
+from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge
 from condor.memory.db import Memoria
 from condor.mobile import MobileAccess, MobileViewer, private_client, private_host
+from condor.paths import resolver_alvo, state_path
 from condor.security.approval import OwnerAuth
 from condor.security.audit import IntegrityAudit
 from condor.security.identity import DeviceIdentity
@@ -210,6 +215,226 @@ class AuditTests(unittest.TestCase):
             self.assertFalse(audit.verify()[0])
 
 
+class RegressaoSegurancaTests(unittest.TestCase):
+    """Falhas encontradas na auditoria de 2026-08. Nao deixar voltar."""
+
+    def _politica(self):
+        raizes = [Path.home() / "Documents", ROOT]
+        return PolicyEngine(AutonomyProfile.ADMIN, allowed_roots=raizes)
+
+    def test_variavel_de_ambiente_nao_fura_a_trava_de_pastas(self):
+        """A politica expandia %USERPROFILE% diferente do executor e liberava."""
+        policy = self._politica()
+        for alvo in (
+            r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\x.bat",
+            r"%USERPROFILE%\.ssh\authorized_keys",
+            r"%USERPROFILE%\.condor\security\vault.json",
+            r"%SYSTEMROOT%\System32\drivers\etc\hosts",
+        ):
+            with self.subTest(alvo=alvo):
+                decisao = policy.decide("escrever_arquivo", {"caminho": alvo, "conteudo": "x"})
+                self.assertFalse(decisao.allowed)
+                self.assertEqual(decisao.risk, RiskLevel.BLOCKED)
+
+    def test_politica_e_executor_resolvem_o_mesmo_destino(self):
+        for bruto in (r"%APPDATA%\x", "~/Documents/y.txt", "condor/config.py"):
+            with self.subTest(bruto=bruto):
+                self.assertEqual(resolver_alvo(bruto), executor._caminho(bruto))
+
+    def test_pasta_permitida_continua_liberada(self):
+        decisao = self._politica().decide(
+            "escrever_arquivo",
+            {"caminho": str(Path.home() / "Documents" / "ok.txt"), "conteudo": "x"},
+        )
+        self.assertTrue(decisao.allowed)
+
+    def test_sessao_do_dono_nao_libera_as_destrutivas(self):
+        """O atalho da sessao autenticada anulava toda a camada de aprovacao."""
+        guarda = Guarda(Config())
+        guarda.unlock_owner_session()
+        for ferramenta in ("escrever_arquivo", "deletar", "mover", "baixar", "fechar_app"):
+            with self.subTest(ferramenta=ferramenta):
+                decisao = guarda.avaliar(ferramenta, {"caminho": str(ROOT / "a.txt")})
+                liberado = asyncio.run(guarda.autorizar(decisao, ferramenta, ferramenta))
+                self.assertFalse(liberado, "deveria exigir confirmacao do dono")
+
+    def test_sessao_do_dono_nao_atrapalha_o_uso_normal(self):
+        guarda = Guarda(Config())
+        guarda.unlock_owner_session()
+        for ferramenta in ("screenshot", "clicar", "listar_pasta", "ler_arquivo"):
+            with self.subTest(ferramenta=ferramenta):
+                decisao = guarda.avaliar(ferramenta, {"caminho": str(ROOT / "a.txt")})
+                self.assertTrue(asyncio.run(guarda.autorizar(decisao, ferramenta, ferramenta)))
+
+    def test_desbloqueio_preserva_perfil_e_simulacao_escolhidos(self):
+        """unlock_owner_session gravava admin/simulacao=False no config.yaml."""
+        config = Config()
+        config.seguranca.perfil = "observer"
+        config.seguranca.simulacao = True
+        Guarda(config).unlock_owner_session()
+        self.assertEqual(config.seguranca.perfil, "observer")
+        self.assertTrue(config.seguranca.simulacao)
+
+    def test_teclado_nao_abre_lancador_de_comandos(self):
+        for combo in ("win+r", "windows+r", "win", "win+x", "ctrl+shift+esc"):
+            with self.subTest(combo=combo):
+                self.assertFalse(executor.atalho(combo)["ok"])
+
+    def test_enderecos_internos_sao_recusados(self):
+        for interno in ("127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.169.254",
+                        "::ffff:127.0.0.1", "0.0.0.0", "::1"):
+            with self.subTest(ip=interno):
+                with self.assertRaises(ValueError):
+                    executor._garantir_ip_publico(interno)
+        for publico in ("8.8.8.8", "1.1.1.1"):
+            with self.subTest(ip=publico):
+                executor._garantir_ip_publico(publico)
+
+    def test_auditoria_detecta_log_reconstruido_do_zero(self):
+        with tempfile.TemporaryDirectory() as pasta:
+            base = Path(pasta)
+            cofre = CondorVault(base / "vault.json")
+            cofre.initialize(PASS)
+            identidade = DeviceIdentity(cofre)
+            identidade.ensure()
+            log = base / "actions.jsonl"
+
+            verdadeiro = IntegrityAudit(log, identidade)
+            for indice in range(4):
+                verdadeiro.append({"tool": "teste", "n": indice})
+            self.assertEqual(verdadeiro.verify(), (True, 4))
+
+            # Atacante sem a chave privada refaz uma cadeia coerente.
+            log.unlink()
+            falso = IntegrityAudit(log, None)
+            for indice in range(4):
+                falso.append({"tool": "inocente", "n": indice})
+            self.assertFalse(IntegrityAudit(log, identidade).verify()[0])
+
+    def test_auditoria_detecta_truncamento(self):
+        with tempfile.TemporaryDirectory() as pasta:
+            base = Path(pasta)
+            cofre = CondorVault(base / "vault.json")
+            cofre.initialize(PASS)
+            identidade = DeviceIdentity(cofre)
+            identidade.ensure()
+            log = base / "actions.jsonl"
+            auditoria = IntegrityAudit(log, identidade)
+            for indice in range(4):
+                auditoria.append({"tool": "teste", "n": indice})
+            log.write_text("", encoding="utf-8")
+            self.assertFalse(IntegrityAudit(log, identidade).verify()[0])
+
+    def test_codigo_movel_e_de_uso_unico(self):
+        acesso = MobileAccess(7778)
+        primeiro = acesso.code
+        token, status = acesso.pair("192.168.1.50", primeiro)
+        self.assertEqual(status, 200)
+        self.assertTrue(token)
+        self.assertNotEqual(acesso.code, primeiro)
+        self.assertEqual(acesso.pair("192.168.1.51", primeiro)[1], 403)
+
+    def test_cofre_sobrevive_a_muitas_gravacoes(self):
+        """set() relia o salt do disco e podia inutilizar o cofre."""
+        with tempfile.TemporaryDirectory() as pasta:
+            caminho = Path(pasta) / "vault.json"
+            cofre = CondorVault(caminho)
+            cofre.initialize(PASS, {"A": "1"})
+            for indice in range(25):
+                cofre.set(f"k{indice}", indice)
+            cofre.lock()
+            reaberto = CondorVault(caminho)
+            reaberto.unlock(PASS)
+            self.assertEqual(reaberto.get("k24"), 24)
+            self.assertEqual(reaberto.get("A"), "1")
+
+
+class FluidezTests(unittest.TestCase):
+    """Gargalos que travavam a interface. Medidos, nao estimados."""
+
+    def test_leitura_da_memoria_nao_reescreve_o_snapshot(self):
+        """Toda consulta re-cifrava e dava fsync no banco inteiro."""
+        with tempfile.TemporaryDirectory() as pasta:
+            alvo = Path(pasta) / "m.enc"
+            memoria = Memoria(alvo)
+            memoria.inicializar()
+            memoria.unlock(os.urandom(32))
+            for indice in range(40):
+                memoria.salvar_fato("t", f"c{indice}", "valor " * 20)
+
+            antes = alvo.stat().st_mtime_ns
+            for _ in range(5):
+                memoria.estatisticas()
+                memoria.custo_hoje()
+                memoria.fatos_recentes(20)
+                memoria.acoes_recentes(20)
+                memoria.hub_snapshot()
+            self.assertEqual(alvo.stat().st_mtime_ns, antes,
+                             "leitura nao pode reescrever o snapshot cifrado")
+
+            memoria.salvar_fato("t", "novo", "x")
+            self.assertNotEqual(alvo.stat().st_mtime_ns, antes,
+                                "escrita precisa persistir na hora")
+
+    def test_escrita_continua_duravel_apos_lock(self):
+        with tempfile.TemporaryDirectory() as pasta:
+            alvo = Path(pasta) / "m.enc"
+            chave = os.urandom(32)
+            memoria = Memoria(alvo)
+            memoria.inicializar()
+            memoria.unlock(chave)
+            memoria.salvar_fato("t", "sobrevive", "conteudo")
+            memoria.lock()
+
+            outra = Memoria(alvo)
+            outra.unlock(chave)
+            self.assertTrue(
+                any(f["chave"] == "sobrevive" for f in outra.fatos_recentes(50))
+            )
+
+    def test_info_sistema_usa_cache(self):
+        """psutil varre processos por ~1,6 s; sem cache cada consulta pagava isso."""
+        executor._CACHE_SISTEMA.clear()
+        primeira = time.perf_counter()
+        executor.info_sistema()
+        custo_frio = time.perf_counter() - primeira
+
+        segunda = time.perf_counter()
+        for _ in range(5):
+            executor.info_sistema()
+        custo_quente = (time.perf_counter() - segunda) / 5
+        self.assertLess(custo_quente, max(custo_frio / 10, 0.005))
+
+    def test_integridade_recacheia_quando_o_codigo_muda(self):
+        with tempfile.TemporaryDirectory() as pasta:
+            raiz = Path(pasta) / "raiz"
+            (raiz / "condor").mkdir(parents=True)
+            fonte = raiz / "condor" / "core.py"
+            fonte.write_text("NAME = 'Condor'\n", encoding="utf-8")
+            cofre = CondorVault(Path(pasta) / "vault.json")
+            cofre.initialize(PASS, {})
+            identidade = DeviceIdentity(cofre)
+            identidade.ensure()
+            check = CodeIntegrity(Path(pasta) / "manifest.json", identidade, raiz)
+            check.refresh()
+
+            self.assertTrue(check.verify()[0])
+            self.assertTrue(check.verify()[0])          # agora vem da cache
+            fonte.write_text("NAME = 'adulterado'\n", encoding="utf-8")
+            self.assertFalse(check.verify()[0],
+                             "cache nao pode esconder alteracao de codigo")
+
+    def test_auditoria_recacheia_quando_o_log_muda(self):
+        with tempfile.TemporaryDirectory() as pasta:
+            log = Path(pasta) / "actions.jsonl"
+            auditoria = IntegrityAudit(log)
+            auditoria.append({"tool": "teste"})
+            self.assertTrue(auditoria.verify()[0])
+            self.assertTrue(auditoria.verify()[0])      # cache
+            log.write_text('{"adulterado": true}\n', encoding="utf-8")
+            self.assertFalse(IntegrityAudit(log).verify()[0])
+
+
 class SessionSecurityTests(unittest.TestCase):
     def test_loopback_only(self):
         security = LocalSessionSecurity("127.0.0.1", 7777)
@@ -336,15 +561,51 @@ class SessionSecurityTests(unittest.TestCase):
                     ).status_code,
                     413,
                 )
+                # Cabecalho e forjavel por qualquer processo local: sem o segredo
+                # de boot, que exige LER um arquivo do perfil do dono, a sessao
+                # nao sai.
+                self.assertEqual(
+                    client.post(
+                        "/api/session", headers={
+                            "Origin": "http://127.0.0.1:7777",
+                            "X-Condor-Client": "desktop-ui",
+                        }
+                    ).status_code,
+                    403,
+                )
+                segredo = state_path("security", "ui-token").read_text(
+                    encoding="utf-8").strip()
+                self.assertTrue(segredo)
+                self.assertEqual(
+                    client.post(
+                        "/api/session", headers={
+                            "Origin": "http://127.0.0.1:7777",
+                            "X-Condor-Client": "desktop-ui",
+                            "X-Condor-Token": segredo + "x",
+                        }
+                    ).status_code,
+                    403,
+                )
                 response = client.post(
                     "/api/session", headers={
                         "Origin": "http://127.0.0.1:7777",
                         "X-Condor-Client": "desktop-ui",
+                        "X-Condor-Token": segredo,
                     }
                 )
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("HttpOnly", response.headers["set-cookie"])
                 self.assertIn("SameSite=strict", response.headers["set-cookie"])
+                # O Hub em /hub renova pelo cookie ja estabelecido, sem o arquivo.
+                self.assertEqual(
+                    client.post(
+                        "/api/session", headers={
+                            "Origin": "http://127.0.0.1:7777",
+                            "X-Condor-Client": "hub-local",
+                        }
+                    ).status_code,
+                    200,
+                )
                 client.headers.update({"Origin": "http://127.0.0.1:7777"})
                 self.assertEqual(
                     client.post(
@@ -443,9 +704,17 @@ class MemoryTests(unittest.TestCase):
             self.assertTrue(memory.hub_update_task(task["id"], "concluida"))
             note = memory.hub_create_note("Privada", "conteudo cifrado do Hub", "condor")
             self.assertTrue(memory.hub_update_note(note["id"], "Atualizada", "conteudo atualizado do Hub"))
+            region_item = memory.condor_x_create_region_item(
+                "left-forearm", "componente", "Registro privado", "detalhe anatomico cifrado"
+            )
+            self.assertTrue(memory.condor_x_update_region_item(
+                region_item["id"], "Registro privado", "detalhe atualizado", "planejado"
+            ))
             memory.lock()
             self.assertNotIn("conteudo cifrado do Hub", path.read_text("utf-8"))
             self.assertNotIn("conteudo atualizado do Hub", path.read_text("utf-8"))
+            self.assertNotIn("detalhe anatomico cifrado", path.read_text("utf-8"))
+            self.assertNotIn("detalhe atualizado", path.read_text("utf-8"))
             reopened = Memoria(path)
             reopened.inicializar()
             reopened.unlock(key)
@@ -453,6 +722,122 @@ class MemoryTests(unittest.TestCase):
             self.assertEqual(state["tasks"][0]["status"], "concluida")
             self.assertEqual(state["notes"][0]["id"], note["id"])
             self.assertEqual(state["notes"][0]["conteudo"], "conteudo atualizado do Hub")
+            stored_region = reopened.condor_x_region_items("left-forearm")
+            self.assertEqual(stored_region[0]["id"], region_item["id"])
+            self.assertEqual(stored_region[0]["status"], "planejado")
+
+
+class CondorCoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_camera_bridge_keeps_endpoint_private_and_emits_local_alert(self):
+        class Vision:
+            async def analisar(self, image_b64, pedido):
+                self.received = (image_b64, pedido)
+                return '{"person_present":true,"confidence":0.91,"summary":"pessoa"}'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "camera-memory.enc"
+            memory = Memoria(path)
+            memory.inicializar()
+            memory.unlock(os.urandom(32))
+            bus = EventBus(memory)
+            received = []
+            bus.subscribe("SECURITY_ALERT", lambda event: received.append(event))
+            bridge = CameraBridge(memory, bus, Vision())
+            camera = await bridge.add_source(
+                "Entrada", "rtsp", "rtsp://usuario:senha@192.168.1.20/stream", "Porta"
+            )
+            self.assertNotIn("endpoint", camera)
+            result = await bridge.analyze_frame(camera["id"], "aW1hZ2Vt")
+            self.assertTrue(result["person_present"])
+            self.assertFalse(result["stored_frame"])
+            self.assertEqual(len(received), 1)
+            self.assertIn("Confirme a imagem", result["alert"]["summary"])
+            memory.lock()
+            encrypted = path.read_text("utf-8")
+            self.assertNotIn("usuario:senha", encrypted)
+            self.assertNotIn("192.168.1.20", encrypted)
+
+    async def test_device_scan_never_executes_serial_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memoria(Path(tmp) / "devices.enc")
+            memory.inicializar()
+            memory.unlock(os.urandom(32))
+            bridge = DeviceBridge(memory, EventBus(memory), ActionSafetyLayer())
+            result = await bridge.scan()
+            self.assertEqual(result["executed_commands"], 0)
+            self.assertIsInstance(result["serial_ports"], list)
+
+    async def test_ai_gateway_injects_structured_interface_context(self):
+        class Provider:
+            provedor = "test"
+            modelo_ativo = "test-model"
+            pronto = True
+
+            async def responder(self, historico, **kwargs):
+                self.historico = historico
+                self.kwargs = kwargs
+                return "ok"
+
+        provider = Provider()
+        context = ContextEngine()
+        context.update(project_id="condor-x", region_id="right-forearm", mode="development")
+        gateway = AIGateway(provider, context, EventBus())
+        result = await gateway.responder([{"role": "user", "content": "Aumenta isso"}])
+        self.assertEqual(result, "ok")
+        reference = provider.kwargs["memoria_relevante"]
+        self.assertIn("ESTADO ATUAL DA INTERFACE", reference)
+        self.assertIn('"region_id":"right-forearm"', reference)
+        self.assertEqual(context.snapshot()["recent_intent"], "Aumenta isso")
+
+    async def test_project_draft_versions_and_explicit_integration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "core-memory.enc"
+            memory = Memoria(path)
+            memory.inicializar()
+            memory.unlock(os.urandom(32))
+            context = ContextEngine()
+            events = EventBus(memory)
+            projects = ProjectEngine(memory, context, events)
+
+            opened = await projects.open("condor-x")
+            self.assertEqual(opened["context"]["project_id"], "condor-x")
+            draft = await projects.create_draft("condor-x", "right-forearm", {
+                "name": "Carcaça externa", "type": "component", "notes": "rascunho isolado",
+            })
+            self.assertFalse(draft["integrated"])
+            self.assertEqual(draft["status"], "draft")
+            version = await projects.create_version(draft["id"], {
+                "snapshot": {"name": "Carcaça externa", "clearance": "undefined"}
+            })
+            self.assertEqual(version["label"], "V2")
+            integrated = await projects.integrate(draft["id"])
+            self.assertTrue(integrated["integrated"])
+            self.assertEqual(integrated["status"], "integrated")
+            self.assertIn("MODEL_UPDATED", {item["type"] for item in memory.eventos_recentes()})
+            memory.lock()
+            self.assertNotIn("Carcaça externa", path.read_text("utf-8"))
+
+    async def test_event_bus_context_and_physical_safety_are_independent(self):
+        context = ContextEngine()
+        context.update(project_id="condor-x", region_id="left-hand", mode="development")
+        self.assertEqual(context.for_ai()["region_id"], "left-hand")
+        bus = EventBus()
+        received = []
+        bus.subscribe("PART_SELECTED", lambda event: received.append(event))
+        await bus.publish("PART_SELECTED", {"region": "left-hand"})
+        self.assertEqual(received[0]["payload"]["region"], "left-hand")
+        decision = ActionSafetyLayer().evaluate({"risk_level": 4, "command": "move actuator"})
+        self.assertFalse(decision.allowed)
+        self.assertTrue(decision.requires_confirmation)
+
+    def test_human_model_has_layers_joints_and_individual_fingers(self):
+        model = human_model_contract()
+        self.assertEqual(model["default_layer"], "silhouette")
+        self.assertEqual(len(model["layers"]), 6)
+        fingers = model["hands"]["right"]["digits"]
+        self.assertEqual([finger["id"] for finger in fingers], ["thumb", "index", "middle", "ring", "little"])
+        self.assertEqual(len(fingers[1]["bones"]), 3)
+        self.assertIn("wrist", model["joint_movements"])
 
 
 class CatalogTests(unittest.TestCase):
@@ -569,7 +954,7 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertIn("/api/status", mobile_script)
         self.assertNotIn("/api/memoria", mobile_script)
         self.assertNotIn("/api/seguranca", mobile_script)
-        self.assertIn('id="mobileAccessBtn"', desktop)
+        self.assertNotIn('id="mobileAccessBtn"', desktop)
         self.assertIn("/api/mobile/access", desktop_script)
         self.assertIn('host="0.0.0.0"', server)
         self.assertIn("config.visualizacao_movel.porta", server)
@@ -595,27 +980,53 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertNotIn("<iframe", source)
         self.assertNotIn("/api/hub/condor-x/", source)
 
-    def test_condor_x_keeps_realistic_human_reference_and_c_mark(self):
+    def test_condor_x_keeps_human_reference_without_unverified_specs(self):
         source = (ROOT / "condor" / "ui" / "scripts" / "condor-x.js").read_text("utf-8")
         interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
         projects = (ROOT / "condor" / "ui" / "scripts" / "projects.js").read_text("utf-8")
+        security = (ROOT / "condor" / "ui" / "scripts" / "security.js").read_text("utf-8")
         vendor = ROOT / "condor" / "ui" / "vendor"
         self.assertTrue((vendor / "three.module.min.js").is_file())
         self.assertTrue((vendor / "three.core.min.js").is_file())
         self.assertIn("three.core.min.js", (vendor / "three.module.min.js").read_text("utf-8"))
-        self.assertIn("const exactScale = 1.8 / naturalHeight", source)
-        self.assertIn("Assinatura C", source)
-        self.assertIn("const cArc", source)
-        self.assertIn("const upperLid", source)
-        self.assertIn("Polegar e quatro dedos", source)
-        self.assertIn("joelhos naturais e pés completos", source)
-        self.assertIn("Anatomia técnica de alta fidelidade", interface)
-        self.assertIn("Núcleo C", interface)
+        self.assertIn('class="cx-human-map"', source)
+        self.assertIn('id="cxHeadShape"', source)
+        self.assertIn('id="cxNeckShape"', source)
+        self.assertIn('id="cxChestShape"', source)
+        self.assertIn('id="cxAbdomenShape"', source)
+        self.assertIn('id="cxLeftShoulderShape"', source)
+        self.assertIn('id="cxLeftForearmShape"', source)
+        self.assertIn('id="cxLeftHandShape"', source)
+        self.assertIn('id="cxLeftThighShape"', source)
+        self.assertIn('id="cxLeftKneeShape"', source)
+        self.assertIn('id="cxLeftShinShape"', source)
+        self.assertIn('data-zone="power"', source)
+        self.assertIn("Silhueta humana frontal dividida em regiões", source)
+        self.assertIn("function openRegion", source)
+        self.assertIn("SALVAR NO COFRE", source)
+        self.assertIn("/api/condor-x/regions/", source)
+        self.assertNotIn("SphereGeometry", source)
+        self.assertNotIn("CapsuleGeometry", source)
+        self.assertIn("Base visual para planejamento futuro", interface)
+        self.assertIn("ZONAS DE PLANEJAMENTO", interface)
+        self.assertIn("Nenhuma armadura está em desenvolvimento", interface)
+        self.assertNotIn("1,80 m", interface)
+        self.assertNotIn("85 kg", interface)
+        self.assertNotIn("PARAR CONDOR", security)
+        self.assertNotIn("setPreviewMode", security)
+        self.assertNotIn("VER O APP BLOQUEADO", security)
+        self.assertNotIn("VER A INTERFACE PRIMEIRO", security)
+        self.assertNotIn("PRIVATE SYSTEM", security)
+        self.assertNotIn("OWNER ACCESS NODE", security)
+        self.assertNotIn("LOCAL VAULT // ENCRYPTED", security)
+        self.assertNotIn("A interface permanece isolada", security)
+        self.assertIn("frame.setAttribute('inert', '')", security)
+        self.assertIn("AUTORIZAR ACESSO", security)
         self.assertIn('data-screen="projetos">Projetos</button>', interface)
         self.assertIn('id="projectsCatalog"', interface)
         self.assertIn('data-project-open="condor-x"', interface)
         self.assertIn('id="projectDetail" hidden', interface)
-        self.assertIn("ABRIR PROJETO", interface)
+        self.assertIn("ABRIR AMBIENTE", interface)
         self.assertIn("function abrirProjeto", projects)
         self.assertIn("function voltarAoCatalogo", projects)
         self.assertIn("condor-x-visibility", projects)
@@ -623,6 +1034,12 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertNotIn("Nível de autonomia", interface)
         self.assertNotIn("Controle local", interface)
         self.assertNotIn("addArmor", source)
+        self.assertNotIn('data-screen="desenvolvimento"', interface)
+        self.assertNotIn('data-screen="corpo"', interface)
+        self.assertNotIn('data-screen="dispositivos"', interface)
+        self.assertIn('data-screen="programacao">Programação</button>', interface)
+        self.assertIn('id="deviceScan"', interface)
+        self.assertIn('id="cameraForm"', interface)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,15 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     throw "Python 3.11 ou superior nao foi encontrado no PATH."
 }
 
+$PythonVersionText = python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+if ($LASTEXITCODE -ne 0) {
+    throw "O comando python existe, mas nao foi possivel executa-lo."
+}
+$PythonVersion = [version]$PythonVersionText.Trim()
+if ($PythonVersion -lt [version]"3.11") {
+    throw "Python 3.11 ou superior e obrigatorio. Versao encontrada: $PythonVersion"
+}
+
 python -m venv $VenvPath
 $PythonExe = Join-Path $VenvPath "Scripts\python.exe"
 & $PythonExe -m pip install --upgrade pip

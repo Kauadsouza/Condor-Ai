@@ -45,6 +45,16 @@ uma copia externa automatica. O codigo pode ser reinstalado pelos scripts e os
 modelos podem ser baixados novamente. O cofre e a memoria cifrada so podem ser
 recuperados com uma copia feita conscientemente pelo dono e a frase secreta.
 
+Em um notebook Windows novo, baixe o repositorio privado e execute:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_new_windows_pc.ps1
+```
+
+Esse fluxo restaura o programa e os modelos, mas cria um estado privado vazio.
+Para manter memoria e configuracoes antigas, transporte `~/.condor` somente por
+um meio cifrado e nunca inclua essa pasta no repositorio.
+
 Nao abra as portas 7777 ou 11434 no roteador. WireGuard somente sera ativado
 quando existir outro equipamento proprio e houver autorizacao para gerar as
 chaves nesse equipamento.

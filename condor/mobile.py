@@ -77,12 +77,42 @@ def lan_ipv4() -> str | None:
     return None
 
 
+MAX_ENDERECOS_VIGIADOS = 512
+MAX_SESSOES = 32
+
+
 class MobileAccess:
     def __init__(self, port: int) -> None:
         self.port = port
-        self.code = f"{secrets.randbelow(100_000_000):08d}"
+        self.code = self._novo_codigo()
         self._sessions: dict[str, float] = {}
         self._attempts: dict[str, deque[float]] = defaultdict(deque)
+
+    @staticmethod
+    def _novo_codigo() -> str:
+        return f"{secrets.randbelow(100_000_000):08d}"
+
+    def _podar(self, now: float) -> None:
+        """Segura o crescimento dos dicionarios.
+
+        ``_attempts`` guardava uma entrada por endereco visto e nunca limpava, e
+        ``_sessions`` so expirava quando alguem tentava usar aquele token — quem
+        estivesse na rede fazia a memoria crescer sozinho.
+        """
+        for token, expira in list(self._sessions.items()):
+            if expira <= now:
+                self._sessions.pop(token, None)
+        for endereco, tentativas in list(self._attempts.items()):
+            while tentativas and now - tentativas[0] > PAIR_WINDOW_SECONDS:
+                tentativas.popleft()
+            if not tentativas:
+                self._attempts.pop(endereco, None)
+        if len(self._attempts) > MAX_ENDERECOS_VIGIADOS:
+            for endereco in list(self._attempts)[:-MAX_ENDERECOS_VIGIADOS]:
+                self._attempts.pop(endereco, None)
+        if len(self._sessions) > MAX_SESSOES:
+            for token in sorted(self._sessions, key=self._sessions.get)[:-MAX_SESSOES]:
+                self._sessions.pop(token, None)
 
     def details(self) -> dict[str, Any]:
         address = lan_ipv4()
@@ -95,6 +125,7 @@ class MobileAccess:
 
     def pair(self, address: str, code: str) -> tuple[str | None, int]:
         now = time.monotonic()
+        self._podar(now)
         attempts = self._attempts[address]
         while attempts and now - attempts[0] > PAIR_WINDOW_SECONDS:
             attempts.popleft()
@@ -106,6 +137,9 @@ class MobileAccess:
         attempts.clear()
         token = secrets.token_urlsafe(32)
         self._sessions[token] = now + SESSION_SECONDS
+        # Codigo de uso unico: antes ele era gerado no boot e valia enquanto o
+        # processo vivesse — em maquina ligada por semanas virava segredo fixo.
+        self.code = self._novo_codigo()
         return token, 200
 
     def valid(self, token: str | None) -> bool:

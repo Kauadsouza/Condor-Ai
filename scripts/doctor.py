@@ -47,7 +47,9 @@ def main() -> int:
     }
     for key, value in checks.items():
         print(f"{key:20} {'OK' if value is True else 'PENDENTE' if value is False else value}")
-    required = ("loopback_only", "mobile_view_safe", "hub_static_build", "ollama_online", "brain_model",
+    # O ARTX Hub e um projeto separado e opcional. Uma copia limpa apenas deste
+    # repositorio precisa conseguir instalar, diagnosticar e executar o Condor.
+    required = ("loopback_only", "mobile_view_safe", "ollama_online", "brain_model",
                 "vision_model", "stt_model", "tts_model")
     return 0 if all(checks[item] is True for item in required) else 1
 

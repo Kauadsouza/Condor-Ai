@@ -25,6 +25,9 @@ from fastapi.staticfiles import StaticFiles
 from condor.actions.guard import Guarda
 from condor.brain.client import Cerebro
 from condor.config import Config, salvar_config
+from condor.core import AIGateway, ContextEngine, EventBus, ProjectEngine
+from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge
+from condor.development import human_model_contract
 from condor.memory.db import Memoria
 from condor.memory.extractor import Extrator
 from condor.memory.recall import Recall
@@ -49,12 +52,33 @@ HUB_OUT = Path(
 ).resolve()
 
 
+_HUB_CSP_CACHE: dict[str, object] = {}
+
+CONDOR_X_REGIONS = {
+    "head-group", "head", "neck", "torso", "chest", "abdomen", "pelvis", "power",
+    "left-arm", "left-shoulder", "left-upper-arm", "left-elbow", "left-forearm", "left-hand",
+    "right-arm", "right-shoulder", "right-upper-arm", "right-elbow", "right-forearm", "right-hand",
+    "legs", "left-thigh", "left-knee", "left-shin", "left-foot",
+    "right-thigh", "right-knee", "right-shin", "right-foot",
+}
+CONDOR_X_ITEM_TYPES = {"componente", "requisito", "nota", "teste"}
+CONDOR_X_ITEM_STATUSES = {"rascunho", "planejado", "em_desenvolvimento", "bloqueado", "validado"}
+
+
 def _hub_inline_script_sources() -> str:
-    """Retorna hashes CSP dos scripts inline exatos exportados pelo Next.js."""
+    """Retorna hashes CSP dos scripts inline exatos exportados pelo Next.js.
+
+    Guardado em cache por mtime/tamanho: antes isto lia o index.html do disco e
+    fazia SHA-256 de cada bloco a cada requisicao a /hub.
+    """
     index = HUB_OUT / "index.html"
     if not index.is_file():
         return ""
     try:
+        marca = index.stat()
+        assinatura = (marca.st_mtime_ns, marca.st_size)
+        if _HUB_CSP_CACHE.get("assinatura") == assinatura:
+            return str(_HUB_CSP_CACHE.get("valor", ""))
         html = index.read_bytes()
     except OSError:
         return ""
@@ -67,7 +91,9 @@ def _hub_inline_script_sources() -> str:
             continue
         digest = base64.b64encode(hashlib.sha256(body).digest()).decode("ascii")
         sources.append(f"'sha256-{digest}'")
-    return " ".join(sources)
+    valor = " ".join(sources)
+    _HUB_CSP_CACHE.update({"assinatura": assinatura, "valor": valor})
+    return valor
 
 
 class Conexoes:
@@ -110,12 +136,21 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     memoria = Memoria(DATA / "memory" / "condor.memory.enc")
     memoria.inicializar()
 
-    # ── Cérebro ────────────────────────────────────────────────────────────
+    # ── Condor Core ────────────────────────────────────────────────────────
+    event_bus = EventBus(memoria)
+    context_engine = ContextEngine()
+
+    # Toda IA, inclusive a implementação local existente, passa pelo gateway.
     recall = Recall(memoria)
-    guarda = Guarda(config, memoria)
-    cerebro = Cerebro(config, memoria, guarda, recall)
+    guarda = Guarda(config, memoria, identity)
+    provider = Cerebro(config, memoria, guarda, recall)
+    cerebro = AIGateway(provider, context_engine, event_bus)
     recall.ligar_cerebro(cerebro)
     extrator = Extrator(memoria, cerebro, config)
+    project_engine = ProjectEngine(memoria, context_engine, event_bus)
+    safety_layer = ActionSafetyLayer()
+    device_bridge = DeviceBridge(memoria, event_bus, safety_layer)
+    camera_bridge = CameraBridge(memoria, event_bus, provider._visao)
 
     # ── Voz ────────────────────────────────────────────────────────────────
     ouvidos = Ouvidos(config, cerebro)
@@ -149,9 +184,18 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     conexoes = Conexoes()
     sessao.ligar_avisos(conexoes.transmitir)
+    event_bus.subscribe(
+        "*", lambda event: conexoes.transmitir({"tipo": "core.event", "event": event})
+    )
 
     # ── App ────────────────────────────────────────────────────────────────
     app = FastAPI(title="CONDOR", docs_url=None, redoc_url=None)
+    app.state.event_bus = event_bus
+    app.state.context_engine = context_engine
+    app.state.ai_gateway = cerebro
+    app.state.project_engine = project_engine
+    app.state.device_bridge = device_bridge
+    app.state.camera_bridge = camera_bridge
 
     def _mobile_snapshot() -> dict:
         state = sessao.snapshot()
@@ -166,7 +210,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "voz_local_pronta": state["stt_local_pronto"] and state["tts_local_pronto"],
             "integridade_ok": integrity_ok,
             "modo": "somente leitura",
-            "projetos": [{"id": "condor-x", "nome": "Condor X", "versao": "V2"}],
+            "projetos": [{"id": "condor-x", "nome": "Condor X · Modelo 01", "versao": "V1"}],
         }
 
     mobile_viewer = MobileViewer(config.visualizacao_movel.porta, _mobile_snapshot)
@@ -234,7 +278,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             content_length = int(request.headers.get("content-length") or 0)
         except ValueError:
             return JSONResponse({"erro": "tamanho de requisicao invalido"}, status_code=400)
-        body_limit = 20 * 1024 * 1024 if path == "/api/voice/transcribe" else 1024 * 1024
+        media_upload = path == "/api/voice/transcribe" or (
+            path.startswith("/api/cameras/") and path.endswith("/frame")
+        )
+        body_limit = 20 * 1024 * 1024 if media_upload else 1024 * 1024
         if content_length < 0 or content_length > body_limit:
             return JSONResponse({"erro": "requisicao excede o limite seguro"}, status_code=413)
         if path.startswith("/api/"):
@@ -303,6 +350,21 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             or not local_security.client_allowed(request.headers.get("x-condor-client"))
         ):
             return JSONResponse({"erro": "origem local invalida"}, status_code=403)
+        # Duas provas aceitas, nenhuma delas forjavel so com cabecalho:
+        #   1. o segredo de boot, que exige ler um arquivo do perfil do dono —
+        #      e como a janela do Condor abre a primeira sessao;
+        #   2. um cookie de sessao ainda valido, que so existe se a prova 1 ja
+        #      foi dada nesta execucao — e como o Hub em /hub renova a dele sem
+        #      precisar do arquivo, por estar na mesma origem e na mesma aba.
+        renovacao = local_security.token_valid(request.cookies.get(local_security.COOKIE))
+        if not renovacao and not local_security.boot_token_valid(
+            request.headers.get(local_security.CLIENT_HEADER)
+        ):
+            guarda.auditar("security", "session", "DENIED: sem segredo de boot", False, False)
+            return JSONResponse(
+                {"erro": "cliente local nao autorizado; abra o Condor pela janela"},
+                status_code=403,
+            )
         response = JSONResponse({"ok": True, "nome": "Condor"})
         response.set_cookie(
             local_security.COOKIE,
@@ -374,8 +436,15 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return JSONResponse({"erro": "seguranca ja configurada"}, status_code=409)
         if response := _auth_wait("setup"):
             return response
+        # A frase secreta e validada sozinha. Antes, um endpoint local mal
+        # digitado levantava ValueError no mesmo bloco e contava como tentativa
+        # de senha errada — o dono ficava de castigo por um erro de formulario.
         try:
             passphrase = _passphrase(payload, 12)
+        except ValueError:
+            local_security.auth_failed("setup")
+            return JSONResponse({"erro": "frase secreta fora do limite seguro"}, status_code=400)
+        try:
             brain_data = config.cerebro.model_dump()
             if payload.get("local_endpoint"):
                 brain_data["endpoint_local"] = _texto(payload, "local_endpoint", 500)
@@ -397,7 +466,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             salvar_config(config)
             await _ensure_voice()
         except (ValueError, VaultError) as exc:
-            local_security.auth_failed("setup")
             return JSONResponse({"erro": str(exc)}, status_code=400)
         local_security.auth_succeeded("setup")
         return {"ok": True}
@@ -442,14 +510,23 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             config.cerebro = type(config.cerebro)(**brain_data)
         except ValueError as exc:
             return JSONResponse({"erro": str(exc)}, status_code=400)
+        # _texto valida tamanho e pode levantar ValueError; fora do try isso
+        # virava 500 em vez de um 400 explicando o problema.
         changed: list[str] = []
-        for field, secret_name in (
-            ("openai_api_key", "OPENAI_API_KEY"),
-            ("picovoice_access_key", "PICOVOICE_ACCESS_KEY"),
-        ):
-            if field in payload:
-                vault.set(secret_name, _texto(payload, field, 16384, False))
-                changed.append(secret_name)
+        try:
+            novos = {
+                secret_name: _texto(payload, field, 16384, False)
+                for field, secret_name in (
+                    ("openai_api_key", "OPENAI_API_KEY"),
+                    ("picovoice_access_key", "PICOVOICE_ACCESS_KEY"),
+                )
+                if field in payload
+            }
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        for secret_name, valor in novos.items():
+            vault.set(secret_name, valor)
+            changed.append(secret_name)
         salvar_config(config)
         cerebro.reset_connection()
         await _ensure_voice()
@@ -463,6 +540,14 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     @app.post("/api/emergencia/parar")
     async def api_emergency_stop():
+        # Falha pro lado seguro (tranca tudo), entao nao pede frase secreta —
+        # mas sem limite qualquer processo local desligaria o Condor em loop.
+        if not local_security.rate_allowed("emergency-stop", 6, 60):
+            return JSONResponse(
+                {"erro": "muitas paradas seguidas"},
+                status_code=429,
+                headers={"Retry-After": "60"},
+            )
         guarda.emergency_stop()
         guarda.lock_owner_session()
         escuta.silenciar()
@@ -516,6 +601,224 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     async def api_projetos():
         return {"projetos": memoria.projetos()}
 
+    # ── Condor Core API ───────────────────────────────────────────────────
+
+    @app.get("/api/core/status")
+    async def api_core_status():
+        permissions = memoria.permissions() if memoria.unlocked else []
+        session_state = sessao.snapshot()
+        return {
+            "core": "online",
+            "ai": cerebro.status(),
+            "context": context_engine.snapshot(),
+            "device_bridge": device_bridge.status() if memoria.unlocked else {
+                "bridge": "locked", "connected": [], "known": []
+            },
+            "voice": {
+                "stt": bool(session_state.get("stt_local_pronto")),
+                "tts": bool(session_state.get("tts_local_pronto")),
+                "wake_word": bool(session_state.get("escuta_ativa")),
+                "wake_reason": session_state.get("motivo_escuta") or "",
+            },
+            "vision": "ready" if await provider.visao_pronta() else "not_ready",
+            "gesture": "not_configured",
+            "wearable": "not_connected",
+            "permissions": permissions,
+        }
+
+    @app.get("/api/context")
+    async def api_context_get():
+        return {"context": context_engine.snapshot()}
+
+    @app.get("/api/human-model")
+    async def api_human_model():
+        return human_model_contract()
+
+    @app.patch("/api/context")
+    async def api_context_update(payload: dict):
+        allowed = ContextEngine.FIELDS - {"updated_at"}
+        changes = {key: value for key, value in payload.items() if key in allowed}
+        if set(payload) - allowed:
+            return JSONResponse({"erro": "campo de contexto inválido"}, status_code=400)
+        context = context_engine.update(**changes)
+        await event_bus.publish("CONTEXT_UPDATED", {"changes": changes}, source="api", project_id=context.get("project_id"))
+        return {"context": context}
+
+    @app.get("/api/projects/{project_id}")
+    async def api_project_snapshot(project_id: str):
+        if response := _memoria_pronta():
+            return response
+        snapshot = project_engine.snapshot(project_id[:80])
+        if snapshot["project"] is None:
+            return JSONResponse({"erro": "projeto não encontrado"}, status_code=404)
+        return snapshot
+
+    @app.post("/api/projects/{project_id}/open")
+    async def api_project_open(project_id: str):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return await project_engine.open(project_id[:80])
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+
+    @app.post("/api/projects/{project_id}/regions/{region_id}/select")
+    async def api_project_region_select(project_id: str, region_id: str):
+        if project_id != "condor-x" or region_id not in CONDOR_X_REGIONS:
+            return JSONResponse({"erro": "projeto ou região inválida"}, status_code=404)
+        return {"context": await project_engine.select_region(project_id, region_id)}
+
+    @app.post("/api/projects/{project_id}/parts")
+    async def api_project_part_create(project_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            region = _texto(payload, "region", 80)
+            name = _texto(payload, "name", 180)
+            if project_id != "condor-x" or region not in CONDOR_X_REGIONS:
+                raise ValueError("projeto ou região inválida")
+            part = await project_engine.create_draft(project_id, region, {**payload, "name": name})
+            return {"part": part}
+        except (ValueError, KeyError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.get("/api/parts/{part_id}/versions")
+    async def api_part_versions(part_id: str):
+        if response := _memoria_pronta():
+            return response
+        return {"versions": memoria.part_versions(part_id[:80])}
+
+    @app.post("/api/parts/{part_id}/versions")
+    async def api_part_version_create(part_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {"version": await project_engine.create_version(part_id[:80], payload)}
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+
+    @app.post("/api/parts/{part_id}/integrate")
+    async def api_part_integrate(part_id: str):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {"part": await project_engine.integrate(part_id[:80])}
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+
+    @app.get("/api/events")
+    async def api_events(limite: int = 50):
+        if response := _memoria_pronta():
+            return response
+        return {"events": memoria.eventos_recentes(limite)}
+
+    @app.get("/api/devices")
+    async def api_devices():
+        if response := _memoria_pronta():
+            return response
+        return device_bridge.status()
+
+    @app.post("/api/devices/scan")
+    async def api_devices_scan():
+        if response := _memoria_pronta():
+            return response
+        return await device_bridge.scan()
+
+    @app.post("/api/devices/{device_id}/commands/plan")
+    async def api_device_command_plan(device_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        return await device_bridge.plan_command(device_id[:80], payload)
+
+    @app.get("/api/cameras")
+    async def api_cameras():
+        if response := _memoria_pronta():
+            return response
+        state = camera_bridge.status()
+        state["vision_ready"] = await provider.visao_pronta()
+        return state
+
+    @app.post("/api/cameras")
+    async def api_camera_create(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            source = await camera_bridge.add_source(
+                _texto(payload, "name", 120),
+                _texto(payload, "protocol", 20).lower(),
+                _texto(payload, "endpoint", 1200),
+                _texto(payload, "zone", 120, obrigatorio=False),
+            )
+            return {"camera": source}
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/cameras/{camera_id}/events")
+    async def api_camera_event(camera_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            confidence = payload.get("confidence")
+            if confidence is not None:
+                confidence = max(0.0, min(1.0, float(confidence)))
+            return await camera_bridge.record_event(
+                camera_id[:80], _texto(payload, "event_type", 40), confidence
+            )
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/cameras/{camera_id}/frame")
+    async def api_camera_frame(camera_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return await camera_bridge.analyze_frame(
+                camera_id[:80], _texto(payload, "image_b64", 8_000_000)
+            )
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+        except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.get("/api/alerts")
+    async def api_alerts(limite: int = 50):
+        if response := _memoria_pronta():
+            return response
+        return {"alerts": memoria.security_alerts(limite)}
+
+    @app.get("/api/permissions")
+    async def api_permissions():
+        if response := _memoria_pronta():
+            return response
+        return {"permissions": memoria.permissions()}
+
+    @app.patch("/api/permissions/{capability}")
+    async def api_permission_update(capability: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        if response := _verify_owner("permission_change", payload):
+            return response
+        if not isinstance(payload.get("allowed"), bool):
+            return JSONResponse({"erro": "allowed deve ser booleano"}, status_code=400)
+        updated = memoria.set_permission(capability[:80], payload["allowed"])
+        if not updated:
+            return JSONResponse({"erro": "permissão desconhecida"}, status_code=404)
+        event = "PERMISSION_GRANTED" if payload["allowed"] else "PERMISSION_REVOKED"
+        await event_bus.publish(event, {"capability": capability}, source="security")
+        return {"ok": True, "permissions": memoria.permissions()}
+
+    @app.get("/api/biometrics")
+    async def api_biometrics():
+        permission = next((item for item in memoria.permissions() if item["capability"] == "health_data"), None) if memoria.unlocked else None
+        return {
+            "connected": False,
+            "authorized": bool(permission and permission["allowed"]),
+            "readings": [],
+            "medical_diagnosis": False,
+        }
+
     @app.get("/api/hub")
     async def api_hub():
         from condor.actions.executor import info_sistema
@@ -523,6 +826,9 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         snapshot = memoria.hub_snapshot()
         audit_ok, audit_count = guarda.verificar_auditoria()
         vision_ready = await cerebro.visao_pronta()
+        # psutil varre processos e bloqueia; numa async def isso trava o laco de
+        # eventos e a interface inteira para junto.
+        diagnostico = await asyncio.to_thread(info_sistema)
         snapshot["system"] = {
             "name": "Condor",
             "local": True,
@@ -549,7 +855,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "audit_events": audit_count,
             "hub_build": HUB_OUT.exists(),
             "device_id": identity.device_id if vault.unlocked else None,
-            "diagnostic": info_sistema()["saida"],
+            "diagnostic": diagnostico["saida"],
         }
         return snapshot
 
@@ -617,12 +923,68 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     async def api_hub_part_update(item_id: str, payload: dict):
         if response := _memoria_pronta():
             return response
-        status = str(payload.get("status") or "conceito")[:30]
+        # Os irmaos (tarefas, missoes, criativo) validam contra lista fechada;
+        # so este aceitava qualquer string truncada em 30 chars.
+        status = str(payload.get("status") or "")
+        if status not in {"conceito", "simulacao", "prototipo", "bloqueado", "validado"}:
+            return JSONResponse({"erro": "status de peca invalido"}, status_code=400)
         try:
             progresso = max(0, min(100, int(payload.get("progresso", 0))))
         except (TypeError, ValueError):
             return JSONResponse({"erro": "progresso invalido"}, status_code=400)
         return {"ok": memoria.hub_update_part(item_id[:80], status, progresso)}
+
+    @app.get("/api/condor-x/regions/{regiao}/items")
+    async def api_condor_x_region_items(regiao: str):
+        if response := _memoria_pronta():
+            return response
+        if regiao not in CONDOR_X_REGIONS:
+            return JSONResponse({"erro": "regiao invalida"}, status_code=404)
+        return {"items": memoria.condor_x_region_items(regiao)}
+
+    @app.post("/api/condor-x/regions/{regiao}/items")
+    async def api_condor_x_region_item_create(regiao: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        if regiao not in CONDOR_X_REGIONS:
+            return JSONResponse({"erro": "regiao invalida"}, status_code=404)
+        tipo = str(payload.get("tipo") or "")
+        if tipo not in CONDOR_X_ITEM_TYPES:
+            return JSONResponse({"erro": "tipo de registro invalido"}, status_code=400)
+        try:
+            item = memoria.condor_x_create_region_item(
+                regiao,
+                tipo,
+                _texto(payload, "titulo", 180),
+                _texto(payload, "detalhes", 4000, False),
+            )
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        return {"ok": True, "item": item}
+
+    @app.patch("/api/condor-x/region-items/{item_id}")
+    async def api_condor_x_region_item_update(item_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        status = str(payload.get("status") or "")
+        if status not in CONDOR_X_ITEM_STATUSES:
+            return JSONResponse({"erro": "status de registro invalido"}, status_code=400)
+        try:
+            titulo = _texto(payload, "titulo", 180)
+            detalhes = _texto(payload, "detalhes", 4000, False)
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        return {
+            "ok": memoria.condor_x_update_region_item(
+                item_id[:80], titulo, detalhes, status
+            )
+        }
+
+    @app.delete("/api/condor-x/region-items/{item_id}")
+    async def api_condor_x_region_item_delete(item_id: str):
+        if response := _memoria_pronta():
+            return response
+        return {"ok": memoria.condor_x_delete_region_item(item_id[:80])}
 
     @app.post("/api/hub/creator")
     async def api_hub_creator_create(payload: dict):
@@ -697,6 +1059,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     @app.get("/api/saude")
     async def api_saude():
         from condor.actions.executor import info_sistema
+        sistema = await asyncio.to_thread(info_sistema)
         acoes = memoria.acoes_recentes(60)
         falhas = [a for a in acoes if not a["sucesso"]]
         pontos = 100
@@ -714,7 +1077,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "falhas": falhas[:15],
             "criticos": 0 if cerebro.pronto else 1,
             "avisos": (0 if (ouvidos.pronto and voz.pronto) else 1) + min(9, len(falhas)),
-            "sistema": info_sistema()["saida"],
+            "sistema": sistema["saida"],
         }
 
     @app.post("/api/dormir")
