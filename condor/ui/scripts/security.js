@@ -282,8 +282,8 @@ const CondorSeguranca = (() => {
           <div class="cyber-form-grid">
             <label><span class="cyber-label">PROPRIETÁRIO</span><div class="cyber-input-shell"><input class="cyber-input" name="owner" value="Kaua" placeholder="Nome do dono" required></div></label>
             <label><span class="cyber-label">MODELO LOCAL</span><div class="cyber-input-shell"><input class="cyber-input" name="localModel" value="qwen3:4b-instruct" placeholder="Modelo local"></div></label>
-            <label><span class="cyber-label">FRASE SECRETA</span><div class="cyber-input-shell"><input class="cyber-input" name="passphrase" type="password" minlength="12" autocomplete="new-password" placeholder="Mínimo de 12 caracteres" required></div></label>
-            <label><span class="cyber-label">CONFIRMAR FRASE</span><div class="cyber-input-shell"><input class="cyber-input" name="confirm" type="password" minlength="12" autocomplete="new-password" placeholder="Repita a frase secreta" required></div></label>
+            <label><span class="cyber-label">PALAVRA DE ACESSO</span><div class="cyber-input-shell"><input class="cyber-input" name="passphrase" type="password" minlength="12" autocomplete="new-password" placeholder="Mínimo de 12 caracteres" required></div></label>
+            <label><span class="cyber-label">CONFIRMAR PALAVRA</span><div class="cyber-input-shell"><input class="cyber-input" name="confirm" type="password" minlength="12" autocomplete="new-password" placeholder="Repita a palavra de acesso" required></div></label>
             <label><span class="cyber-label">API DE IA · OPCIONAL</span><div class="cyber-input-shell"><input class="cyber-input" name="openai" type="password" autocomplete="off" placeholder="Chave opcional"></div></label>
             <label><span class="cyber-label">WAKE WORD · OPCIONAL</span><div class="cyber-input-shell"><input class="cyber-input" name="picovoice" type="password" autocomplete="off" placeholder="Chave opcional"></div></label>
             <label class="wide"><span class="cyber-label">ENDPOINT LOCAL</span><div class="cyber-input-shell"><input class="cyber-input" name="localEndpoint" value="http://127.0.0.1:11434/v1" placeholder="Endpoint local Responses API"></div></label>
@@ -300,7 +300,7 @@ const CondorSeguranca = (() => {
       const error = box.querySelector('#securityError');
       const submit = formElement.querySelector('button[type="submit"]');
       if (form.get('passphrase') !== form.get('confirm')) {
-        error.textContent = 'ERRO // AS FRASES SECRETAS NÃO SÃO IGUAIS';
+        error.textContent = 'ERRO // AS PALAVRAS DE ACESSO NÃO SÃO IGUAIS';
         formElement.classList.remove('denied');
         void formElement.offsetWidth;
         formElement.classList.add('denied');
@@ -349,9 +349,9 @@ const CondorSeguranca = (() => {
           <h1>IDENTIDADE<br>NECESSÁRIA</h1>
         </header>
         <form id="unlockForm" class="cyber-form">
-          <label for="ownerPassphrase" class="cyber-label">CHAVE DE ACESSO DO PROPRIETÁRIO</label>
+          <label for="ownerPassphrase" class="cyber-label">PALAVRA DE ACESSO</label>
           <div class="cyber-input-shell">
-            <input id="ownerPassphrase" class="cyber-input" name="passphrase" type="password" minlength="12" autocomplete="current-password" spellcheck="false" placeholder="Digite sua frase secreta" required>
+            <input id="ownerPassphrase" class="cyber-input" name="passphrase" type="password" minlength="12" autocomplete="current-password" spellcheck="false" placeholder="Digite sua palavra de acesso" required>
           </div>
           <button class="cyber-submit" type="submit">AUTORIZAR ACESSO</button>
           <small class="cyber-error" id="unlockError" role="alert"></small>
@@ -376,7 +376,7 @@ const CondorSeguranca = (() => {
         });
         if (!response.ok) {
           const result = await response.json().catch(() => ({}));
-          throw new Error(result.erro || 'Frase incorreta ou cofre alterado.');
+          throw new Error(result.erro || 'Palavra incorreta ou cofre alterado.');
         }
         releaseInterface(box);
       } catch (failure) {

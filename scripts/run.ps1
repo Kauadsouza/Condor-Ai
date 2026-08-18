@@ -20,10 +20,16 @@ function Test-CondorLocalPort {
 $LocalAiProcess = $null
 $OllamaExe = Join-Path $ProjectRoot "runtime\ollama\windows\ollama.exe"
 if ((Test-Path -LiteralPath $OllamaExe) -and -not (Test-CondorLocalPort)) {
+    $StateRoot = if ($env:CONDOR_HOME) {
+        [IO.Path]::GetFullPath($env:CONDOR_HOME)
+    } else {
+        Join-Path ([Environment]::GetFolderPath("UserProfile")) ".condor"
+    }
     $env:OLLAMA_HOST = "127.0.0.1:11434"
-    $env:OLLAMA_MODELS = Join-Path $HOME ".condor\models"
+    $env:OLLAMA_MODELS = Join-Path $StateRoot "models"
     $env:OLLAMA_NO_CLOUD = "1"
     $env:OLLAMA_NOHISTORY = "1"
+    $env:OLLAMA_CONTEXT_LENGTH = "32768"
     $LocalAiProcess = Start-Process -FilePath $OllamaExe -ArgumentList "serve" `
         -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru
     for ($Attempt = 0; $Attempt -lt 80 -and -not (Test-CondorLocalPort); $Attempt++) {

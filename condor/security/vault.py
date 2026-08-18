@@ -32,9 +32,9 @@ def _unb64(value: str) -> bytes:
 
 def _derive(passphrase: str, salt: bytes) -> bytes:
     if len(passphrase) < 12:
-        raise VaultError("A frase secreta precisa ter pelo menos 12 caracteres.")
+        raise VaultError("A palavra de acesso precisa ter pelo menos 12 caracteres.")
     if len(passphrase) > 512:
-        raise VaultError("A frase secreta excede o limite seguro.")
+        raise VaultError("A palavra de acesso excede o limite seguro.")
     return Scrypt(salt=salt, length=32, n=2**15, r=8, p=1).derive(
         passphrase.encode("utf-8")
     )
@@ -81,7 +81,7 @@ class CondorVault:
                 f"condor-vault:{self.VERSION}".encode(),
             )
         except (InvalidTag, ValueError) as exc:
-            raise VaultError("Frase secreta incorreta ou cofre alterado.") from exc
+            raise VaultError("Palavra de acesso incorreta ou cofre alterado.") from exc
         self._key = bytearray(key)
         self._salt = salt
         self._data = json.loads(plaintext.decode("utf-8"))

@@ -1,19 +1,43 @@
 # Condor X — digital twin e engenharia segura
 
-Condor X e um projeto de pesquisa modular. A versao atual e um **digital twin
-inerte** dentro da ficha do Condor X na aba **Projetos** do aplicativo local
-Condor. Ela serve para organizar requisitos,
-ergonomia, telemetria e prototipos de baixa energia antes de qualquer objeto
-fisico.
+Condor X e um projeto de pesquisa modular dentro da ficha da aba **Projetos**
+do aplicativo local Condor. Ele oferece uma referencia humana dividida por
+regioes e um editor 3D para construir e versionar conceitos antes de qualquer
+objeto fisico.
 
-## Referencia humana do digital twin
+## Referencia humana e editor 3D
 
-- altura normalizada no modelo: **1,80 m** do piso ao topo da cabeca;
-- massa corporal de referencia: **85 kg**;
-- silhueta organica com cranio, face, pescoco, claviculas, tronco, cintura,
-  quadril, articulacoes, maos, dedos, pernas e pes;
-- medidas servem para visualizacao e planejamento ergonomico inicial; nao
-  substituem escaneamento corporal, prova de ajuste ou validacao profissional.
+- silhueta de navegacao com cabeca, pescoco, tronco, bracos, maos, pernas e pes;
+- cada ombro, braco, cotovelo, antebraco, mao, coxa, joelho, canela e pe abre
+  seu proprio ambiente de modelagem;
+- a malha e uma superficie parametrica organica, nao uma composicao de formas
+  geometricas basicas;
+- comprimento, larguras, profundidades, volume, espessura, folga, assimetria e
+  torcao podem ser ajustados por controle deslizante ou valor numerico exato em
+  milimetros;
+- sensores, juntas, atuadores, controladores, cabos e fixacoes podem ser
+  marcados como pontos tecnicos, sem afirmar que o componente fisico existe;
+- modelos e versoes ficam no snapshot cifrado e podem ser exportados em STL;
+- **Salvar no Corpo X** preserva a versao e aplica a mesma malha regional ao
+  corpo 3D completo; somente um modelo 3D fica ativo por regiao, sem apagar versoes;
+- o corpo completo se reorganiza conforme os comprimentos e larguras salvos;
+  partes solidas sao salvas e partes em malha translucida sao apenas referencia;
+- a cabeca possui perfil de cranio, face, mandibula e orelhas, em vez de uma
+  forma arredondada generica;
+- cada mao possui palma, polegar e quatro dedos separados; cada pe e uma peca
+  fechada com leitura de calcado, sem dedos aparentes;
+- ombros usam um perfil proprio de deltoide e se conectam ao torax com menos
+  separacao visual;
+- linhas tecnicas discretas identificam a face frontal, enquanto um emblema `C`
+  tridimensional permanece no centro do torax;
+- a linguagem visual da montagem usa uma carenagem branca perolada continua
+  sobre juntas grafite, sem placas ou pecas 3D coladas sobre a superficie;
+- peitoral, abdomen, quadril, ombros, bracos, maos, coxas, joelhos, canelas e
+  calcados permanecem selecionaveis separadamente e usam apenas linhas frontais sem volume;
+- o enquadramento 3D acompanha os limites reais do corpo para manter cabeca,
+  maos, dedos e pes totalmente visiveis;
+- os valores iniciais sao apenas uma previa visual. O Condor nao presume altura,
+  massa nem medida corporal real.
 
 ## Limites permanentes
 
@@ -47,14 +71,9 @@ fisico.
 No painel, um modulo de risco alto permanece bloqueado. Avancar a barra e
 registrar progresso nao autoriza fabricacao nem teste fisico.
 
-## Prototipo humano de alta fidelidade
+## Limite do modelo digital
 
-O Condor X atual e um digital twin exclusivamente humano, sem armadura ou
-carenagem. A malha preserva a referencia de 1,80 m e 85 kg e detalha crânio,
-face, olhos, mandibula, tronco, maos, joelhos, tornozelos e pes. A marca luminosa
-C permanece no torax como identidade do prototipo, sem representar um sistema
-fisico de energia.
-
-O nucleo do peito usa a letra **C** como marca permanente do Condor X. Nesta
-fase, o C e identidade visual e ponto de telemetria simulada; nao representa
-fonte de alta energia nem autoriza construcao eletrica vestivel.
+O editor produz uma malha conceitual e exportavel. Ele ainda nao substitui um
+CAD mecanico certificado, escaneamento corporal, analise estrutural, simulacao
+termica, tolerancias de fabricacao ou revisao profissional. A letra **C** no
+mapa corporal e apenas identidade visual do Condor X.

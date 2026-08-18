@@ -25,9 +25,9 @@ from fastapi.staticfiles import StaticFiles
 from condor.actions.guard import Guarda
 from condor.brain.client import Cerebro
 from condor.config import Config, salvar_config
-from condor.core import AIGateway, ContextEngine, EventBus, ProjectEngine
+from condor.core import AIGateway, CondorOrchestrator, ContextEngine, EventBus, ProjectEngine
 from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge
-from condor.development import human_model_contract
+from condor.development import ArduinoToolchain, detect_language, human_model_contract
 from condor.memory.db import Memoria
 from condor.memory.extractor import Extrator
 from condor.memory.recall import Recall
@@ -45,7 +45,6 @@ from condor.voice.wake import Escuta
 log = logging.getLogger("condor.servidor")
 
 ROOT = CODE_ROOT
-DATA = state_root()
 HUB_OUT = Path(
     os.getenv("CONDOR_HUB_OUT")
     or (CODE_ROOT.parent.parent / "ARTX Hub" / "out")
@@ -63,6 +62,21 @@ CONDOR_X_REGIONS = {
 }
 CONDOR_X_ITEM_TYPES = {"componente", "requisito", "nota", "teste"}
 CONDOR_X_ITEM_STATUSES = {"rascunho", "planejado", "em_desenvolvimento", "bloqueado", "validado"}
+
+
+def _falha_operacional(acao: dict) -> bool:
+    """Bloqueio esperado da politica e defesa ativa, nao pane do Condor."""
+    if acao.get("sucesso"):
+        return False
+    if str(acao.get("ferramenta") or "").lower() != "security":
+        return True
+    entrada = str(acao.get("entrada") or "")
+    try:
+        payload = json.loads(entrada)
+        resultado = str(payload.get("result") or "") if isinstance(payload, dict) else ""
+    except (TypeError, ValueError, json.JSONDecodeError):
+        resultado = entrada
+    return not resultado.upper().startswith("DENIED:")
 
 
 def _hub_inline_script_sources() -> str:
@@ -124,7 +138,8 @@ class Conexoes:
 
 
 def montar(config: Config) -> tuple[FastAPI, Sessao]:
-    DATA.mkdir(parents=True, exist_ok=True)
+    data_root = state_root()
+    data_root.mkdir(parents=True, exist_ok=True)
 
     vault = CondorVault(state_path("security", "vault.json"))
     config.ligar_cofre(vault)
@@ -133,7 +148,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     integrity = CodeIntegrity(state_path("security", "code-manifest.json"), identity)
 
     # ── Memória ────────────────────────────────────────────────────────────
-    memoria = Memoria(DATA / "memory" / "condor.memory.enc")
+    memoria = Memoria(data_root / "memory" / "condor.memory.enc")
     memoria.inicializar()
 
     # ── Condor Core ────────────────────────────────────────────────────────
@@ -146,11 +161,16 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     provider = Cerebro(config, memoria, guarda, recall)
     cerebro = AIGateway(provider, context_engine, event_bus)
     recall.ligar_cerebro(cerebro)
-    extrator = Extrator(memoria, cerebro, config)
+    extrator = Extrator(memoria, cerebro, config, event_bus)
     project_engine = ProjectEngine(memoria, context_engine, event_bus)
     safety_layer = ActionSafetyLayer()
     device_bridge = DeviceBridge(memoria, event_bus, safety_layer)
+    arduino_toolchain = ArduinoToolchain()
     camera_bridge = CameraBridge(memoria, event_bus, provider._visao)
+    orchestrator = CondorOrchestrator(
+        memoria, context_engine, event_bus, project_engine, device_bridge
+    )
+    provider.ligar_orquestrador(orchestrator)
 
     # ── Voz ────────────────────────────────────────────────────────────────
     ouvidos = Ouvidos(config, cerebro)
@@ -196,6 +216,8 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     app.state.project_engine = project_engine
     app.state.device_bridge = device_bridge
     app.state.camera_bridge = camera_bridge
+    app.state.orchestrator = orchestrator
+    app.router.add_event_handler("shutdown", device_bridge.close_all)
 
     def _mobile_snapshot() -> dict:
         state = sessao.snapshot()
@@ -235,7 +257,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     def _passphrase(payload: dict, minimum: int = 1) -> str:
         value = str(payload.get("passphrase") or "")
         if len(value) < minimum or len(value) > 512:
-            raise ValueError("frase secreta fora do limite seguro")
+            raise ValueError("palavra de acesso fora do limite seguro")
         return value
 
     def _auth_wait(action: str) -> JSONResponse | None:
@@ -252,7 +274,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         delay = local_security.auth_failed(action)
         guarda.auditar("security", action, "DENIED", False, True)
         return JSONResponse(
-            {"erro": "frase secreta incorreta"},
+            {"erro": "palavra de acesso incorreta"},
             status_code=403,
             headers={"Retry-After": str(delay)} if delay else None,
         )
@@ -436,14 +458,14 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return JSONResponse({"erro": "seguranca ja configurada"}, status_code=409)
         if response := _auth_wait("setup"):
             return response
-        # A frase secreta e validada sozinha. Antes, um endpoint local mal
+        # A palavra de acesso e validada sozinha. Antes, um endpoint local mal
         # digitado levantava ValueError no mesmo bloco e contava como tentativa
         # de senha errada — o dono ficava de castigo por um erro de formulario.
         try:
             passphrase = _passphrase(payload, 12)
         except ValueError:
             local_security.auth_failed("setup")
-            return JSONResponse({"erro": "frase secreta fora do limite seguro"}, status_code=400)
+            return JSONResponse({"erro": "palavra de acesso fora do limite seguro"}, status_code=400)
         try:
             brain_data = config.cerebro.model_dump()
             if payload.get("local_endpoint"):
@@ -455,6 +477,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             vault.initialize(passphrase, {
                 "CONDOR_DONO": _texto(payload, "owner", 200, False) or "Kaua",
                 "OPENAI_API_KEY": _texto(payload, "openai_api_key", 16384, False),
+                "ANTHROPIC_API_KEY": _texto(payload, "anthropic_api_key", 16384, False),
                 "PICOVOICE_ACCESS_KEY": _texto(payload, "picovoice_access_key", 16384, False),
                 "CONDOR_SAFETY_ID": base64.urlsafe_b64encode(os.urandom(24)).decode(),
                 "MEMORY_KEY": base64.b64encode(os.urandom(32)).decode(),
@@ -481,6 +504,11 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             guarda.unlock_owner_session()
             salvar_config(config)
             await _ensure_voice()
+            connector_task = asyncio.create_task(
+                cerebro.testar_conectores(), name="condor-testar-conectores"
+            )
+            _EM_VOO.add(connector_task)
+            connector_task.add_done_callback(_EM_VOO.discard)
             if not guarda.stopped:
                 escuta.voltar_a_ouvir()
         except (ValueError, VaultError):
@@ -499,14 +527,22 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     async def api_security_secrets(payload: dict):
         if not vault.unlocked:
             return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
-        if response := _verify_owner("secret_update", payload):
-            return response
+        if not guarda.owner_session_active:
+            return JSONResponse({"erro": "sessao do dono bloqueada"}, status_code=423)
         try:
             brain_data = config.cerebro.model_dump()
+            if "provider_mode" in payload:
+                brain_data["provedor_preferido"] = _texto(payload, "provider_mode", 20, False) or "auto"
+            if "external_model" in payload:
+                brain_data["modelo"] = _texto(payload, "external_model", 120, False) or brain_data["modelo"]
+            if "claude_model" in payload:
+                brain_data["modelo_claude"] = _texto(payload, "claude_model", 120, False) or brain_data["modelo_claude"]
             if "local_endpoint" in payload:
                 brain_data["endpoint_local"] = _texto(payload, "local_endpoint", 500, False)
             if "local_model" in payload:
                 brain_data["modelo_local"] = _texto(payload, "local_model", 200, False)
+            brain_data["compartilhar_memoria_com_conector"] = True
+            brain_data["aprendizado_automatico_por_conector"] = True
             config.cerebro = type(config.cerebro)(**brain_data)
         except ValueError as exc:
             return JSONResponse({"erro": str(exc)}, status_code=400)
@@ -518,6 +554,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 secret_name: _texto(payload, field, 16384, False)
                 for field, secret_name in (
                     ("openai_api_key", "OPENAI_API_KEY"),
+                    ("anthropic_api_key", "ANTHROPIC_API_KEY"),
                     ("picovoice_access_key", "PICOVOICE_ACCESS_KEY"),
                 )
                 if field in payload
@@ -536,11 +573,41 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "changed": changed,
             "provider": cerebro.provedor,
             "model": cerebro.modelo_ativo,
+            "connector": provider.connector_state,
+        }
+
+    @app.post("/api/ai/test")
+    async def api_ai_test():
+        if not vault.unlocked:
+            return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
+        try:
+            results = await asyncio.wait_for(cerebro.testar_conectores(), timeout=75.0)
+        except asyncio.TimeoutError:
+            selected = config.cerebro.provedor_preferido
+            ok, detail = cerebro.mark_connection_test(
+                False, f"{selected}: teste excedeu 75 segundos", selected
+            )
+            results = {selected: {"configured": True, "verified": ok, "detail": detail}}
+        selected = config.cerebro.provedor_preferido
+        selected_result = results.get(selected, {})
+        for name, result in results.items():
+            if result.get("configured"):
+                await event_bus.publish(
+                    "AI_CONNECTOR_TEST_COMPLETED",
+                    {"provider": name, "verified": result.get("verified"), "detail": result.get("detail")},
+                    source="ai_gateway",
+                )
+        return {
+            "ok": selected_result.get("verified") is True,
+            "detail": selected_result.get("detail") or "provedor selecionado não configurado",
+            "provider": cerebro.provedor,
+            "model": cerebro.modelo_ativo,
+            "results": results,
         }
 
     @app.post("/api/emergencia/parar")
     async def api_emergency_stop():
-        # Falha pro lado seguro (tranca tudo), entao nao pede frase secreta —
+        # Falha pro lado seguro (tranca tudo), entao nao pede palavra de acesso —
         # mas sem limite qualquer processo local desligaria o Condor em loop.
         if not local_security.rate_allowed("emergency-stop", 6, 60):
             return JSONResponse(
@@ -583,7 +650,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     @app.get("/api/memoria/grafo")
     async def api_grafo():
-        return memoria.grafo()
+        return {**memoria.grafo(), "estatisticas": memoria.estatisticas()}
 
     @app.get("/api/memoria/fluxo")
     async def api_fluxo():
@@ -614,6 +681,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "device_bridge": device_bridge.status() if memoria.unlocked else {
                 "bridge": "locked", "connected": [], "known": []
             },
+            "arduino": await arduino_toolchain.status(),
             "voice": {
                 "stt": bool(session_state.get("stt_local_pronto")),
                 "tts": bool(session_state.get("tts_local_pronto")),
@@ -696,6 +764,8 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return {"version": await project_engine.create_version(part_id[:80], payload)}
         except KeyError as exc:
             return JSONResponse({"erro": str(exc)}, status_code=404)
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
 
     @app.post("/api/parts/{part_id}/integrate")
     async def api_part_integrate(part_id: str):
@@ -722,13 +792,169 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     async def api_devices_scan():
         if response := _memoria_pronta():
             return response
-        return await device_bridge.scan()
+        devices, arduino = await asyncio.gather(
+            device_bridge.scan(), arduino_toolchain.detect_boards()
+        )
+        return {**devices, "arduino": arduino}
+
+    @app.post("/api/devices/connect")
+    async def api_device_connect(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            port = _texto(payload, "port", 80)
+            baud_rate = int(payload.get("baud_rate") or 115200)
+            project_id = str(payload.get("project_id") or context_engine.snapshot().get("project_id") or "condor-x")[:80]
+            if memoria.get_project(project_id) is None:
+                raise ValueError("projeto não encontrado")
+            result = await device_bridge.connect(port, baud_rate, project_id)
+            device = result["device"]
+            context_engine.update(
+                project_id=project_id, device_id=device["id"], device_name=device["name"],
+                connection_state="connected", mode="programming",
+            )
+            return {**result, "context": context_engine.snapshot()}
+        except (PermissionError, ValueError, RuntimeError, TypeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/devices/{device_id}/disconnect")
+    async def api_device_disconnect(device_id: str):
+        if response := _memoria_pronta():
+            return response
+        project_id = context_engine.snapshot().get("project_id")
+        result = await device_bridge.disconnect(device_id[:80], project_id)
+        current = context_engine.snapshot()
+        if current.get("device_id") == device_id:
+            context_engine.update(device_id=None, device_name=None, connection_state="disconnected")
+        return {**result, "context": context_engine.snapshot()}
 
     @app.post("/api/devices/{device_id}/commands/plan")
     async def api_device_command_plan(device_id: str, payload: dict):
         if response := _memoria_pronta():
             return response
         return await device_bridge.plan_command(device_id[:80], payload)
+
+    @app.get("/api/programming/buffer")
+    async def api_programming_buffer(project_id: str = ""):
+        if response := _memoria_pronta():
+            return response
+        selected_project = (project_id or context_engine.snapshot().get("project_id") or "condor-x")[:80]
+        if memoria.get_project(selected_project) is None:
+            return JSONResponse({"erro": "projeto não encontrado"}, status_code=404)
+        buffer = memoria.code_buffer(selected_project)
+        return {"project_id": selected_project, "buffer": buffer, "context": context_engine.snapshot()}
+
+    @app.put("/api/programming/buffer")
+    async def api_programming_buffer_save(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            project_id = str(payload.get("project_id") or context_engine.snapshot().get("project_id") or "condor-x")[:80]
+            project = memoria.get_project(project_id)
+            if project is None:
+                raise ValueError("projeto não encontrado")
+            content = str(payload.get("content") or "")
+            if len(content.encode("utf-8")) > 500_000:
+                raise ValueError("código excede 500 KB")
+            detected = detect_language(content)
+            fallback_name = f"programa{detected['extension']}"
+            name = str(payload.get("name") or fallback_name).strip()[:120] or fallback_name
+            if not name.lower().endswith(detected["extension"]):
+                name = f"{Path(name).stem[:100]}{detected['extension']}"
+            checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            previous = memoria.code_buffer(project_id)
+            buffer = memoria.save_code_buffer(project_id, name, detected["language"], content, checksum)
+            context = context_engine.update(
+                project_id=project_id, project_name=project["name"], mode="programming",
+                current_file=name, code_language=detected["language"],
+                code_revision=int(buffer.get("revision") or 1),
+            )
+            if not previous or previous.get("checksum") != checksum:
+                await event_bus.publish(
+                    "CODE_BUFFER_UPDATED",
+                    {"file": name, "language": detected["language"], "revision": buffer["revision"], "bytes": len(content.encode("utf-8"))},
+                    source="programming_workspace", project_id=project_id,
+                )
+            return {"buffer": buffer, "detected": detected, "context": context}
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.get("/api/programming/arduino/status")
+    async def api_programming_arduino_status():
+        detection, toolchain = await asyncio.gather(
+            arduino_toolchain.detect_boards(), arduino_toolchain.status()
+        )
+        return {**toolchain, **detection}
+
+    @app.post("/api/programming/arduino/run")
+    async def api_programming_arduino_run(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        if not memoria.permission_allowed("arduino_upload"):
+            return JSONResponse({"erro": "gravação Arduino bloqueada no painel Sistema"}, status_code=403)
+        try:
+            project_id = str(payload.get("project_id") or context_engine.snapshot().get("project_id") or "condor-x")[:80]
+            if memoria.get_project(project_id) is None:
+                raise ValueError("projeto não encontrado")
+            buffer = memoria.code_buffer(project_id)
+            if not buffer:
+                raise ValueError("salve um código Arduino antes de executar")
+            if buffer.get("language") != "arduino":
+                raise ValueError("RUN físico está disponível somente para código Arduino")
+            port = _texto(payload, "port", 120)
+            fqbn = _texto(payload, "fqbn", 160)
+            available_ports = device_bridge.available_ports()
+            released = await device_bridge.release_port(port, project_id)
+            await event_bus.publish(
+                "ARDUINO_RUN_STARTED",
+                {"port": port, "fqbn": fqbn, "revision": buffer.get("revision")},
+                source="programming_workspace", project_id=project_id,
+            )
+            result = await arduino_toolchain.compile_and_upload(
+                content=str(buffer.get("content") or ""), sketch_name=str(buffer.get("name") or "programa.ino"),
+                port=port, fqbn=fqbn, available_ports=available_ports,
+            )
+            event_type = "ARDUINO_UPLOAD_COMPLETED" if result["success"] else (
+                "ARDUINO_COMPILE_FAILED" if result["phase"] == "compile" else "ARDUINO_UPLOAD_FAILED"
+            )
+            await event_bus.publish(
+                event_type,
+                {"port": port, "fqbn": fqbn, "revision": buffer.get("revision"), "success": result["success"]},
+                source="programming_workspace", project_id=project_id,
+            )
+            return {**result, "port": port, "fqbn": fqbn, "serial_released": released}
+        except (ValueError, RuntimeError, TypeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.get("/api/lab/experiments")
+    async def api_lab_experiments(project_id: str = ""):
+        if response := _memoria_pronta():
+            return response
+        selected_project = (project_id or context_engine.snapshot().get("project_id") or "condor-x")[:80]
+        return {"project_id": selected_project, "experiments": memoria.lab_experiments(selected_project)}
+
+    @app.post("/api/lab/experiments")
+    async def api_lab_experiment_create(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            project_id = str(payload.get("project_id") or context_engine.snapshot().get("project_id") or "condor-x")[:80]
+            if memoria.get_project(project_id) is None:
+                raise ValueError("projeto não encontrado")
+            title = _texto(payload, "title", 160)
+            objective = _texto(payload, "objective", 1200, obrigatorio=False)
+            origin = str(payload.get("origin") or "owner")[:20]
+            if origin not in {"owner", "condor"}:
+                raise ValueError("origem inválida")
+            experiment = memoria.create_lab_experiment(project_id, title, objective, origin)
+            context_engine.update(project_id=project_id, experiment_id=experiment["id"], mode="laboratory")
+            await event_bus.publish(
+                "EXPERIMENT_CREATED", {"experiment": experiment},
+                source="laboratory", project_id=project_id,
+            )
+            return {"experiment": experiment, "context": context_engine.snapshot()}
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
 
     @app.get("/api/cameras")
     async def api_cameras():
@@ -1061,13 +1287,45 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         from condor.actions.executor import info_sistema
         sistema = await asyncio.to_thread(info_sistema)
         acoes = memoria.acoes_recentes(60)
-        falhas = [a for a in acoes if not a["sucesso"]]
+        falhas = [a for a in acoes if _falha_operacional(a)]
+        connector = provider.connector_state
+        selected = connector.get("selected") or connector.get("preferred")
+        provider_states = connector.get("providers") or {}
+        selected_state = provider_states.get(selected) or {}
+        connector_issues = []
+        if not selected_state.get("configured"):
+            connector_issues.append({
+                "level": "critical", "provider": selected,
+                "title": "PROVEDOR SELECIONADO NÃO CONFIGURADO",
+                "detail": f"{selected}: adicione a credencial ou o modelo exigido.",
+            })
+        elif selected_state.get("verified") is False:
+            connector_issues.append({
+                "level": "critical", "provider": selected,
+                "title": "CONECTOR DE IA COM FALHA", "detail": selected_state.get("detail"),
+            })
+        elif selected_state.get("verified") is None:
+            connector_issues.append({
+                "level": "warning", "provider": selected,
+                "title": "CONECTOR AINDA NÃO TESTADO",
+                "detail": f"{selected}: salve a configuração para executar o teste real.",
+            })
+        for name, state in provider_states.items():
+            if name != selected and state.get("configured") and state.get("verified") is False:
+                connector_issues.append({
+                    "level": "warning", "provider": name,
+                    "title": "CONECTOR ALTERNATIVO COM FALHA", "detail": state.get("detail"),
+                })
+        critical_connectors = sum(1 for item in connector_issues if item["level"] == "critical")
+        warning_connectors = sum(1 for item in connector_issues if item["level"] == "warning")
         pontos = 100
         if not cerebro.pronto:
             pontos -= 45
         if not (ouvidos.pronto and voz.pronto):
             pontos -= 25
         pontos -= min(20, len(falhas) * 3)
+        if cerebro.pronto:
+            pontos -= min(45, critical_connectors * 35 + warning_connectors * 8)
         return {
             "pontos": max(0, pontos),
             "cerebro": cerebro.pronto,
@@ -1075,8 +1333,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "voz_local": ouvidos.pronto and voz.pronto,
             "motivo_escuta": escuta.motivo_inativa,
             "falhas": falhas[:15],
-            "criticos": 0 if cerebro.pronto else 1,
-            "avisos": (0 if (ouvidos.pronto and voz.pronto) else 1) + min(9, len(falhas)),
+            "criticos": max(0 if cerebro.pronto else 1, critical_connectors),
+            "avisos": (0 if (ouvidos.pronto and voz.pronto) else 1) + min(9, len(falhas)) + warning_connectors,
+            "connectors": provider_states,
+            "connector_issues": connector_issues,
             "sistema": sistema["saida"],
         }
 

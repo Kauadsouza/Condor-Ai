@@ -23,8 +23,6 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from condor.paths import CODE_ROOT, state_path, state_root
 
 ROOT = CODE_ROOT
-DATA = state_root()
-CONFIG_PATH = state_path("config.yaml")
 
 
 def _config_path() -> Path:
@@ -32,11 +30,13 @@ def _config_path() -> Path:
     return state_path("config.yaml")
 
 class CerebroConfig(BaseModel):
-    """Modelos da OpenAI. O principal é quem conversa e usa as ferramentas."""
+    """Provedores selecionáveis; cada modelo continua independente."""
 
     modelo: str = "gpt-5.6-terra"
     modelo_rapido: str = "gpt-5.6-luna"          # extrair memória, classificar
     modelo_embedding: str = "text-embedding-3-small"
+    provedor_preferido: str = "auto"
+    modelo_claude: str = "claude-sonnet-5"
     endpoint_local: str = "http://127.0.0.1:11434/v1"
     modelo_local: str = ""
     modelo_visao_local: str = "qwen3-vl:2b"
@@ -45,10 +45,28 @@ class CerebroConfig(BaseModel):
     # Teto de iterações do loop de ferramentas: cobre tarefa de vários passos
     # sem deixar ele girar pra sempre se der ruim.
     max_iteracoes: int = 12
-    # Privacidade por padrao: fatos antigos nao saem do PC. Ative conscientemente
-    # apenas se aceitar enviar esses trechos ao conector generativo configurado.
-    compartilhar_memoria_com_conector: bool = False
-    aprendizado_automatico_por_conector: bool = False
+    # A memoria pertence ao Condor, nao ao fornecedor escolhido. Toda conversa
+    # usa apenas o contexto relevante recuperado do banco cifrado local e todo
+    # provedor alimenta o mesmo processo de aprendizado do Condor.
+    compartilhar_memoria_com_conector: bool = True
+    aprendizado_automatico_por_conector: bool = True
+
+    @field_validator(
+        "compartilhar_memoria_com_conector",
+        "aprendizado_automatico_por_conector",
+        mode="before",
+    )
+    @classmethod
+    def _memoria_interna_obrigatoria(cls, _value: Any) -> bool:
+        return True
+
+    @field_validator("provedor_preferido")
+    @classmethod
+    def _provedor_valido(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"auto", "local", "openai", "claude"}:
+            raise ValueError("provedor_preferido precisa ser openai, claude ou local")
+        return normalized
 
     @field_validator("endpoint_local")
     @classmethod
@@ -169,6 +187,10 @@ class Config(BaseModel):
         return self._segredo("OPENAI_API_KEY")
 
     @property
+    def chave_anthropic(self) -> str:
+        return self._segredo("ANTHROPIC_API_KEY")
+
+    @property
     def chave_picovoice(self) -> str:
         return self._segredo("PICOVOICE_ACCESS_KEY")
 
@@ -188,7 +210,9 @@ class Config(BaseModel):
 
 
 def carregar_config() -> Config:
-    DATA.mkdir(parents=True, exist_ok=True)
+    # CONDOR_HOME pode mudar entre instancias e nos testes. Resolva o estado
+    # apenas no momento do uso para nunca gravar no cofre de outra execucao.
+    state_root().mkdir(parents=True, exist_ok=True)
     path = _config_path()
 
     if not path.exists():

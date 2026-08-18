@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import struct
 import time
@@ -301,6 +302,43 @@ CREATE TABLE IF NOT EXISTS files (
     created REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS code_buffers (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    language TEXT NOT NULL,
+    content TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    updated REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS code_buffer_versions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    language TEXT NOT NULL,
+    content TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'owner',
+    created REAL NOT NULL,
+    UNIQUE(project_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_code_versions_project
+ON code_buffer_versions(project_id, revision DESC);
+
+CREATE TABLE IF NOT EXISTS lab_experiments (
+    id TEXT PRIMARY KEY,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'proposed',
+    origin TEXT NOT NULL DEFAULT 'owner',
+    created REAL NOT NULL,
+    updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lab_experiments_updated ON lab_experiments(updated DESC);
+
 CREATE TABLE IF NOT EXISTS biometric_readings (
     id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL,
@@ -387,9 +425,15 @@ DEFAULT_PERMISSIONS = (
     ("microphone", 0, "local"),
     ("camera", 0, "local"),
     ("serial", 0, "device"),
+    ("arduino_upload", 1, "physical"),
     ("bluetooth", 0, "device"),
     ("health_data", 0, "private"),
     ("robot_control", 0, "physical"),
+    ("ai_projects", 1, "condor"),
+    ("ai_programming", 1, "condor"),
+    ("ai_laboratory", 1, "condor"),
+    ("ai_memory", 1, "private"),
+    ("ai_devices", 0, "device"),
 )
 
 FTS = """
@@ -767,11 +811,32 @@ class Memoria:
             return [{"role": r["papel"], "content": r["conteudo"]} for r in reversed(rows)]
 
     def buscar_conversas(self, consulta: str, limite: int = 5) -> list[dict]:
+        stop = {
+            "para", "como", "isso", "essa", "esse", "aqui", "quero", "condor",
+            "sobre", "uma", "que", "com", "por", "das", "dos", "mais", "muito",
+        }
+        termos = []
+        for term in re.findall(r"[\wÀ-ÿ]{3,}", str(consulta).lower()):
+            if term not in stop and term not in termos:
+                termos.append(term)
+        termos = termos[:8]
+        if not termos:
+            return []
         with self._conn() as conn:
+            where = " OR ".join("LOWER(conteudo) LIKE ?" for _ in termos)
             rows = conn.execute(
-                "SELECT papel, conteudo, ts FROM conversas WHERE conteudo LIKE ? "
-                "ORDER BY ts DESC LIMIT ?", (f"%{consulta}%", limite)).fetchall()
-            return [dict(r) for r in rows]
+                f"SELECT papel, conteudo, ts FROM conversas WHERE {where} "
+                "ORDER BY ts DESC LIMIT ?",
+                (*[f"%{term}%" for term in termos], max(limite * 8, 24)),
+            ).fetchall()
+        pontuados = []
+        for row in rows:
+            item = dict(row)
+            content = item["conteudo"].lower()
+            score = sum(1 for term in termos if term in content)
+            pontuados.append((score, item["ts"], item))
+        pontuados.sort(key=lambda value: (-value[0], -value[1]))
+        return [item for _, _, item in pontuados[:limite]]
 
     # ── Auditoria e custo ──────────────────────────────────────────────────
 
@@ -982,6 +1047,43 @@ class Memoria:
         return json.dumps(value if isinstance(value, dict) else {}, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
+    def _safe_json_dict(value, label: str, max_bytes: int = 220_000) -> dict:
+        """Normaliza snapshots do editor e impede payloads ilimitados/NaN."""
+        if value in (None, ""):
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} precisa ser um objeto")
+        try:
+            encoded = json.dumps(
+                value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            ).encode("utf-8")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{label} contém dados inválidos") from exc
+        if len(encoded) > max_bytes:
+            raise ValueError(f"{label} excede o limite de {max_bytes // 1000} KB")
+        return json.loads(encoded.decode("utf-8"))
+
+    @classmethod
+    def _safe_geometry(cls, value) -> dict:
+        geometry = cls._safe_json_dict(value, "geometry", 180_000)
+        if not geometry:
+            return {}
+        if geometry.get("schema") != "condor-parametric-surface-v1":
+            raise ValueError("schema de geometry inválido")
+        parameters = geometry.get("parameters", {})
+        if not isinstance(parameters, dict) or len(parameters) > 32:
+            raise ValueError("parameters de geometry inválido")
+        if any(not isinstance(item, (int, float)) or isinstance(item, bool) for item in parameters.values()):
+            raise ValueError("parameters aceita somente valores numéricos")
+        points = geometry.get("technicalPoints", [])
+        if not isinstance(points, list) or len(points) > 128 or any(not isinstance(item, dict) for item in points):
+            raise ValueError("technicalPoints excede o limite seguro")
+        layers = geometry.get("layers", {})
+        if not isinstance(layers, dict) or len(layers) > 16:
+            raise ValueError("layers de geometry inválido")
+        return geometry
+
+    @staticmethod
     def _decode_json(value: str, fallback):
         try:
             return json.loads(value)
@@ -1012,6 +1114,14 @@ class Memoria:
                 part["position"] = self._decode_json(part.pop("position_json"), {})
                 part["rotation"] = self._decode_json(part.pop("rotation_json"), {})
                 part["integrated"] = bool(part["integrated"])
+                version = conn.execute(
+                    "SELECT snapshot_json,label FROM part_versions WHERE id=?",
+                    (part.get("current_version_id"),),
+                ).fetchone()
+                part["current_snapshot"] = (
+                    self._decode_json(version["snapshot_json"], {}) if version else {}
+                )
+                part["current_version_label"] = version["label"] if version else None
             versions = [dict(row) for row in conn.execute(
                 "SELECT * FROM project_versions WHERE project_id=? ORDER BY number DESC", (project_id,)
             ).fetchall()]
@@ -1028,14 +1138,16 @@ class Memoria:
             raise ValueError("name obrigatório")
         part_type = str(payload.get("type") or "component").strip()[:50]
         material = str(payload.get("material") or "").strip()[:120] or None
-        snapshot = {
+        geometry = self._safe_geometry(payload.get("geometry"))
+        snapshot = self._safe_json_dict({
             "name": name[:180], "type": part_type, "region": region,
             "material": material, "weight_g": payload.get("weight_g"),
             "dimensions": payload.get("dimensions") if isinstance(payload.get("dimensions"), dict) else {},
             "thickness_mm": payload.get("thickness_mm"),
             "position": payload.get("position") if isinstance(payload.get("position"), dict) else {},
             "rotation": payload.get("rotation") if isinstance(payload.get("rotation"), dict) else {},
-        }
+            "geometry": geometry,
+        }, "snapshot")
         with self._conn() as conn:
             conn.execute(
                 """INSERT INTO parts
@@ -1054,7 +1166,10 @@ class Memoria:
                 (version_id, part_id, project_id, json.dumps(snapshot, ensure_ascii=False),
                  str(payload.get("notes") or "")[:4000], agora),
             )
-        return self.project_snapshot(project_id)["parts"][0]
+        return next(
+            part for part in self.project_snapshot(project_id)["parts"]
+            if part["id"] == part_id
+        )
 
     def create_part_version(self, part_id: str, payload: dict) -> dict:
         agora = time.time()
@@ -1066,9 +1181,11 @@ class Memoria:
                 "SELECT COALESCE(MAX(number),0)+1 FROM part_versions WHERE part_id=?", (part_id,)
             ).fetchone()[0])
             version_id = self._id("partv")
-            snapshot = dict(payload.get("snapshot") or {})
+            snapshot = self._safe_json_dict(payload.get("snapshot"), "snapshot")
             if not snapshot:
                 snapshot = {"name": part["name"], "type": part["type"], "region": part["region"]}
+            elif "geometry" in snapshot:
+                snapshot["geometry"] = self._safe_geometry(snapshot["geometry"])
             conn.execute(
                 """INSERT INTO part_versions
                    (id,part_id,project_id,number,label,snapshot_json,notes,created)
@@ -1076,9 +1193,15 @@ class Memoria:
                 (version_id, part_id, part["project_id"], number, f"V{number}",
                  json.dumps(snapshot, ensure_ascii=False), str(payload.get("notes") or "")[:4000], agora),
             )
+            geometry = snapshot.get("geometry") if isinstance(snapshot.get("geometry"), dict) else {}
+            parameters = geometry.get("parameters") if isinstance(geometry.get("parameters"), dict) else None
+            dimensions = parameters or self._decode_json(part["dimensions_json"], {})
+            thickness = dimensions.get("thickness", part["thickness_mm"]) if isinstance(dimensions, dict) else part["thickness_mm"]
+            name = str(snapshot.get("name") or part["name"]).strip()[:180] or part["name"]
             conn.execute(
-                "UPDATE parts SET current_version_id=?, updated=? WHERE id=?",
-                (version_id, agora, part_id),
+                """UPDATE parts SET current_version_id=?,name=?,dimensions_json=?,
+                   thickness_mm=?,updated=? WHERE id=?""",
+                (version_id, name, self._json_object(dimensions), thickness, agora, part_id),
             )
             row = conn.execute("SELECT * FROM part_versions WHERE id=?", (version_id,)).fetchone()
             result = dict(row)
@@ -1087,12 +1210,21 @@ class Memoria:
 
     def integrate_part(self, part_id: str) -> dict | None:
         with self._conn() as conn:
-            row = conn.execute("SELECT project_id FROM parts WHERE id=?", (part_id,)).fetchone()
+            row = conn.execute("SELECT project_id,region,type FROM parts WHERE id=?", (part_id,)).fetchone()
             if not row:
                 return None
+            agora = time.time()
+            if row["type"] == "parametric_3d_model":
+                conn.execute(
+                    """UPDATE parts
+                       SET status=CASE WHEN status='integrated' THEN 'draft' ELSE status END,
+                           integrated=0,updated=?
+                       WHERE project_id=? AND region=? AND type='parametric_3d_model' AND id<>?""",
+                    (agora, row["project_id"], row["region"], part_id),
+                )
             conn.execute(
                 "UPDATE parts SET status='integrated', integrated=1, updated=? WHERE id=?",
-                (time.time(), part_id),
+                (agora, part_id),
             )
             return next((part for part in self.project_snapshot(row["project_id"])["parts"] if part["id"] == part_id), None)
 
@@ -1140,6 +1272,138 @@ class Memoria:
                 result.append(item)
             return result
 
+    def upsert_device(self, device: dict) -> dict:
+        agora = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO devices
+                   (id,name,type,connection,status,capabilities_json,permissions_json,last_seen,created,updated)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET name=excluded.name,type=excluded.type,
+                   connection=excluded.connection,status=excluded.status,
+                   capabilities_json=excluded.capabilities_json,last_seen=excluded.last_seen,
+                   updated=excluded.updated""",
+                (device["id"], device["name"], device["type"], device["connection"],
+                 device.get("status", "available"), json.dumps(device.get("capabilities", []), ensure_ascii=False),
+                 json.dumps(device.get("permissions", []), ensure_ascii=False), agora, agora, agora),
+            )
+        return next(item for item in self.devices() if item["id"] == device["id"])
+
+    def start_device_session(self, device_id: str, project_id: str | None) -> str:
+        session_id = self._id("device_session")
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO device_sessions(id,device_id,project_id,started,status) VALUES(?,?,?,?, 'connected')",
+                (session_id, device_id, project_id, time.time()),
+            )
+        return session_id
+
+    def disconnect_device(self, device_id: str) -> None:
+        agora = time.time()
+        with self._conn() as conn:
+            conn.execute("UPDATE devices SET status='disconnected',updated=? WHERE id=?", (agora, device_id))
+            conn.execute(
+                "UPDATE device_sessions SET status='disconnected',ended=? WHERE device_id=? AND ended IS NULL",
+                (agora, device_id),
+            )
+
+    def code_buffer(self, project_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM code_buffers WHERE project_id=?", (project_id,)).fetchone()
+            return dict(row) if row else None
+
+    def save_code_buffer(
+        self, project_id: str, name: str, language: str, content: str,
+        checksum: str, source: str = "owner",
+    ) -> dict:
+        existing = self.code_buffer(project_id)
+        if existing and existing["checksum"] == checksum and existing["name"] == name and existing["language"] == language:
+            return existing
+        agora = time.time()
+        next_revision = int(existing["revision"]) + 1 if existing else 1
+        with self._conn() as conn:
+            if existing:
+                conn.execute(
+                    """INSERT OR IGNORE INTO code_buffer_versions
+                       (id,project_id,revision,name,language,content,checksum,source,created)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (self._id("codev"), project_id, int(existing["revision"]), existing["name"],
+                     existing["language"], existing["content"], existing["checksum"],
+                     "migration", float(existing["updated"])),
+                )
+            conn.execute(
+                """INSERT INTO code_buffers(project_id,name,language,content,checksum,revision,updated)
+                   VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(project_id) DO UPDATE SET name=excluded.name,language=excluded.language,
+                   content=excluded.content,checksum=excluded.checksum,
+                   revision=excluded.revision,updated=excluded.updated""",
+                (project_id, name, language, content, checksum, next_revision, agora),
+            )
+            conn.execute(
+                """INSERT OR REPLACE INTO code_buffer_versions
+                   (id,project_id,revision,name,language,content,checksum,source,created)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (self._id("codev"), project_id, next_revision, name, language, content,
+                 checksum, str(source or "owner")[:40], agora),
+            )
+        return self.code_buffer(project_id) or {}
+
+    def code_versions(self, project_id: str, limit: int = 30) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT revision,name,language,checksum,source,created
+                   FROM code_buffer_versions WHERE project_id=?
+                   ORDER BY revision DESC LIMIT ?""",
+                (project_id, max(1, min(int(limit), 100))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def restore_code_version(self, project_id: str, revision: int, source: str = "owner-restore") -> dict:
+        with self._conn() as conn:
+            row = conn.execute(
+                """SELECT name,language,content,checksum FROM code_buffer_versions
+                   WHERE project_id=? AND revision=?""",
+                (project_id, int(revision)),
+            ).fetchone()
+        if row is None:
+            raise KeyError("versao de codigo nao encontrada")
+        return self.save_code_buffer(
+            project_id, row["name"], row["language"], row["content"], row["checksum"], source
+        )
+
+    def lab_experiments(self, project_id: str | None = None) -> list[dict]:
+        with self._conn() as conn:
+            if project_id:
+                rows = conn.execute(
+                    "SELECT * FROM lab_experiments WHERE project_id=? ORDER BY updated DESC", (project_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM lab_experiments ORDER BY updated DESC").fetchall()
+            return [dict(row) for row in rows]
+
+    def create_lab_experiment(self, project_id: str | None, title: str, objective: str, origin: str) -> dict:
+        experiment_id = self._id("experiment"); agora = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO lab_experiments(id,project_id,title,objective,status,origin,created,updated)
+                   VALUES(?,?,?,?, 'proposed',?,?,?)""",
+                (experiment_id, project_id, title, objective, origin, agora, agora),
+            )
+        return next(item for item in self.lab_experiments(project_id) if item["id"] == experiment_id)
+
+    def update_lab_experiment(self, experiment_id: str, status: str) -> dict | None:
+        if status not in {"proposed", "testing", "done"}:
+            raise ValueError("status de experimento invalido")
+        with self._conn() as conn:
+            result = conn.execute(
+                "UPDATE lab_experiments SET status=?,updated=? WHERE id=?",
+                (status, time.time(), experiment_id),
+            )
+            if result.rowcount == 0:
+                return None
+            row = conn.execute("SELECT * FROM lab_experiments WHERE id=?", (experiment_id,)).fetchone()
+            return dict(row) if row else None
+
     def permissions(self) -> list[dict]:
         with self._conn() as conn:
             return [
@@ -1154,6 +1418,13 @@ class Memoria:
                 (int(allowed), time.time(), capability),
             )
             return result.rowcount > 0
+
+    def permission_allowed(self, capability: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT allowed FROM permissions WHERE capability=?", (capability,)
+            ).fetchone()
+            return bool(row and row["allowed"])
 
     # ── Camera Bridge e alertas locais ───────────────────────────────────
 

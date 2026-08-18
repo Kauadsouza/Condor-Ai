@@ -18,7 +18,7 @@ from condor.security.policy import ActionDecision, AutonomyProfile, PolicyEngine
 
 PedidoAprovacao = Callable[[str, str], Awaitable[str | None]]
 
-# Ferramentas que continuam pedindo a frase secreta mesmo com a sessao do dono
+# Ferramentas que continuam pedindo a palavra de acesso mesmo com a sessao do dono
 # aberta. Sao as de efeito irreversivel ou de alcance grande demais pra confiar
 # num planejador que le pagina da internet: uma instrucao escondida num site
 # lido pelo `ler_site` nao pode virar arquivo gravado ou processo encerrado sem
@@ -111,7 +111,7 @@ class Guarda:
                 requires_approval=False,
                 simulated=False,
                 risk=decision.risk,
-                reason="Condor bloqueado. Entre com a frase secreta do dono.",
+                reason="Condor bloqueado. Entre com a palavra de acesso do dono.",
                 digest=decision.digest,
             )
         return self._policy.decide(ferramenta, argumentos)
@@ -157,7 +157,7 @@ class Guarda:
         )
         motivo = (
             f"O Condor quer executar: {descricao}. Risco: {decision.risk.value}. "
-            "Confirme localmente com sua frase secreta. Voz nao autoriza esta acao."
+            "Confirme localmente com sua palavra de acesso. Voz nao autoriza esta acao."
         )
         response = await self._pedir(motivo, challenge.id)
         if not response:
@@ -167,7 +167,7 @@ class Guarda:
         accepted = bool(token and self.owner.consume(token, decision.digest))
         self.auditar(
             "policy", descricao,
-            "AUTORIZADO" if accepted else "BLOQUEADO: frase secreta incorreta",
+            "AUTORIZADO" if accepted else "BLOQUEADO: palavra de acesso incorreta",
             accepted, True,
         )
         return accepted

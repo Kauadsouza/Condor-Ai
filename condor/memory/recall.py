@@ -35,6 +35,7 @@ class Recall:
 
         relevantes = self._memoria.buscar_fatos(texto, limite=max_fatos,
                                                 embedding=embedding)
+        conversas = self._memoria.buscar_conversas(texto, limite=4)
 
         vistos: set[int] = set()
         linhas: list[str] = []
@@ -44,9 +45,19 @@ class Recall:
             vistos.add(fato["id"])
             linhas.append(f"- [{fato['categoria']}] {fato['valor']}")
 
-        if not linhas:
+        blocos: list[str] = []
+        if linhas:
+            blocos.append("FATOS PESSOAIS CONFIRMADOS:\n" + "\n".join(linhas[:max_fatos + 8]))
+        if conversas:
+            blocos.append(
+                "TRECHOS DE CONVERSAS ANTERIORES (contexto, nao prova externa):\n"
+                + "\n".join(
+                    f"- ({c['papel']}) {c['conteudo'][:260]}" for c in conversas
+                )
+            )
+        if not blocos:
             return ""
-        return "\n".join(linhas[:max_fatos + 8])
+        return "\n\n".join(blocos)
 
     async def buscar_para_ferramenta(self, consulta: str) -> dict:
         """Atende a ferramenta buscar_memoria quando o modelo chama."""

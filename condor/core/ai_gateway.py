@@ -39,14 +39,24 @@ class AIGateway:
         ready = getattr(self._provider, "pronto", False)
         if callable(ready):
             ready = ready()
-        return {
+        result = {
             "provider": self.provider_name,
             "model": str(getattr(self._provider, "modelo_ativo", "não configurado")),
             "ready": bool(ready),
             "gateway": "online",
             "context_contract": "v1",
             "streaming": "transport_ready",
+            "orchestrator": (
+                "ready" if getattr(self._provider, "_orchestrator", None) is not None
+                else "not_connected"
+            ),
         }
+        connector_state = getattr(self._provider, "connector_state", None)
+        if isinstance(connector_state, dict):
+            result["connector"] = connector_state
+            if connector_state.get("verified") is False:
+                result["ready"] = False
+        return result
 
     async def responder(self, *args, **kwargs):
         history = args[0] if args else kwargs.get("historico", [])

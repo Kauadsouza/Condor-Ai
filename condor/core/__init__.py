@@ -8,6 +8,10 @@ uma coleção de funcionalidades independentes.
 from .ai_gateway import AIGateway, MockAIProvider
 from .context import ContextEngine
 from .events import EventBus
+from .orchestrator import CondorOrchestrator
 from .projects import ProjectEngine
 
-__all__ = ["AIGateway", "ContextEngine", "EventBus", "MockAIProvider", "ProjectEngine"]
+__all__ = [
+    "AIGateway", "CondorOrchestrator", "ContextEngine", "EventBus",
+    "MockAIProvider", "ProjectEngine",
+]

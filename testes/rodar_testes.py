@@ -3,26 +3,51 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from condor.brain.tools import ESQUEMAS, FUNCOES
-from condor.brain.client import Cerebro
+# Nenhum teste pode escrever em ~/.condor. Alguns componentes resolvem seus
+# caminhos durante a construcao, entao a raiz temporaria precisa existir antes
+# de importar qualquer modulo do aplicativo.
+_ORIGINAL_CONDOR_HOME = os.environ.get("CONDOR_HOME")
+_TEST_STATE = tempfile.TemporaryDirectory(prefix="condor-tests-")
+os.environ["CONDOR_HOME"] = _TEST_STATE.name
+
+
+def _cleanup_test_state() -> None:
+    if _ORIGINAL_CONDOR_HOME is None:
+        os.environ.pop("CONDOR_HOME", None)
+    else:
+        os.environ["CONDOR_HOME"] = _ORIGINAL_CONDOR_HOME
+    _TEST_STATE.cleanup()
+
+
+atexit.register(_cleanup_test_state)
+
+from condor.brain.tools import ESQUEMAS, FUNCOES, INTERNAS
+from condor.brain.client import (
+    Cerebro, _consulta_web_explicita, _erro_amigavel, _extrair_fontes_texto,
+)
 from condor.actions import executor
 from condor.actions.guard import Guarda
 from condor.config import Config, salvar_config
-from condor.core import AIGateway, ContextEngine, EventBus, ProjectEngine
-from condor.development import human_model_contract
+from condor.core import AIGateway, CondorOrchestrator, ContextEngine, EventBus, ProjectEngine
+from condor.development import ArduinoToolchain, detect_language, human_model_contract
 from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge
+from condor.devices.bridge import SerialPort
 from condor.memory.db import Memoria
+from condor.memory.extractor import _parse_json_payload
 from condor.mobile import MobileAccess, MobileViewer, private_client, private_host
 from condor.paths import resolver_alvo, state_path
 from condor.security.approval import OwnerAuth
@@ -32,6 +57,7 @@ from condor.security.integrity import CodeIntegrity
 from condor.security.policy import AutonomyProfile, PolicyEngine, RiskLevel, action_digest
 from condor.security.session import LocalSessionSecurity
 from condor.security.vault import CondorVault, VaultError
+from condor.server import _falha_operacional
 
 
 PASS = "uma frase secreta longa e exclusiva"
@@ -133,6 +159,94 @@ class PolicyTests(unittest.TestCase):
         policy = PolicyEngine(AutonomyProfile.ASSISTANT)
         for tool in ("info_sistema", "listar_pasta", "buscar_web", "ler_site"):
             self.assertTrue(policy.decide(tool, {}).requires_approval)
+
+    def test_public_search_returns_verifiable_urls_and_rejects_secrets(self):
+        page = b'''<div class="snippet x" data-pos="0" data-type="web">
+        <a href="https://example.com/docs" class="x l1">
+        <div class="title search-snippet-title x">Fonte oficial</div></a>
+        <div class="content desktop-default-regular x">Documentacao atualizada.</div>
+        </div><div class="snippet x" data-pos="1" data-type="web">
+        <a href="https://example.org/news" class="x l1">
+        <div class="title search-snippet-title x">Segunda fonte</div></a>
+        <div class="content desktop-default-regular x">Outro resultado.</div></div>'''
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self): return page
+
+        with patch("condor.actions.executor._urlopen_public", return_value=Response()):
+            result = executor.buscar_web("documentacao oficial")
+        self.assertTrue(result["ok"])
+        self.assertIn("https://example.com/docs", result["saida"])
+        self.assertIn("CONTEUDO WEB NAO CONFIAVEL", result["saida"])
+        self.assertFalse(executor.buscar_web("api_key=sk-segredo123456789")["ok"])
+
+    def test_public_search_cleans_site_query_and_keeps_requested_domain(self):
+        empty = b"<html><body>sem resultados</body></html>"
+        rss = '''<?xml version="1.0" encoding="utf-8"?><rss><channel>
+        <item><title>Documentação oficial</title>
+        <link>https://docs.python.org/pt-br/3/</link>
+        <description>Referência do Python 3.14.</description></item>
+        <item><title>Resultado estranho</title>
+        <link>https://example.com/python</link><description>Python</description></item>
+        </channel></rss>'''.encode("cp1252")
+
+        class Response:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self): return self.body
+
+        with patch(
+            "condor.actions.executor._urlopen_public",
+            side_effect=[Response(empty), Response(rss)],
+        ):
+            result = executor.buscar_web(
+                "documentacao oficial Python 3.14 site:python.org", 3
+            )
+        self.assertTrue(result["ok"])
+        self.assertIn("https://docs.python.org/pt-br/3/", result["saida"])
+        self.assertNotIn("https://example.com/python", result["saida"])
+
+
+class HumanInternetMemoryTests(unittest.TestCase):
+    def test_local_web_results_become_clickable_sources(self):
+        sources = _extrair_fontes_texto(
+            "1. Documentação Python\nURL: https://docs.python.org/3/\nResumo: oficial"
+        )
+        self.assertEqual(sources, [{
+            "url": "https://docs.python.org/3/", "title": "Documentação Python"
+        }])
+
+    def test_explicit_local_research_is_detected_before_generation(self):
+        history = [{
+            "role": "user",
+            "content": "Pesquise na internet a documentação atual do Python 3.14 e mostre fontes.",
+        }]
+        self.assertEqual(
+            _consulta_web_explicita(history),
+            "documentação atual do Python 3.14",
+        )
+        self.assertEqual(_consulta_web_explicita([
+            {"role": "user", "content": "Explique o que é Python."}
+        ]), "")
+
+    def test_memory_extractor_accepts_fenced_local_json(self):
+        payload = _parse_json_payload(
+            'Aqui está:\n```json\n{"fatos": [{"chave": "tom", "valor": "fluido"}]}\n```'
+        )
+        self.assertEqual(payload["fatos"][0]["chave"], "tom")
+
+    def test_expected_security_denial_is_not_an_operational_failure(self):
+        denied = {
+            "sucesso": False,
+            "ferramenta": "security",
+            "entrada": json.dumps({"result": "DENIED: sem segredo de boot"}),
+        }
+        real_failure = {"sucesso": False, "ferramenta": "buscar_web", "entrada": "timeout"}
+        self.assertFalse(_falha_operacional(denied))
+        self.assertTrue(_falha_operacional(real_failure))
 
     def test_operator_can_read_allowed_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -689,6 +803,19 @@ class MemoryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 reopened.unlock(os.urandom(32))
 
+    def test_conversation_recall_matches_relevant_words_not_the_whole_sentence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memoria(Path(tmp) / "conversation-memory.enc")
+            memory.inicializar()
+            memory.unlock(os.urandom(32))
+            memory.salvar_turno("user", "Quero construir o projeto Condor X em Oxford")
+            memory.salvar_turno("assistant", "Vamos organizar o modelo digital primeiro")
+            found = memory.buscar_conversas(
+                "o que conversamos sobre o modelo do projeto em Oxford", limite=3
+            )
+            self.assertTrue(found)
+            self.assertIn("Oxford", found[0]["conteudo"])
+
     def test_hub_data_is_seeded_crud_and_encrypted(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "hub-memory.enc"
@@ -728,6 +855,146 @@ class MemoryTests(unittest.TestCase):
 
 
 class CondorCoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_arduino_pipeline_compiles_before_uploading(self):
+        calls = []
+        captured = {}
+        toolchain = ArduinoToolchain(Path(sys.executable))
+
+        async def fake_invoke(args, timeout=30):
+            calls.append(args[0])
+            if args[0] == "compile":
+                sketch_dir = Path(args[-1])
+                sketches = list(sketch_dir.glob("*.ino"))
+                captured["same_name"] = len(sketches) == 1 and sketches[0].stem == sketch_dir.name
+                captured["content"] = sketches[0].read_text("utf-8")
+            return {"ok": True, "exit_code": 0, "output": f"{args[0]} ok"}
+
+        toolchain._invoke = fake_invoke
+        result = await toolchain.compile_and_upload(
+            content="void setup(){}\nvoid loop(){}\n", sketch_name="Meu braço.ino",
+            port="COM7", fqbn="arduino:avr:uno", available_ports={"COM7"},
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(calls, ["compile", "upload"])
+        self.assertTrue(captured["same_name"])
+        self.assertIn("void loop", captured["content"])
+
+    async def test_arduino_pipeline_never_uploads_after_compile_failure(self):
+        calls = []
+        toolchain = ArduinoToolchain(Path(sys.executable))
+
+        async def fake_invoke(args, timeout=30):
+            calls.append(args[0])
+            return {"ok": False, "exit_code": 1, "output": "erro de compilação"}
+
+        toolchain._invoke = fake_invoke
+        result = await toolchain.compile_and_upload(
+            content="void setup(){}\nvoid loop(){}\n", sketch_name="falha.ino",
+            port="COM8", fqbn="arduino:avr:nano", available_ports={"COM8"},
+        )
+        self.assertFalse(result["success"])
+        self.assertEqual(result["phase"], "compile")
+        self.assertEqual(calls, ["compile"])
+
+    async def test_arduino_pipeline_rejects_missing_physical_port(self):
+        toolchain = ArduinoToolchain(Path(sys.executable))
+        with self.assertRaisesRegex(ValueError, "não está conectada"):
+            await toolchain.compile_and_upload(
+                content="void setup(){}\nvoid loop(){}\n", sketch_name="teste.ino",
+                port="COM99", fqbn="arduino:avr:uno", available_ports={"COM7"},
+            )
+
+    async def test_language_detection_and_encrypted_program_workspace(self):
+        self.assertEqual(detect_language("void setup(){}\nvoid loop(){ digitalWrite(13, HIGH); }")["language"], "arduino")
+        self.assertEqual(detect_language("def main():\n    print('condor')")["language"], "python")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "programming-memory.enc"
+            key = os.urandom(32)
+            memory = Memoria(path); memory.inicializar(); memory.unlock(key)
+            source = "void setup(){ Serial.begin(115200); }\nvoid loop(){}"
+            saved = memory.save_code_buffer("condor-x", "programa.ino", "arduino", source, "checksum")
+            self.assertEqual(saved["revision"], 1)
+            experiment = memory.create_lab_experiment("condor-x", "Leitura serial", "Validar telemetria", "owner")
+            self.assertEqual(experiment["status"], "proposed")
+            memory.lock()
+            encrypted = path.read_text("utf-8")
+            self.assertNotIn("Serial.begin", encrypted)
+            reopened = Memoria(path); reopened.inicializar(); reopened.unlock(key)
+            self.assertEqual(reopened.code_buffer("condor-x")["language"], "arduino")
+            self.assertEqual(reopened.lab_experiments("condor-x")[0]["title"], "Leitura serial")
+
+    async def test_device_connection_is_real_explicit_and_context_ready(self):
+        class FakeSerial:
+            def __init__(self, port, baud_rate, **kwargs):
+                self.port = port; self.baud_rate = baud_rate; self.kwargs = kwargs; self.closed = False
+            def close(self):
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memoria(Path(tmp) / "device-connection.enc")
+            memory.inicializar(); memory.unlock(os.urandom(32))
+            memory.set_permission("serial", True)
+            bridge = DeviceBridge(memory, EventBus(memory), ActionSafetyLayer())
+            port = SerialPort("COM7", "Arduino Uno", "USB VID:2341", "Arduino")
+            with patch("condor.devices.bridge._serial_ports", return_value=[port]), patch.dict(sys.modules, {"serial": types.SimpleNamespace(Serial=FakeSerial)}):
+                result = await bridge.connect("COM7", 115200, "condor-x")
+                self.assertEqual(result["executed_commands"], 0)
+                self.assertEqual(result["device"]["status"], "connected")
+                self.assertIn("COM7", result["device"]["connection"])
+                disconnected = await bridge.disconnect(result["device"]["id"], "condor-x")
+                self.assertEqual(disconnected["status"], "disconnected")
+
+    async def test_ai_orchestrator_operates_core_with_versioned_recoverable_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memoria(Path(tmp) / "orchestrator.enc")
+            memory.inicializar(); memory.unlock(os.urandom(32))
+            context = ContextEngine(); events = EventBus(memory)
+            projects = ProjectEngine(memory, context, events)
+            bridge = DeviceBridge(memory, events, ActionSafetyLayer())
+            orchestrator = CondorOrchestrator(memory, context, events, projects, bridge)
+
+            opened = await orchestrator.execute("condor_abrir_projeto", {"project_id": "condor-x"})
+            self.assertTrue(opened["ok"])
+            first = await orchestrator.execute("condor_salvar_codigo", {
+                "project_id": "condor-x", "name": "controle",
+                "content": "void setup(){Serial.begin(115200);}\nvoid loop(){}",
+            })
+            self.assertTrue(first["ok"])
+            self.assertEqual(memory.code_buffer("condor-x")["language"], "arduino")
+            second = await orchestrator.execute("condor_salvar_codigo", {
+                "project_id": "condor-x", "name": "controle",
+                "content": "def main():\n    print('condor')\n",
+            })
+            self.assertTrue(second["ok"])
+            self.assertEqual(memory.code_buffer("condor-x")["revision"], 2)
+            self.assertEqual([item["revision"] for item in memory.code_versions("condor-x")], [2, 1])
+            restored = await orchestrator.execute("condor_restaurar_codigo", {
+                "project_id": "condor-x", "revision": 1,
+            })
+            self.assertTrue(restored["ok"])
+            self.assertEqual(memory.code_buffer("condor-x")["revision"], 3)
+            self.assertEqual(memory.code_buffer("condor-x")["language"], "arduino")
+
+            experiment = await orchestrator.execute("condor_criar_experimento", {
+                "project_id": "condor-x", "title": "Telemetria", "objective": "Validar leitura",
+            })
+            experiment_data = json.loads(experiment["saida"])["experiment"]
+            updated = await orchestrator.execute("condor_atualizar_experimento", {
+                "experiment_id": experiment_data["id"], "status": "testing",
+            })
+            self.assertTrue(updated["ok"])
+            remembered = await orchestrator.execute("condor_registrar_memoria", {
+                "category": "projeto", "key": "telemetria_condor",
+                "value": "O projeto Condor usa telemetria serial validada pelo dono.", "confidence": 0.95,
+            })
+            self.assertTrue(remembered["ok"])
+            self.assertEqual(memory.buscar_fatos("telemetria", 3)[0]["origem"], "condor-ai")
+            blocked_secret = await orchestrator.execute("condor_registrar_memoria", {
+                "category": "tecnico", "key": "api_key_teste",
+                "value": "A API key secreta e sk-1234567890abcdefghijkl.", "confidence": 1,
+            })
+            self.assertFalse(blocked_secret["ok"])
+
     async def test_camera_bridge_keeps_endpoint_private_and_emits_local_alert(self):
         class Vision:
             async def analisar(self, image_b64, pedido):
@@ -780,14 +1047,126 @@ class CondorCoreTests(unittest.IsolatedAsyncioTestCase):
 
         provider = Provider()
         context = ContextEngine()
-        context.update(project_id="condor-x", region_id="right-forearm", mode="development")
+        context.update(
+            project_id="condor-x",
+            region_id="right-forearm",
+            mode="programming",
+            current_file="controle.ino",
+            code_language="arduino",
+            code_revision=4,
+            device_id="device_test",
+            device_name="Arduino Uno · COM7",
+            connection_state="connected",
+            experiment_id="experiment_test",
+        )
         gateway = AIGateway(provider, context, EventBus())
         result = await gateway.responder([{"role": "user", "content": "Aumenta isso"}])
         self.assertEqual(result, "ok")
         reference = provider.kwargs["memoria_relevante"]
         self.assertIn("ESTADO ATUAL DA INTERFACE", reference)
         self.assertIn('"region_id":"right-forearm"', reference)
+        self.assertIn('"code_language":"arduino"', reference)
+        self.assertIn('"device_name":"Arduino Uno · COM7"', reference)
+        self.assertIn('"experiment_id":"experiment_test"', reference)
         self.assertEqual(context.snapshot()["recent_intent"], "Aumenta isso")
+
+    async def test_openai_provider_enables_hosted_web_search_and_collects_sources(self):
+        class Vault:
+            unlocked = True
+            def get(self, name, default=""):
+                return "test-key" if name == "OPENAI_API_KEY" else default
+
+        class Response:
+            output_text = "Resposta atual com fonte."
+            usage = None
+            output = [types.SimpleNamespace(type="message")]
+
+            def model_dump(self, **_):
+                return {"output": [{"type": "message", "content": [{
+                    "type": "output_text", "text": self.output_text,
+                    "annotations": [{
+                        "type": "url_citation", "url": "https://example.com/current",
+                        "title": "Fonte atual",
+                    }],
+                }]}]}
+
+        class Responses:
+            def __init__(self): self.request = None
+            async def create(self, **kwargs):
+                self.request = kwargs
+                return Response()
+
+        responses = Responses()
+        config = Config(cerebro={"provedor_preferido": "openai", "modelo_local": ""})
+        config.ligar_cofre(Vault())
+        brain = Cerebro(config, types.SimpleNamespace(registrar_uso=lambda *_: None), None, None)
+        brain._cliente = types.SimpleNamespace(responses=responses)
+        result = await brain.responder(
+            [{"role": "user", "content": "O que aconteceu hoje?"}], modo_voz=False
+        )
+        self.assertEqual(result, "Resposta atual com fonte.")
+        self.assertIn({"type": "web_search"}, responses.request["tools"])
+        self.assertEqual(responses.request["include"], ["web_search_call.action.sources"])
+        self.assertEqual(brain.ultimas_fontes[0]["url"], "https://example.com/current")
+
+    async def test_claude_provider_uses_messages_api_and_condor_tools(self):
+        class Vault:
+            unlocked = True
+            def get(self, name, default=""):
+                return "sk-ant-test" if name == "ANTHROPIC_API_KEY" else default
+
+        class Claude:
+            def __init__(self): self.request = None
+            async def create(self, **kwargs):
+                self.request = kwargs
+                return {
+                    "type": "message",
+                    "content": [{"type": "text", "text": "Claude conectado ao Condor."}],
+                    "usage": {"input_tokens": 12, "output_tokens": 7},
+                }
+
+        config = Config(cerebro={
+            "provedor_preferido": "claude",
+            "modelo_claude": "claude-sonnet-4-20250514",
+            "modelo_local": "",
+        })
+        config.ligar_cofre(Vault())
+        memory = types.SimpleNamespace(registrar_uso=lambda *_: None)
+        brain = Cerebro(config, memory, None, None)
+        claude = Claude(); brain._anthropic = claude
+        result = await brain.responder(
+            [{"role": "user", "content": "Qual é o estado do Condor?"}], modo_voz=False
+        )
+        self.assertEqual(result, "Claude conectado ao Condor.")
+        self.assertEqual(brain.provedor, "claude")
+        self.assertEqual(claude.request["model"], "claude-sonnet-4-20250514")
+        self.assertTrue(any(tool["name"] == "condor_abrir_projeto" for tool in claude.request["tools"]))
+        self.assertTrue(brain.connector_state["providers"]["claude"]["verified"])
+
+    async def test_connector_failure_produces_only_the_final_chat_message(self):
+        class Vault:
+            unlocked = True
+            def get(self, name, default=""):
+                return "sk-test" if name == "OPENAI_API_KEY" else default
+
+        class Responses:
+            async def create(self, **_kwargs):
+                raise ConnectionError("connector unavailable")
+
+        config = Config(cerebro={"provedor_preferido": "openai", "modelo_local": ""})
+        config.ligar_cofre(Vault())
+        brain = Cerebro(config, types.SimpleNamespace(registrar_uso=lambda *_: None), None, None)
+        brain._cliente = types.SimpleNamespace(responses=Responses())
+        events = []
+
+        async def on_event(event):
+            events.append(event)
+
+        result = await brain.responder(
+            [{"role": "user", "content": "opa"}], modo_voz=False, on_evento=on_event
+        )
+        self.assertIn("conector de IA", result)
+        self.assertFalse(any(event.get("tipo") == "erro" for event in events))
 
     async def test_project_draft_versions_and_explicit_integration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -802,17 +1181,57 @@ class CondorCoreTests(unittest.IsolatedAsyncioTestCase):
             opened = await projects.open("condor-x")
             self.assertEqual(opened["context"]["project_id"], "condor-x")
             draft = await projects.create_draft("condor-x", "right-forearm", {
-                "name": "Carcaça externa", "type": "component", "notes": "rascunho isolado",
+                "name": "Carcaça externa", "type": "parametric_3d_model", "notes": "rascunho isolado",
+                "geometry": {
+                    "schema": "condor-parametric-surface-v1",
+                    "parameters": {"length": 270, "thickness": 4},
+                    "technicalPoints": [{"type": "sensor", "axial": .5, "angle": 0}],
+                },
             })
             self.assertFalse(draft["integrated"])
             self.assertEqual(draft["status"], "draft")
+            self.assertEqual(
+                draft["current_snapshot"]["geometry"]["schema"],
+                "condor-parametric-surface-v1",
+            )
             version = await projects.create_version(draft["id"], {
-                "snapshot": {"name": "Carcaça externa", "clearance": "undefined"}
+                "snapshot": {
+                    "name": "Carcaça externa V2",
+                    "geometry": {
+                        "schema": "condor-parametric-surface-v1",
+                        "parameters": {"length": 282, "thickness": 5},
+                    },
+                }
             })
             self.assertEqual(version["label"], "V2")
+            refreshed = memory.project_snapshot("condor-x")["parts"][0]
+            self.assertEqual(refreshed["name"], "Carcaça externa V2")
+            self.assertEqual(refreshed["dimensions"]["length"], 282)
+            self.assertEqual(refreshed["current_snapshot"]["geometry"]["parameters"]["thickness"], 5)
+            with self.assertRaisesRegex(ValueError, "limite"):
+                memory.create_part_version(draft["id"], {"snapshot": {"mesh": "x" * 230_000}})
+            with self.assertRaisesRegex(ValueError, "technicalPoints"):
+                memory.create_part_version(draft["id"], {"snapshot": {"geometry": {
+                    "schema": "condor-parametric-surface-v1", "parameters": {},
+                    "technicalPoints": [{} for _ in range(129)],
+                }}})
             integrated = await projects.integrate(draft["id"])
             self.assertTrue(integrated["integrated"])
             self.assertEqual(integrated["status"], "integrated")
+            replacement = await projects.create_draft("condor-x", "right-forearm", {
+                "name": "Carcaça substituta", "type": "parametric_3d_model",
+                "geometry": {
+                    "schema": "condor-parametric-surface-v1",
+                    "parameters": {"length": 301.5, "thickness": 4.2},
+                },
+            })
+            replacement = await projects.integrate(replacement["id"])
+            region_parts = [
+                part for part in memory.project_snapshot("condor-x")["parts"]
+                if part["region"] == "right-forearm"
+            ]
+            self.assertEqual([part["id"] for part in region_parts if part["integrated"]], [replacement["id"]])
+            self.assertEqual(next(part for part in region_parts if part["id"] == draft["id"])["status"], "draft")
             self.assertIn("MODEL_UPDATED", {item["type"] for item in memory.eventos_recentes()})
             memory.lock()
             self.assertNotIn("Carcaça externa", path.read_text("utf-8"))
@@ -847,15 +1266,23 @@ class CatalogTests(unittest.TestCase):
 
     def test_every_exposed_tool_has_implementation_or_is_memory(self):
         names = {schema["function"]["name"] for schema in ESQUEMAS}
-        self.assertFalse(names - set(FUNCOES) - {"buscar_memoria"})
+        self.assertFalse(names - set(FUNCOES) - {"buscar_memoria"} - INTERNAS)
 
     def test_schemas_are_strict(self):
         for schema in ESQUEMAS:
             params = schema["function"]["parameters"]
             self.assertIs(params.get("additionalProperties"), False)
+            self.assertEqual(set(params.get("required", [])), set(params.get("properties", {})))
 
 
 class ConfigTests(unittest.TestCase):
+    def test_local_context_error_has_actionable_message(self):
+        message = _erro_amigavel(RuntimeError(
+            "request exceeds the available context size of 4096 tokens"
+        ))
+        self.assertIn("contexto insuficiente", message)
+        self.assertIn("abra novamente", message)
+
     def test_server_rejects_non_loopback(self):
         with self.assertRaises(ValueError):
             Config(servidor={"host": "0.0.0.0", "porta": 7777})
@@ -883,10 +1310,53 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(brain.provedor, "local")
         self.assertEqual(brain.modelo_ativo, "condor-local-model")
 
-    def test_private_memory_sharing_is_off_by_default(self):
+    def test_external_provider_can_be_selected_without_storing_key_in_yaml(self):
+        class Vault:
+            unlocked = True
+            def get(self, name, default=""):
+                return "external-secret" if name == "OPENAI_API_KEY" else default
+
+        config = Config(cerebro={"modelo_local": "local-model", "provedor_preferido": "openai"})
+        config.ligar_cofre(Vault())
+        brain = Cerebro(config, None, None, None)
+        self.assertEqual(brain.provedor, "openai")
+        self.assertTrue(brain.connector_state["external_key_configured"])
+        self.assertNotIn("external-secret", config.model_dump_json())
+
+    def test_claude_provider_is_separate_and_secret_stays_out_of_yaml(self):
+        class Vault:
+            unlocked = True
+            def get(self, name, default=""):
+                return "anthropic-secret" if name == "ANTHROPIC_API_KEY" else default
+
+        config = Config(cerebro={"provedor_preferido": "claude"})
+        config.ligar_cofre(Vault())
+        brain = Cerebro(config, None, None, None)
+        self.assertEqual(brain.provedor, "claude")
+        self.assertEqual(brain.modelo_ativo, "claude-sonnet-5")
+        self.assertTrue(brain.connector_state["claude_key_configured"])
+        self.assertNotIn("anthropic-secret", config.model_dump_json())
+
+    def test_gateway_reports_failed_real_connection_as_not_ready(self):
+        config = Config(cerebro={"modelo_local": "condor-local-model"})
+        brain = Cerebro(config, None, None, None)
+        brain.mark_connection_test(False, "connection refused")
+        self.assertFalse(brain.pronto)
+        gateway = AIGateway(brain, ContextEngine(), EventBus())
+        state = gateway.status()
+        self.assertFalse(state["ready"])
+        self.assertFalse(state["connector"]["verified"])
+
+    def test_condor_memory_is_mandatory_for_every_provider(self):
         config = Config()
-        self.assertFalse(config.cerebro.compartilhar_memoria_com_conector)
-        self.assertFalse(config.cerebro.aprendizado_automatico_por_conector)
+        self.assertTrue(config.cerebro.compartilhar_memoria_com_conector)
+        self.assertTrue(config.cerebro.aprendizado_automatico_por_conector)
+        disabled = Config(cerebro={
+            "compartilhar_memoria_com_conector": False,
+            "aprendizado_automatico_por_conector": False,
+        })
+        self.assertTrue(disabled.cerebro.compartilhar_memoria_com_conector)
+        self.assertTrue(disabled.cerebro.aprendizado_automatico_por_conector)
 
     def test_voice_and_vision_are_local_by_default(self):
         config = Config()
@@ -910,6 +1380,56 @@ class ConfigTests(unittest.TestCase):
 
 
 class InterfaceBoundaryTests(unittest.TestCase):
+    def test_direct_browser_never_exposes_the_condor_preview(self):
+        interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
+        session = (ROOT / "condor" / "ui" / "scripts" / "session.js").read_text("utf-8")
+        bootstrap = (ROOT / "condor" / "ui" / "scripts" / "bootstrap.js").read_text("utf-8")
+        self.assertIn("condor-session-denied #frame>:not(#coreBoot)", interface)
+        self.assertIn("ACESSO BLOQUEADO", session)
+        self.assertIn("ready.catch(bloquearInterface)", session)
+        self.assertIn("await CondorSession.ready", bootstrap)
+
+    def test_local_ai_launchers_require_enough_context(self):
+        launchers = (
+            ROOT / "scripts" / "run.ps1",
+            ROOT / "scripts" / "run.sh",
+            ROOT / "scripts" / "run_local_ai.ps1",
+            ROOT / "scripts" / "run_local_ai.sh",
+            ROOT / "scripts" / "setup_new_windows_pc.ps1",
+        )
+        for launcher in launchers:
+            with self.subTest(launcher=launcher.name):
+                text = launcher.read_text("utf-8")
+                self.assertIn("OLLAMA_CONTEXT_LENGTH", text)
+                self.assertIn("32768", text)
+
+    def test_doctor_requires_real_local_response_and_safe_context(self):
+        doctor = (ROOT / "scripts" / "doctor.py").read_text("utf-8")
+        self.assertIn("/v1/responses", doctor)
+        self.assertIn('"brain_response"', doctor)
+        self.assertIn('"brain_context_safe"', doctor)
+        self.assertIn("brain_context >= 8192", doctor)
+
+    def test_conversation_renders_clickable_web_sources_safely(self):
+        interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
+        conversation = (
+            ROOT / "condor" / "ui" / "scripts" / "conversation.js"
+        ).read_text("utf-8")
+        self.assertIn(".msg-sources", interface)
+        self.assertIn("mostrarFontes", conversation)
+        self.assertIn("noopener noreferrer", conversation)
+        self.assertIn("m.fontes || []", conversation)
+
+    def test_memory_refreshes_on_learning_and_optional_wake_is_not_an_error(self):
+        interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
+        memory = (ROOT / "condor" / "ui" / "scripts" / "memory.js").read_text("utf-8")
+        errors = (ROOT / "condor" / "ui" / "scripts" / "errors.js").read_text("utf-8")
+        self.assertIn("MEMORY_LEARNED", memory)
+        self.assertIn("statFacts", memory)
+        self.assertIn('id="statFacts"', interface)
+        self.assertIn("MEMÓRIAS RECENTES", interface)
+        self.assertNotIn("ESCUTA DESLIGADA", errors)
+
     def test_condor_universal_logo_is_used_by_app_and_shortcuts(self):
         assets = ROOT / "condor" / "ui" / "assets"
         interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
@@ -982,6 +1502,7 @@ class InterfaceBoundaryTests(unittest.TestCase):
 
     def test_condor_x_keeps_human_reference_without_unverified_specs(self):
         source = (ROOT / "condor" / "ui" / "scripts" / "condor-x.js").read_text("utf-8")
+        modeler = (ROOT / "condor" / "ui" / "scripts" / "modeler-3d.js").read_text("utf-8")
         interface = (ROOT / "condor" / "ui" / "index.html").read_text("utf-8")
         projects = (ROOT / "condor" / "ui" / "scripts" / "projects.js").read_text("utf-8")
         security = (ROOT / "condor" / "ui" / "scripts" / "security.js").read_text("utf-8")
@@ -1007,7 +1528,39 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertIn("/api/condor-x/regions/", source)
         self.assertNotIn("SphereGeometry", source)
         self.assertNotIn("CapsuleGeometry", source)
-        self.assertIn("Base visual para planejamento futuro", interface)
+        self.assertNotIn("SphereGeometry", modeler)
+        self.assertNotIn("BoxGeometry", modeler)
+        self.assertNotIn("CapsuleGeometry", modeler)
+        self.assertIn("buildParametricShell", modeler)
+        self.assertIn("new THREE.BufferGeometry", modeler)
+        self.assertIn("condor-parametric-surface-v1", modeler)
+        self.assertIn("exportSTL", modeler)
+        self.assertIn("SALVAR NO CORPO X", source)
+        self.assertIn("class CondorBody3D", modeler)
+        self.assertIn("function bodyLayout", modeler)
+        self.assertIn("function buildHeadGeometry", modeler)
+        self.assertIn("function buildHandGeometry", modeler)
+        self.assertIn("function buildFootGeometry", modeler)
+        self.assertIn("const toeRise", modeler)
+        self.assertIn("const outsoleDepth", modeler)
+        self.assertIn("function buildShoulderGeometry", modeler)
+        self.assertIn("function buildRegionGeometry", modeler)
+        self.assertIn("const fingerData", modeler)
+        self.assertIn("const toeRound", modeler)
+        self.assertNotIn("const toeOrder", modeler)
+        self.assertIn("function createFrontGuides", modeler)
+        self.assertIn("function createChestEmblem", modeler)
+        self.assertIn("function createRobotMaterial", modeler)
+        self.assertNotIn("function createArmorPanel", modeler)
+        self.assertNotIn("createArmorDetails", modeler)
+        self.assertIn("function buildTorsoGeometry", modeler)
+        self.assertIn("DARK_JOINT_REGIONS", modeler)
+        self.assertIn("fitView()", modeler)
+        self.assertIn("data-param-number", modeler)
+        self.assertIn('id="cxFullBody3D"', source)
+        self.assertIn("/integrate", source)
+        self.assertIn("PONTOS TÉCNICOS", source)
+        self.assertIn("Corpo atualizado pelas regiões salvas", interface)
         self.assertIn("ZONAS DE PLANEJAMENTO", interface)
         self.assertIn("Nenhuma armadura está em desenvolvimento", interface)
         self.assertNotIn("1,80 m", interface)
@@ -1039,7 +1592,39 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertNotIn('data-screen="dispositivos"', interface)
         self.assertIn('data-screen="programacao">Programação</button>', interface)
         self.assertIn('id="deviceScan"', interface)
-        self.assertIn('id="cameraForm"', interface)
+        self.assertNotIn('id="cameraForm"', interface)
+        self.assertNotIn('Segurança da casa', interface)
+        self.assertIn('id="programLanguage"', interface)
+        self.assertIn('id="programSaveState"', interface)
+        self.assertIn('id="connectedDevice"', interface)
+        self.assertIn('id="labAskCondor"', interface)
+        self.assertIn('id="systemContext"', interface)
+        self.assertIn('id="systemAiForm" hidden', interface)
+        self.assertIn('id="systemOpenAiKey" type="password"', interface)
+        self.assertIn('id="systemClaudeKey" type="password"', interface)
+        self.assertIn('<select id="systemOpenAiModel">', interface)
+        self.assertIn('<select id="systemClaudeModel">', interface)
+        self.assertIn('<select id="systemLocalModel">', interface)
+        self.assertIn('data-provider-field="openai"', interface)
+        self.assertIn('data-provider-field="claude" hidden', interface)
+        self.assertIn('data-provider-field="local" hidden', interface)
+        self.assertNotIn('id="systemWakeKey"', interface)
+        self.assertNotIn('id="systemAiMemory"', interface)
+        self.assertNotIn('id="systemAiLearning"', interface)
+        self.assertNotIn('id="systemAiPassphrase"', interface)
+        self.assertIn('<option value="claude">CLAUDE</option>', interface)
+        self.assertIn('id="systemConnectorHealth"', interface)
+        self.assertIn('id="systemPermissionForm" hidden', interface)
+
+    def test_native_window_can_recover_session_after_server_restart(self):
+        window = (ROOT / "condor_window.pyw").read_text("utf-8")
+        session = (ROOT / "condor" / "ui" / "scripts" / "session.js").read_text("utf-8")
+        self.assertIn("class NativeBridge", window)
+        self.assertIn("js_api=NativeBridge()", window)
+        self.assertIn('partes.path.rstrip("/") != "/ui/index.html"', window)
+        self.assertIn("condor_boot_token", session)
+        self.assertIn("response.status === 403", session)
+        self.assertIn("response.status === 401", session)
 
 
 if __name__ == "__main__":

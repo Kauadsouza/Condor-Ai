@@ -14,7 +14,10 @@ const CondorMemoria = (() => {
   function init() {
     atualizar();
     CondorWS.ao('memoria.stats', pintarNumeros);
-    // A memória só muda quando ele aprende — recarregar de minuto em minuto basta.
+    CondorWS.ao('core.event', (mensagem) => {
+      if (mensagem.event?.type === 'MEMORY_LEARNED') atualizar();
+    });
+    // A atualização por evento é imediata; o intervalo cobre reconexões da janela.
     setInterval(() => {
       if (CondorRouter.atual() === 'memoria') atualizar();
     }, 60000);
@@ -28,6 +31,7 @@ const CondorMemoria = (() => {
       ]);
       desenhar(grafo);
       pintarFluxo(fluxo.itens || []);
+      pintarNumeros(grafo.estatisticas || {});
     } catch (e) {
       console.warn('[memoria] não consegui carregar', e);
     }
@@ -102,12 +106,14 @@ const CondorMemoria = (() => {
       const classe = ['', 'vio', 'pnk'][i % 3];
       const hora = new Date((it.ts || 0) * 1000)
         .toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      const categoria = String(it.categoria || 'pessoal').toUpperCase();
       return `<div class="stream-line ${classe}">
-        <span class="sl-time">${hora}</span> ${escapar(it.texto)}</div>`;
+        <span class="sl-time">${escapar(categoria)} · ${hora}</span> ${escapar(it.texto)}</div>`;
     }).join('');
   }
 
   function pintarNumeros(m) {
+    if (m.fatos != null) $('statFacts').textContent = m.fatos;
     if (m.nos != null) $('statNodes').textContent = m.nos;
     if (m.conexoes != null) $('statEdges').textContent = m.conexoes;
   }

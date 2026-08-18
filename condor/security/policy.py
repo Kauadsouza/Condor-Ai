@@ -41,6 +41,19 @@ class ActionDecision:
 
 
 TOOL_RISK: dict[str, RiskLevel] = {
+    "condor_estado": RiskLevel.REVIEW,
+    "condor_abrir_projeto": RiskLevel.REVIEW,
+    "condor_selecionar_regiao": RiskLevel.REVIEW,
+    "condor_criar_rascunho": RiskLevel.CONFIRM,
+    "condor_salvar_codigo": RiskLevel.CONFIRM,
+    "condor_historico_codigo": RiskLevel.REVIEW,
+    "condor_restaurar_codigo": RiskLevel.CONFIRM,
+    "condor_criar_experimento": RiskLevel.CONFIRM,
+    "condor_atualizar_experimento": RiskLevel.CONFIRM,
+    "condor_registrar_memoria": RiskLevel.REVIEW,
+    "condor_buscar_dispositivos": RiskLevel.REVIEW,
+    "condor_conectar_dispositivo": RiskLevel.CONFIRM,
+    "condor_desconectar_dispositivo": RiskLevel.REVIEW,
     "info_sistema": RiskLevel.REVIEW,
     "listar_pasta": RiskLevel.REVIEW,
     "buscar_arquivos": RiskLevel.REVIEW,

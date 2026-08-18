@@ -42,11 +42,21 @@ const CondorErros = (() => {
         'Nenhum conector generativo está ativo. Os comandos locais seguros continuam disponíveis.',
         'Desbloqueie o cofre e adicione uma chave opcional se quiser raciocínio generativo.'));
     }
-    if (!s.escuta) {
-      cartoes.push(cartao('warn', 'ESCUTA DESLIGADA', 'VOZ',
-        s.motivo_escuta || 'O detector de voz não subiu.',
-        'Adicione a chave opcional ao cofre e um arquivo condor*.ppn em ~/.condor/wake.'));
+    if (!s.voz_local) {
+      cartoes.push(cartao('warn', 'VOZ LOCAL INDISPONÍVEL', 'VOZ',
+        'O microfone ou a fala local não estão prontos.',
+        'Confira o microfone do Windows e reinicie o Condor para testar os módulos locais.'));
     }
+
+    (s.connector_issues || []).forEach(issue => {
+      cartoes.push(cartao(
+        issue.level === 'critical' ? 'crit' : 'warn',
+        issue.title || 'CONECTOR COM FALHA',
+        (issue.provider || 'IA').toUpperCase(),
+        issue.detail || 'O teste do conector não terminou corretamente.',
+        'Abra Sistema → Conectar IA, confira chave, modelo e provedor ativo, depois salve para testar novamente.'
+      ));
+    });
 
     (s.falhas || []).forEach(f => {
       const quando = new Date((f.ts || 0) * 1000)

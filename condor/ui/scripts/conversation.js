@@ -33,7 +33,7 @@ const CondorConversa = (() => {
 
     CondorWS.ao('transcricao', (m) => { adicionarUsuario(m.texto); mostrarDigitando(true); });
     CondorWS.ao('resposta.token', (m) => acrescentar(m.texto));
-    CondorWS.ao('resposta.fim', (m) => finalizar(m.texto));
+    CondorWS.ao('resposta.fim', (m) => finalizar(m.texto, m.fontes || []));
     CondorWS.ao('ferramenta.inicio', (m) => acaoIniciou(m));
     CondorWS.ao('ferramenta.fim', (m) => acaoTerminou(m));
     CondorWS.ao('erro', (m) => finalizar(m.mensagem || 'Deu ruim aqui.'));
@@ -91,7 +91,7 @@ const CondorConversa = (() => {
     rolar();
   }
 
-  function finalizar(texto) {
+  function finalizar(texto, fontes = []) {
     mostrarDigitando(false);
     // Quando o modelo usou ferramentas, o texto do meio não vira resposta —
     // o que vale é o texto final que o servidor manda aqui.
@@ -100,7 +100,31 @@ const CondorConversa = (() => {
       textoAtual = texto;
       bolhaAtual.textContent = texto;
     }
+    mostrarFontes(fontes);
     fecharBolha();
+  }
+
+  function mostrarFontes(fontes) {
+    if (!bolhaAtual || !Array.isArray(fontes) || !fontes.length) return;
+    const host = document.createElement('div');
+    host.className = 'msg-sources';
+    const label = document.createElement('span');
+    label.textContent = 'FONTES';
+    host.appendChild(label);
+    fontes.slice(0, 8).forEach((source, index) => {
+      try {
+        const url = new URL(String(source.url || ''));
+        if (!['http:', 'https:'].includes(url.protocol)) return;
+        const link = document.createElement('a');
+        link.href = url.href;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = `${index + 1} · ${String(source.title || url.hostname).slice(0, 100)}`;
+        link.title = url.href;
+        host.appendChild(link);
+      } catch (_) { /* fonte invalida e ignorada */ }
+    });
+    if (host.querySelector('a')) bolhaAtual.parentElement.appendChild(host);
   }
 
   function fecharBolha() {

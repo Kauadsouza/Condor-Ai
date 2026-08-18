@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import os
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -67,6 +69,7 @@ class DeviceBridge:
         self.memory = memory
         self.events = events
         self.safety = safety
+        self._connections: dict[str, Any] = {}
 
     def status(self) -> dict[str, Any]:
         devices = self.memory.devices() if self.memory.unlocked else []
@@ -79,11 +82,95 @@ class DeviceBridge:
         }
 
     async def scan(self) -> dict[str, Any]:
-        ports = [asdict(item) for item in _serial_ports()]
+        ports = []
+        for item in _serial_ports():
+            data = asdict(item)
+            data["device_id"] = self._device_id(item.port, item.hardware_id)
+            data["connectable"] = True
+            data["baud_rates"] = [9600, 57600, 115200]
+            ports.append(data)
         await self.events.publish(
             "DEVICE_SCAN_COMPLETED", {"serial_ports": len(ports)}, source="device_bridge"
         )
         return {"serial_ports": ports, "count": len(ports), "executed_commands": 0}
+
+    @staticmethod
+    def _device_id(port: str, hardware_id: str) -> str:
+        digest = hashlib.sha256(f"{port}|{hardware_id}".encode("utf-8")).hexdigest()[:16]
+        return f"device_{digest}"
+
+    async def connect(self, port: str, baud_rate: int, project_id: str | None) -> dict[str, Any]:
+        if not self.memory.permission_allowed("serial"):
+            raise PermissionError("permissao serial bloqueada no painel Sistema")
+        selected = next((item for item in _serial_ports() if item.port == port), None)
+        if selected is None:
+            raise ValueError("porta serial não encontrada; faça uma nova busca")
+        if baud_rate not in {9600, 19200, 38400, 57600, 115200, 230400}:
+            raise ValueError("velocidade serial não permitida")
+        try:
+            import serial
+        except ImportError as exc:
+            raise RuntimeError("pyserial não está instalado") from exc
+        device_id = self._device_id(selected.port, selected.hardware_id)
+        previous = self._connections.pop(device_id, None)
+        if previous is not None:
+            await asyncio.to_thread(previous.close)
+        try:
+            connection = await asyncio.to_thread(
+                serial.Serial, selected.port, baud_rate, timeout=0.25, write_timeout=0.25
+            )
+        except Exception as exc:
+            raise RuntimeError(f"não foi possível abrir {selected.port}: {exc}") from exc
+        self._connections[device_id] = connection
+        device = self.memory.upsert_device({
+            "id": device_id,
+            "name": f"{selected.family} · {selected.port}",
+            "type": selected.family,
+            "connection": f"serial:{selected.port}@{baud_rate}",
+            "status": "connected",
+            "capabilities": ["serial"],
+            "permissions": [],
+        })
+        session_id = self.memory.start_device_session(device_id, project_id)
+        await self.events.publish(
+            "DEVICE_CONNECTED",
+            {"device_id": device_id, "name": device["name"], "port": selected.port,
+             "baud_rate": baud_rate, "session_id": session_id},
+            source="device_bridge", project_id=project_id,
+        )
+        return {"device": device, "session_id": session_id, "executed_commands": 0}
+
+    async def disconnect(self, device_id: str, project_id: str | None) -> dict[str, Any]:
+        connection = self._connections.pop(device_id, None)
+        if connection is not None:
+            await asyncio.to_thread(connection.close)
+        self.memory.disconnect_device(device_id)
+        await self.events.publish(
+            "DEVICE_DISCONNECTED", {"device_id": device_id},
+            source="device_bridge", project_id=project_id,
+        )
+        return {"device_id": device_id, "status": "disconnected"}
+
+    def available_ports(self) -> set[str]:
+        """Snapshot das portas físicas que existem neste exato momento."""
+        return {item.port for item in _serial_ports()}
+
+    async def release_port(self, port: str, project_id: str | None) -> bool:
+        """Fecha uma sessão serial do Condor antes do bootloader usar a porta."""
+        released = False
+        for device_id, connection in list(self._connections.items()):
+            if str(getattr(connection, "port", "")) != port:
+                continue
+            await self.disconnect(device_id, project_id)
+            released = True
+        return released
+
+    async def close_all(self) -> None:
+        for device_id in list(self._connections):
+            try:
+                await self.disconnect(device_id, None)
+            except Exception:
+                continue
 
     async def plan_command(self, device_id: str, command: dict[str, Any]) -> dict[str, Any]:
         decision = self.safety.evaluate(command)

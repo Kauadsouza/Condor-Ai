@@ -16,9 +16,9 @@ from pathlib import Path
 
 def _hash(passphrase: str, salt: bytes) -> bytes:
     if len(passphrase) < 12:
-        raise ValueError("Use uma frase secreta com pelo menos 12 caracteres.")
+        raise ValueError("Use uma palavra de acesso com pelo menos 12 caracteres.")
     if len(passphrase) > 512:
-        raise ValueError("A frase secreta excede o limite seguro.")
+        raise ValueError("A palavra de acesso excede o limite seguro.")
     return hashlib.scrypt(
         passphrase.encode("utf-8"), salt=salt, n=2**15, r=8, p=1,
         dklen=32, maxmem=64 * 1024 * 1024,

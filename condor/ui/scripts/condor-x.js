@@ -1,3 +1,5 @@
+import { CondorBody3D, CondorModeler3D } from './modeler-3d.js';
+
 const viewport = document.getElementById('condorXViewport');
 
 if (viewport && !viewport.dataset.ready) {
@@ -100,7 +102,10 @@ if (viewport && !viewport.dataset.ready) {
       <g class="cx-target-points" aria-hidden="true"><circle cx="260" cy="157" r="2.6"/><circle cx="155" cy="438" r="2.6"/><circle cx="365" cy="438" r="2.6"/><circle cx="222" cy="705" r="2.6"/><circle cx="298" cy="705" r="2.6"/></g>
     </svg>`;
 
-  viewport.innerHTML = `<div class="cx-human-stage">${silhouette}</div>`;
+  viewport.innerHTML = `
+    <div class="cx-full-body-3d" id="cxFullBody3D" aria-label="Corpo X tridimensional montado com os modelos salvos"></div>
+    <div class="cx-human-stage cx-human-navigation-source" aria-hidden="true">${silhouette}</div>
+    <div class="cx-body-legend" aria-hidden="true"><span><i class="saved"></i>SALVO NO CORPO X</span><span><i></i>REFERÊNCIA</span></div>`;
   const model = viewport.querySelector('.cx-human-map');
   const hero = document.querySelector('.cx-hero-grid');
   const workspace = document.querySelector('.cx-workspace');
@@ -110,8 +115,24 @@ if (viewport && !viewport.dataset.ready) {
   let currentRegion = null;
   let currentItems = [];
   let currentParts = [];
+  let bodyParts = [];
   let active = !document.getElementById('projectDetail')?.hidden;
   let animationFrame = 0;
+  const bodyViewer = new CondorBody3D(document.getElementById('cxFullBody3D'), (region) => {
+    window.dispatchEvent(new CustomEvent('condor-x-open-region', { detail: { id: region } }));
+  });
+
+  async function loadBodyAssembly() {
+    try {
+      const response = await fetch('/api/projects/condor-x', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = await response.json();
+      bodyParts = data.parts || [];
+      bodyViewer.setParts(bodyParts);
+    } catch (_) {
+      // O corpo de referência continua disponível quando o cofre ainda estiver bloqueado.
+    }
+  }
 
   if (!moduleList || !hero || !shell) {
     const mobileGroup = (id) => {
@@ -132,8 +153,12 @@ if (viewport && !viewport.dataset.ready) {
       if (target) selectMobileModule(target.dataset.zone, true);
     });
     window.addEventListener('condor-x-select', (event) => selectMobileModule(event.detail.id));
-    window.addEventListener('condor-x-visibility', (event) => viewport.classList.toggle('is-active', Boolean(event.detail?.active)));
+    window.addEventListener('condor-x-open-region', (event) => selectMobileModule(event.detail.id, true));
+    window.addEventListener('condor-x-visibility', (event) => {
+      const visible = Boolean(event.detail?.active); viewport.classList.toggle('is-active', visible); if (visible) loadBodyAssembly();
+    });
     selectMobileModule('chest');
+    loadBodyAssembly();
   } else {
   moduleList.innerHTML = Object.entries(GROUPS).map(([groupId, group]) => `
     <section class="cx-zone-group">
@@ -151,22 +176,31 @@ if (viewport && !viewport.dataset.ready) {
       <div><small>CONDOR X · AMBIENTE DA REGIÃO</small><h1 id="cxRegionTitle">Região</h1><p id="cxRegionSubtitle">Ambiente vazio preparado para desenvolvimento.</p></div>
       <div class="cx-region-code" id="cxRegionCode">CX / REGIÃO</div>
     </header>
-    <div class="cx-region-layout">
-      <article class="cx-region-visual">
-        <div class="cx-region-focus" id="cxRegionFocus"></div>
-        <div class="cx-region-tabs" id="cxRegionTabs"></div>
+    <div class="cx-region-layout cx-modeler-layout">
+      <article class="cx-modeler-stage">
+        <div class="cx-modeler-nav"><div class="cx-region-focus cx-region-focus-mini" id="cxRegionFocus"></div><div class="cx-region-tabs" id="cxRegionTabs"></div></div>
+        <div class="cx-modeler-toolbar">
+          <button id="cxResetView" type="button">REENQUADRAR</button><button id="cxReferenceToggle" type="button" class="active">REFERÊNCIA</button>
+          <button id="cxWireToggle" type="button">MALHA</button><button id="cxPointsToggle" type="button" class="active">PONTOS</button>
+          <span></span><button id="cxExportStl" type="button" class="accent">EXPORTAR STL</button>
+        </div>
+        <div class="cx-modeler-viewport" id="cxModelerViewport" aria-label="Editor tridimensional paramétrico da região"></div>
+        <div class="cx-modeler-footer"><span>MALHA PARAMÉTRICA PERSONALIZADA</span><span>UNIDADE · MM</span><span>PROCESSAMENTO · LOCAL</span></div>
       </article>
-      <aside class="cx-region-board">
-        <header><div><small>DESENVOLVIMENTO DA REGIÃO</small><h2>Rascunhos e registros</h2></div><button id="cxNewItem" type="button">+ NOVO</button></header>
-        <div class="cx-region-counters"><span><strong id="cxCountComponents">0</strong><small>COMPONENTES</small></span><span><strong id="cxCountRequirements">0</strong><small>REQUISITOS</small></span><span><strong id="cxCountTests">0</strong><small>TESTES</small></span></div>
-        <form class="cx-region-form" id="cxRegionForm" hidden>
-          <label>TIPO<select id="cxItemType"><option value="componente">Peça / componente</option><option value="requisito">Requisito</option><option value="nota">Nota</option><option value="teste">Teste</option></select></label>
-          <label>TÍTULO<input id="cxItemTitle" maxlength="180" required placeholder="Nome do registro"></label>
-          <label>DETALHES<textarea id="cxItemDetails" maxlength="4000" rows="4" placeholder="Descreva somente o que estiver definido"></textarea></label>
-          <div><button type="button" id="cxCancelItem">CANCELAR</button><button type="submit">SALVAR NO COFRE</button></div>
-        </form>
-        <div class="cx-region-message" id="cxRegionMessage" role="status"></div>
-        <div class="cx-region-items" id="cxRegionItems"></div>
+      <aside class="cx-modeler-panel">
+        <header><div><small>DESENVOLVIMENTO 3D DA REGIÃO</small><h2>Modelador paramétrico</h2></div><button id="cxNewModel" type="button">+ MODELO</button></header>
+        <p class="cx-modeler-truth">Base visual editável. As dimensões só se tornam medidas do projeto quando você as configurar e validar.</p>
+        <div class="cx-model-identity"><label>NOME DO MODELO<input id="cxModelName" maxlength="180" placeholder="Ex.: módulo de movimento do antebraço"></label><button id="cxSave3D" type="button">SALVAR NO CORPO X</button></div>
+        <section class="cx-modeler-section"><header><strong>FORMA E DIMENSÕES</strong><small>SUPERFÍCIE ORGÂNICA</small></header><div class="cx-parameter-grid" id="cxParameterControls"></div></section>
+        <section class="cx-modeler-section"><header><strong>PONTOS TÉCNICOS</strong><small>SENSORES · JUNTAS · ATUADORES</small></header>
+          <form class="cx-point-form" id="cxPointForm"><select id="cxPointType"><option value="sensor">Sensor</option><option value="joint">Junta</option><option value="actuator">Atuador</option><option value="controller">Controlador</option><option value="cable">Passagem de cabo</option><option value="mount">Fixação</option></select><input id="cxPointLabel" maxlength="100" placeholder="Identificação do ponto"><label>POSIÇÃO<input id="cxPointAxial" type="range" min="0" max="1" step=".01" value=".5"></label><label>ÂNGULO<input id="cxPointAngle" type="range" min="-180" max="180" step="1" value="0"></label><button type="submit">ADICIONAR PONTO</button></form>
+          <div class="cx-point-list" id="cxPointList"></div>
+        </section>
+        <section class="cx-modeler-section cx-records-section"><header><div><strong>MODELOS E REGISTROS</strong><small>HISTÓRICO LOCAL DA REGIÃO</small></div><button id="cxNewItem" type="button">+ REGISTRO</button></header>
+          <div class="cx-region-counters"><span><strong id="cxCountComponents">0</strong><small>MODELOS</small></span><span><strong id="cxCountRequirements">0</strong><small>REQUISITOS</small></span><span><strong id="cxCountTests">0</strong><small>TESTES</small></span></div>
+          <form class="cx-region-form" id="cxRegionForm" hidden><label>TIPO<select id="cxItemType"><option value="componente">Peça / componente</option><option value="requisito">Requisito</option><option value="nota">Nota</option><option value="teste">Teste</option></select></label><label>TÍTULO<input id="cxItemTitle" maxlength="180" required placeholder="Nome do registro"></label><label>DETALHES<textarea id="cxItemDetails" maxlength="4000" rows="4" placeholder="Descreva somente o que estiver definido"></textarea></label><div><button type="button" id="cxCancelItem">CANCELAR</button><button type="submit">SALVAR NO COFRE</button></div></form>
+          <div class="cx-region-message" id="cxRegionMessage" role="status"></div><div class="cx-region-items" id="cxRegionItems"></div>
+        </section>
       </aside>
     </div>`;
   shell.insertBefore(regionView, workspace || null);
@@ -182,6 +216,13 @@ if (viewport && !viewport.dataset.ready) {
   const itemDetails = document.getElementById('cxItemDetails');
   const itemList = document.getElementById('cxRegionItems');
   const message = document.getElementById('cxRegionMessage');
+  const modelName = document.getElementById('cxModelName');
+  const modeler = new CondorModeler3D(
+    document.getElementById('cxModelerViewport'),
+    document.getElementById('cxParameterControls'),
+    document.getElementById('cxPointList'),
+  );
+  let currentModelPart = null;
 
   function regionParts(id) {
     return GROUPS[id]?.parts || [id];
@@ -201,6 +242,7 @@ if (viewport && !viewport.dataset.ready) {
     const parts = regionParts(id);
     selected = REGIONS[id] || GROUPS[id] ? id : 'chest';
     model.querySelectorAll('[data-zone]').forEach((element) => element.classList.toggle('is-selected', parts.includes(element.dataset.zone)));
+    bodyViewer.select(parts);
     document.querySelectorAll('[data-cx-part]').forEach((button) => button.classList.toggle('active', button.dataset.cxPart === selected));
     if (notify) window.dispatchEvent(new CustomEvent('condor-x-picked', { detail: { id: selected } }));
   }
@@ -241,7 +283,7 @@ if (viewport && !viewport.dataset.ready) {
     }
     currentParts.forEach((part) => {
       const card = document.createElement('article');
-      card.className = `cx-region-item ${part.integrated ? 'integrated' : ''}`;
+      card.className = `cx-region-item ${part.integrated ? 'integrated' : ''} ${currentModelPart?.id === part.id ? 'editing' : ''}`;
       const head = document.createElement('header');
       const type = document.createElement('small'); type.textContent = part.integrated ? 'PEÇA INTEGRADA' : 'RASCUNHO DE PEÇA';
       const state = document.createElement('span'); state.textContent = part.status.toUpperCase();
@@ -249,9 +291,8 @@ if (viewport && !viewport.dataset.ready) {
       const title = document.createElement('strong'); title.textContent = part.name;
       const details = document.createElement('p'); details.textContent = part.material ? `Material registrado: ${part.material}` : 'Material e propriedades ainda não definidos.';
       const actions = document.createElement('div'); actions.className = 'cx-part-action';
-      const version = document.createElement('button'); version.type = 'button'; version.className = 'cx-part-version'; version.textContent = 'SALVAR NOVA VERSÃO';
-      version.addEventListener('click', () => createPartVersion(part));
-      actions.appendChild(version);
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'cx-part-version'; edit.textContent = 'EDITAR EM 3D';
+      edit.addEventListener('click', () => editModelPart(part)); actions.appendChild(edit);
       if (!part.integrated) {
         const integrate = document.createElement('button'); integrate.type = 'button'; integrate.className = 'cx-part-integrate'; integrate.textContent = 'INTEGRAR AO MODELO';
         integrate.addEventListener('click', () => integratePart(part));
@@ -349,10 +390,55 @@ if (viewport && !viewport.dataset.ready) {
   async function createPartVersion(part) {
     setMessage('Criando nova versão...');
     try {
-      const response = await fetch(`/api/parts/${encodeURIComponent(part.id)}/versions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot: { name: part.name, region: part.region, type: part.type, material: part.material }, notes: 'Versão criada no ambiente da região.' }) });
+      const response = await fetch(`/api/parts/${encodeURIComponent(part.id)}/versions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot: part.current_snapshot || { name: part.name, region: part.region, type: part.type, material: part.material }, notes: 'Versão preservada no ambiente da região.' }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.erro || 'Não foi possível criar a versão.');
       setMessage(`${data.version.label} criada e preservada no histórico.`);
+    } catch (error) { setMessage(error.message, true); }
+  }
+
+  function editModelPart(part) {
+    currentModelPart = part; modelName.value = part.name;
+    modeler.open(currentRegion, part.current_snapshot || null); renderItems();
+    setMessage(`${part.current_version_label || 'V1'} carregada no editor 3D.`);
+  }
+
+  function newModel() {
+    currentModelPart = null; modelName.value = ''; modeler.open(currentRegion); renderItems();
+    setMessage('Novo modelo local iniciado. Defina um nome antes de salvar.'); modelName.focus();
+  }
+
+  async function save3DModel() {
+    const name = modelName.value.trim();
+    if (!name || !currentRegion) { setMessage('Defina o nome do modelo antes de salvar.', true); modelName.focus(); return; }
+    if (GROUPS[currentRegion]) { setMessage('Escolha uma zona individual para salvar medidas exatas no Corpo X.', true); return; }
+    const editorSnapshot = modeler.snapshot(); setMessage('Salvando medidas exatas e atualizando o Corpo X...');
+    try {
+      if (!currentModelPart) {
+        const response = await fetch('/api/projects/condor-x/parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ region: currentRegion, name, type: 'parametric_3d_model', geometry: editorSnapshot.geometry, dimensions: editorSnapshot.geometry.parameters, thickness_mm: editorSnapshot.geometry.parameters.thickness }) });
+        const data = await response.json(); if (!response.ok) throw new Error(data.erro || 'Não foi possível criar o modelo 3D.');
+        currentModelPart = data.part; currentParts.unshift(data.part);
+      } else {
+        const snapshot = { name, type: currentModelPart.type || 'parametric_3d_model', region: currentRegion, ...editorSnapshot };
+        const response = await fetch(`/api/parts/${encodeURIComponent(currentModelPart.id)}/versions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot, notes: 'Versão 3D paramétrica criada no editor local.' }) });
+        const data = await response.json(); if (!response.ok) throw new Error(data.erro || 'Não foi possível salvar a versão 3D.');
+        currentModelPart.name = name; currentModelPart.current_snapshot = snapshot; currentModelPart.current_version_label = data.version.label;
+      }
+      const integrationResponse = await fetch(`/api/parts/${encodeURIComponent(currentModelPart.id)}/integrate`, { method: 'POST' });
+      const integrationData = await integrationResponse.json();
+      if (!integrationResponse.ok || !integrationData.part) throw new Error(integrationData.erro || 'O modelo foi salvo, mas não foi possível atualizar o Corpo X.');
+      currentParts.forEach((part) => {
+        if (part.region !== currentRegion || part.type !== 'parametric_3d_model') return;
+        part.integrated = part.id === currentModelPart.id;
+        if (!part.integrated && part.status === 'integrated') part.status = 'draft';
+      });
+      Object.assign(currentModelPart, integrationData.part);
+      bodyParts.forEach((part) => { if (part.region === currentRegion && part.type === 'parametric_3d_model') part.integrated = false; });
+      bodyParts = bodyParts.filter((part) => part.id !== currentModelPart.id);
+      bodyParts.unshift(currentModelPart);
+      bodyViewer.applyPart(currentModelPart);
+      setMessage(`${currentModelPart.current_version_label || 'V1'} salva com medidas exatas. ${REGIONS[currentRegion].label} atualizado no Corpo X.`);
+      renderItems();
     } catch (error) { setMessage(error.message, true); }
   }
 
@@ -363,7 +449,16 @@ if (viewport && !viewport.dataset.ready) {
       const response = await fetch(`/api/parts/${encodeURIComponent(part.id)}/integrate`, { method: 'POST' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.erro || 'Não foi possível integrar a peça.');
+      currentParts.forEach((current) => {
+        if (part.type !== 'parametric_3d_model' || current.region !== part.region || current.type !== 'parametric_3d_model') return;
+        current.integrated = current.id === part.id;
+        if (!current.integrated && current.status === 'integrated') current.status = 'draft';
+      });
       Object.assign(part, data.part);
+      if (part.type === 'parametric_3d_model') {
+        bodyParts.forEach((current) => { if (current.region === part.region && current.type === 'parametric_3d_model') current.integrated = false; });
+        bodyParts = bodyParts.filter((current) => current.id !== part.id); bodyParts.unshift(part); bodyViewer.applyPart(part);
+      }
       setMessage('Peça integrada explicitamente ao modelo principal.');
       renderItems();
     } catch (error) { setMessage(error.message, true); }
@@ -379,6 +474,7 @@ if (viewport && !viewport.dataset.ready) {
     regionSubtitle.textContent = partCount > 1 ? `${partCount} zonas anatômicas disponíveis neste ambiente.` : 'Zona anatômica individual preparada para desenvolvimento.';
     regionCode.textContent = `CX / ${id.replaceAll('-', ' ').toUpperCase()}`;
     renderFocusedRegion(id);
+    currentModelPart = null; modelName.value = ''; modeler.open(id);
     hero.hidden = true;
     if (workspace) workspace.hidden = true;
     regionView.hidden = false;
@@ -419,6 +515,20 @@ if (viewport && !viewport.dataset.ready) {
   document.getElementById('cxNewItem').addEventListener('click', () => { form.hidden = false; itemTitle.focus(); });
   document.getElementById('cxCancelItem').addEventListener('click', () => { form.hidden = true; form.reset(); });
   form.addEventListener('submit', createItem);
+  document.getElementById('cxNewModel').addEventListener('click', newModel);
+  document.getElementById('cxSave3D').addEventListener('click', save3DModel);
+  document.getElementById('cxResetView').addEventListener('click', () => modeler.resetView());
+  document.getElementById('cxWireToggle').addEventListener('click', (event) => event.currentTarget.classList.toggle('active', modeler.toggleWireframe()));
+  document.getElementById('cxReferenceToggle').addEventListener('click', (event) => event.currentTarget.classList.toggle('active', modeler.toggleReference()));
+  document.getElementById('cxPointsToggle').addEventListener('click', (event) => event.currentTarget.classList.toggle('active', modeler.togglePoints()));
+  document.getElementById('cxExportStl').addEventListener('click', () => { try { modeler.exportSTL(modelName.value || currentRegion); setMessage('Arquivo STL gerado localmente.'); } catch (error) { setMessage(error.message, true); } });
+  document.getElementById('cxPointForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    try {
+      modeler.addTechnicalPoint({ type: document.getElementById('cxPointType').value, label: document.getElementById('cxPointLabel').value.trim(), axial: document.getElementById('cxPointAxial').value, angle: document.getElementById('cxPointAngle').value });
+      document.getElementById('cxPointLabel').value = ''; setMessage('Ponto técnico adicionado à malha. Salve uma versão para preservá-lo.');
+    } catch (error) { setMessage(error.message, true); }
+  });
 
   viewport.addEventListener('pointermove', (event) => {
     if (!active || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -431,11 +541,13 @@ if (viewport && !viewport.dataset.ready) {
   viewport.addEventListener('pointerleave', () => { model.style.setProperty('--cx-parallax-x', '0px'); model.style.setProperty('--cx-parallax-y', '0px'); });
 
   window.addEventListener('condor-x-select', (event) => selectModule(event.detail.id));
+  window.addEventListener('condor-x-open-region', (event) => openRegion(event.detail.id));
   window.addEventListener('condor-x-region-close', closeRegion);
-  window.addEventListener('condor-x-visibility', (event) => { active = Boolean(event.detail?.active); viewport.classList.toggle('is-active', active); if (!active) closeRegion(); });
-  window.addEventListener('condor-x-resize', () => viewport.style.setProperty('--cx-viewport-ratio', String(viewport.clientWidth / Math.max(viewport.clientHeight, 1))));
+  window.addEventListener('condor-x-visibility', (event) => { active = Boolean(event.detail?.active); viewport.classList.toggle('is-active', active); if (active) loadBodyAssembly(); else closeRegion(); });
+  window.addEventListener('condor-x-resize', () => { viewport.style.setProperty('--cx-viewport-ratio', String(viewport.clientWidth / Math.max(viewport.clientHeight, 1))); bodyViewer.resize(); });
 
   selectModule('chest');
   viewport.classList.toggle('is-active', active);
+  loadBodyAssembly();
   }
 }

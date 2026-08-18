@@ -33,9 +33,17 @@ def _url_local(bruto: str) -> str:
     identidade do aplicativo. Fora do loopback, cai no padrao.
     """
     partes = urlsplit(bruto)
-    if partes.scheme != "http" or partes.hostname not in {"127.0.0.1", "localhost", "::1"}:
+    porta_condor = urlsplit(PADRAO).port
+    if (
+        partes.scheme != "http"
+        or partes.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or partes.port != porta_condor
+        or partes.path.rstrip("/") != "/ui/index.html"
+        or partes.username
+        or partes.password
+    ):
         return PADRAO
-    return bruto
+    return f"{partes.scheme}://{partes.netloc}/ui/index.html"
 
 
 def _com_segredo_de_boot(url: str) -> str:
@@ -50,6 +58,22 @@ def _com_segredo_de_boot(url: str) -> str:
     except OSError:
         return url
     return f"{url}#t={token}" if token else url
+
+
+class NativeBridge:
+    """Ponte mínima que só existe dentro da janela nativa.
+
+    Se o servidor reiniciar enquanto a janela continuar aberta, o segredo de
+    boot muda. A página pode pedir o segredo novo à própria janela sem tornar a
+    rota acessível a uma aba comum do navegador.
+    """
+
+    @staticmethod
+    def condor_boot_token() -> str:
+        try:
+            return state_path("security", "ui-token").read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
 
 
 URL = _com_segredo_de_boot(_url_local(sys.argv[1] if len(sys.argv) > 1 else PADRAO))
@@ -88,6 +112,7 @@ def main() -> None:
         width=1280, height=820, min_size=(900, 600),
         background_color="#02030A",
         text_select=True,
+        js_api=NativeBridge(),
     )
     # private_mode=True  → perfil descartável, sem cache velho
     # gui="edgechromium" → WebView2, o runtime nativo do Windows

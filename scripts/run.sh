@@ -17,7 +17,7 @@ if command -v ollama >/dev/null 2>&1 && ! port_open; then
   mkdir -p "$CONDOR_STATE/logs" "$CONDOR_STATE/models"
   OLLAMA_HOST="127.0.0.1:11434" \
   OLLAMA_MODELS="$CONDOR_STATE/models" \
-  OLLAMA_NO_CLOUD="1" OLLAMA_NOHISTORY="1" \
+  OLLAMA_NO_CLOUD="1" OLLAMA_NOHISTORY="1" OLLAMA_CONTEXT_LENGTH="32768" \
     ollama serve >>"$CONDOR_STATE/logs/ollama.log" 2>&1 &
   LOCAL_AI_PID=$!
   attempt=0

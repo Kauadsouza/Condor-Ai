@@ -144,7 +144,7 @@ class Sessao:
                 resposta = await responder_offline(texto, self.memoria, self.guarda)
                 self.memoria.salvar_turno("user", texto)
                 self.memoria.salvar_turno("assistant", resposta)
-                await self._evento("resposta.fim", texto=resposta)
+                await self._evento("resposta.fim", texto=resposta, fontes=[])
                 if por_voz:
                     await self.voz.falar(resposta)
                 await self._mudar_estado(OUVINDO)
@@ -155,9 +155,9 @@ class Sessao:
             self.historico.append({"role": "user", "content": texto})
             self._podar_historico()
 
-            referencia = ""
-            if self._cfg.cerebro.compartilhar_memoria_com_conector:
-                referencia = await self.recall.contexto_para(texto)
+            # A memória é sempre do Condor. O provedor ativo recebe somente os
+            # trechos relevantes recuperados do banco cifrado local.
+            referencia = await self.recall.contexto_para(texto)
 
             async def on_token(t: str) -> None:
                 await self._evento("resposta.token", texto=t)
@@ -169,12 +169,14 @@ class Sessao:
                 self.historico, memoria_relevante=referencia, modo_voz=por_voz,
                 on_token=on_token, on_evento=on_evento)
 
-            await self._evento("resposta.fim", texto=resposta)
+            await self._evento(
+                "resposta.fim", texto=resposta,
+                fontes=list(getattr(self.cerebro, "ultimas_fontes", []) or []),
+            )
             self.memoria.salvar_turno("assistant", resposta)
             self.ultimo_contato = time.time()
 
-            if self._cfg.cerebro.aprendizado_automatico_por_conector:
-                self.extrator.enfileirar(texto, resposta)
+            self.extrator.enfileirar(texto, resposta)
 
             if por_voz and resposta:
                 await self._mudar_estado(FALANDO)

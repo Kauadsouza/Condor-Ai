@@ -18,6 +18,7 @@ log = logging.getLogger("condor.ferramentas")
 
 
 def _f(nome: str, descricao: str, propriedades: dict, obrigatorios: list[str]) -> dict:
+    del obrigatorios
     return {
         "type": "function",
         "function": {
@@ -26,7 +27,10 @@ def _f(nome: str, descricao: str, propriedades: dict, obrigatorios: list[str]) -
             "parameters": {
                 "type": "object",
                 "properties": propriedades,
-                "required": obrigatorios,
+                # A Responses API com strict=True exige todas as propriedades
+                # em required. Campos conceitualmente opcionais usam valor
+                # vazio/false, que os executores do Condor ja normalizam.
+                "required": list(propriedades),
                 "additionalProperties": False,
             },
         },
@@ -35,6 +39,7 @@ def _f(nome: str, descricao: str, propriedades: dict, obrigatorios: list[str]) -
 
 _TXT = {"type": "string"}
 _NUM = {"type": "integer"}
+_REAL = {"type": "number"}
 _BOOL = {"type": "boolean"}
 
 
@@ -145,6 +150,66 @@ ESQUEMAS: list[dict] = [
        ["consulta"]),
 ]
 
+# Ferramentas do proprio Condor. Diferente das ferramentas do PC, estas nunca
+# acessam implementacoes globais: o servidor injeta um orquestrador autenticado
+# com memoria, contexto, projetos e dispositivos daquela execucao.
+INTERNAS = frozenset({
+    "condor_estado",
+    "condor_abrir_projeto",
+    "condor_selecionar_regiao",
+    "condor_criar_rascunho",
+    "condor_salvar_codigo",
+    "condor_historico_codigo",
+    "condor_restaurar_codigo",
+    "condor_criar_experimento",
+    "condor_atualizar_experimento",
+    "condor_registrar_memoria",
+    "condor_buscar_dispositivos",
+    "condor_conectar_dispositivo",
+    "condor_desconectar_dispositivo",
+})
+
+ESQUEMAS.extend([
+    _f("condor_estado",
+       "Le o contexto, projeto, codigo, experimentos, dispositivos e permissoes atuais do Condor.",
+       {}, []),
+    _f("condor_abrir_projeto", "Abre um projeto existente e o torna o contexto ativo.",
+       {"project_id": _TXT}, ["project_id"]),
+    _f("condor_selecionar_regiao", "Seleciona uma regiao existente dentro do projeto ativo.",
+       {"project_id": _TXT, "region_id": _TXT}, ["project_id", "region_id"]),
+    _f("condor_criar_rascunho",
+       "Cria um registro de componente em uma regiao, sem inventar dimensoes ou capacidade fisica.",
+       {"project_id": _TXT, "region_id": _TXT, "name": _TXT, "type": _TXT, "notes": _TXT},
+       ["project_id", "region_id", "name"]),
+    _f("condor_salvar_codigo",
+       "Salva codigo no workspace cifrado do projeto. A linguagem e identificada automaticamente e uma versao recuperavel e criada.",
+       {"project_id": _TXT, "name": _TXT, "content": _TXT},
+       ["project_id", "content"]),
+    _f("condor_historico_codigo", "Lista as revisoes recuperaveis do codigo de um projeto.",
+       {"project_id": _TXT}, ["project_id"]),
+    _f("condor_restaurar_codigo", "Restaura uma revisao anterior como uma nova revisao do projeto.",
+       {"project_id": _TXT, "revision": _NUM}, ["project_id", "revision"]),
+    _f("condor_criar_experimento",
+       "Cria no Laboratorio um experimento proposto, ligado ao projeto atual.",
+       {"project_id": _TXT, "title": _TXT, "objective": _TXT}, ["project_id", "title"]),
+    _f("condor_atualizar_experimento",
+       "Move um experimento entre proposed, testing e done sem inventar resultado.",
+       {"experiment_id": _TXT, "status": {**_TXT, "enum": ["proposed", "testing", "done"]}},
+       ["experiment_id", "status"]),
+    _f("condor_registrar_memoria",
+       "Registra um fato duravel confirmado pelo dono na memoria cifrada. Nunca use para senhas, chaves ou tokens.",
+       {"category": {**_TXT, "enum": ["pessoal", "trabalho", "preferencia", "rotina", "projeto", "tecnico"]},
+        "key": _TXT, "value": _TXT, "confidence": _REAL},
+       ["category", "key", "value"]),
+    _f("condor_buscar_dispositivos", "Procura portas Arduino e seriais sem executar comando no hardware.",
+       {}, []),
+    _f("condor_conectar_dispositivo",
+       "Abre uma conexao serial autorizada, sem enviar comando nem firmware.",
+       {"port": _TXT, "baud_rate": _NUM, "project_id": _TXT}, ["port", "baud_rate"]),
+    _f("condor_desconectar_dispositivo", "Fecha uma conexao serial aberta pelo Device Bridge.",
+       {"device_id": _TXT}, ["device_id"]),
+])
+
 # Shell, codigo arbitrario e instalacao em tempo de execucao nao ficam
 # disponiveis para a IA. Manutencao manual continua possivel fora do Condor.
 # ── Ligação nome → função ────────────────────────────────────────────────────
@@ -199,6 +264,19 @@ ROTULOS = {
     "buscar_web": "buscando na web",
     "ler_site": "lendo a página",
     "buscar_memoria": "lembrando",
+    "condor_estado": "lendo o Condor",
+    "condor_abrir_projeto": "abrindo projeto",
+    "condor_selecionar_regiao": "selecionando regiao",
+    "condor_criar_rascunho": "criando rascunho",
+    "condor_salvar_codigo": "versionando codigo",
+    "condor_historico_codigo": "vendo revisoes",
+    "condor_restaurar_codigo": "restaurando codigo",
+    "condor_criar_experimento": "criando experimento",
+    "condor_atualizar_experimento": "atualizando experimento",
+    "condor_registrar_memoria": "registrando memoria",
+    "condor_buscar_dispositivos": "procurando dispositivos",
+    "condor_conectar_dispositivo": "conectando dispositivo",
+    "condor_desconectar_dispositivo": "desconectando dispositivo",
 }
 
 
@@ -212,6 +290,12 @@ async def executar(nome: str, argumentos: dict, contexto: dict | None = None) ->
         if recall is None:
             return {"ok": False, "saida": "Memória indisponível."}
         return await recall.buscar_para_ferramenta(argumentos.get("consulta", ""))
+
+    if nome in INTERNAS:
+        orchestrator = contexto.get("orchestrator")
+        if orchestrator is None:
+            return {"ok": False, "saida": "Orquestrador do Condor indisponivel."}
+        return await orchestrator.execute(nome, argumentos)
 
     fn = FUNCOES.get(nome)
     if fn is None:

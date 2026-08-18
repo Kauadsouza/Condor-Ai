@@ -18,8 +18,13 @@ class ContextState:
     part_id: str | None = None
     selected_object: str | None = None
     device_id: str | None = None
+    device_name: str | None = None
+    connection_state: str | None = None
     mode: str = "chat"
     current_file: str | None = None
+    code_language: str | None = None
+    code_revision: int | None = None
+    experiment_id: str | None = None
     recent_intent: str | None = None
     updated_at: float = 0.0
 

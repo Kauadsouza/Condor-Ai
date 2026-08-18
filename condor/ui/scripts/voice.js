@@ -185,7 +185,7 @@ const CondorVoz = (() => {
       <div class="senha-titulo"><span aria-hidden="true">▣</span> AÇÃO TRAVADA</div>
       <div class="senha-motivo"></div>
       <div class="senha-linha">
-        <input id="senhaInput" type="password" placeholder="digite sua frase secreta" autocomplete="off">
+        <input id="senhaInput" type="password" placeholder="digite sua palavra de acesso" autocomplete="off">
         <button id="senhaOk">CONFIRMAR</button>
         <button id="senhaNao" class="secundario">CANCELAR</button>
       </div>

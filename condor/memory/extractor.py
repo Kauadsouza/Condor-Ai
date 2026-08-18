@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 log = logging.getLogger("condor.extrator")
 
@@ -31,6 +32,9 @@ NÃO GUARDE:
 - resultado de comando, conteúdo de arquivo, saída técnica
 - o que o assistente disse ou fez
 - suposição sua: se a pessoa não afirmou, não é fato
+- noticia, resultado de pesquisa ou outro conteudo da internet; isso e fonte,
+  nao memoria pessoal, a menos que o dono confirme uma decisao sobre si mesmo
+- senha, chave de API, token, segredo, credencial ou codigo de autenticacao
 - repetição do que já está na lista "JÁ SEI" abaixo, a não ser pra CORRIGIR
 
 Responda só um JSON assim:
@@ -57,11 +61,36 @@ CATEGORIAS_VALIDAS = {"pessoal", "trabalho", "preferencia", "rotina", "projeto",
 TIPOS_VALIDOS = {"pessoa", "projeto", "lugar", "empresa", "ferramenta"}
 
 
+def _parece_segredo(texto: str) -> bool:
+    return any(re.search(pattern, texto, re.I) for pattern in (
+        r"\bsk-[A-Za-z0-9_-]{12,}\b",
+        r"\b(?:api[_ -]?key|senha|password|token|secret|chave)\s*[:=]\s*\S+",
+        r"\b[A-Za-z0-9_-]{48,}\b",
+    ))
+
+
+def _parse_json_payload(bruto: str) -> dict | None:
+    """Aceita JSON puro e tambem a cerca Markdown que modelos locais insistem em usar."""
+    texto = str(bruto or "").strip()
+    if texto.startswith("```"):
+        texto = re.sub(r"^```(?:json)?\s*", "", texto, flags=re.I)
+        texto = re.sub(r"\s*```$", "", texto)
+    inicio, fim = texto.find("{"), texto.rfind("}")
+    if inicio < 0 or fim <= inicio:
+        return None
+    try:
+        dados = json.loads(texto[inicio: fim + 1])
+    except json.JSONDecodeError:
+        return None
+    return dados if isinstance(dados, dict) else None
+
+
 class Extrator:
-    def __init__(self, memoria, cerebro, config) -> None:
+    def __init__(self, memoria, cerebro, config, events=None) -> None:
         self._memoria = memoria
         self._cerebro = cerebro
         self._cfg = config
+        self._events = events
         self._fila: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
         self._tarefa: asyncio.Task | None = None
 
@@ -106,9 +135,8 @@ class Extrator:
 
         if not bruto:
             return
-        try:
-            dados = json.loads(bruto)
-        except json.JSONDecodeError:
+        dados = _parse_json_payload(bruto)
+        if dados is None:
             log.debug("Extrator devolveu JSON inválido.")
             return
 
@@ -116,12 +144,14 @@ class Extrator:
 
     async def _salvar(self, dados: dict) -> None:
         novos = 0
+        entidades = 0
+        relacoes = 0
 
         for fato in (dados.get("fatos") or [])[:8]:
             categoria = str(fato.get("categoria", "pessoal")).lower()
             chave = str(fato.get("chave", "")).strip()[:80]
             valor = str(fato.get("valor", "")).strip()[:500]
-            if not chave or len(valor) < 4:
+            if not chave or len(valor) < 4 or _parece_segredo(valor):
                 continue
             if categoria not in CATEGORIAS_VALIDAS:
                 categoria = "pessoal"
@@ -145,11 +175,27 @@ class Extrator:
                 nome, tipo,
                 str(ent.get("cluster", "GERAL")).upper()[:20],
                 str(ent.get("resumo", ""))[:200])
+            entidades += 1
 
         for rel in (dados.get("relacoes") or [])[:6]:
             de, para = str(rel.get("de", "")).strip(), str(rel.get("para", "")).strip()
             if de and para:
                 self._memoria.salvar_relacao(de, para, str(rel.get("tipo", "ligado_a"))[:40])
+                relacoes += 1
 
-        if novos:
-            log.info("Aprendi %d fato(s) novo(s).", novos)
+        if novos or entidades or relacoes:
+            log.info(
+                "Memoria atualizada: %d fato(s), %d entidade(s), %d relacao(oes).",
+                novos, entidades, relacoes,
+            )
+            if self._events is not None:
+                await self._events.publish(
+                    "MEMORY_LEARNED",
+                    {
+                        "facts": novos,
+                        "entities": entidades,
+                        "relations": relacoes,
+                        "stats": self._memoria.estatisticas(),
+                    },
+                    source="memory_extractor",
+                )
