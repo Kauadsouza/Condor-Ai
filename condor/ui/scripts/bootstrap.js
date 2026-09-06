@@ -6,11 +6,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   } catch (_) {
     return;
   }
+  // A sessao local ja foi provada. A tela de boot nao pode ficar por cima do
+  // aplicativo caso um modulo secundario demore ou falhe durante seu init.
+  document.getElementById('coreBoot')?.classList.add('done');
   CondorSeguranca.init();
   CondorRouter.init();
   CondorConversa.init();
   CondorVoz.init();
   CondorMemoria.init();
+  CondorCell.init();
   CondorProjetos.init();
   CondorCoreUI.init();
   CondorErros.init();

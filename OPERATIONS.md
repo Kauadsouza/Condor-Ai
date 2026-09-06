@@ -35,7 +35,9 @@ sh scripts/install_autostart.sh
 ```
 
 O instalador de inicializacao do Windows cria apenas um atalho no Startup do
-usuario. No Linux, cria um servico systemd do usuario. Nenhum dos dois exige
+usuario apontando para o launcher grafico `Condor.exe`. O PowerShell usado para
+subir o nucleo roda como processo filho oculto e nao abre Windows Terminal. No
+Linux, o instalador cria um servico systemd do usuario. Nenhum dos dois exige
 conta de nuvem.
 
 ## Recuperacao

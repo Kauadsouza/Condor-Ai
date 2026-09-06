@@ -15,6 +15,32 @@ import logging
 log = logging.getLogger("condor.recall")
 
 
+OWNER_MEMORY_CATEGORIES = frozenset({"pessoal", "preferencia", "rotina"})
+PROJECT_MEMORY_CATEGORIES = frozenset({"projeto", "tecnico", "trabalho"})
+
+
+def _formatar_camadas(fatos: list[dict], limite: int) -> str:
+    """Separa personalidade aprendida de conhecimento de projeto no contexto."""
+    grupos = {
+        "OWNER MEMORY": [],
+        "PROJECT MEMORY": [],
+        "OTHER CONFIRMED MEMORY": [],
+    }
+    for fato in fatos[:limite]:
+        categoria = str(fato.get("categoria") or "").lower()
+        linha = f"- [{categoria or 'geral'}] {fato.get('valor', '')}"
+        if categoria in OWNER_MEMORY_CATEGORIES:
+            grupos["OWNER MEMORY"].append(linha)
+        elif categoria in PROJECT_MEMORY_CATEGORIES:
+            grupos["PROJECT MEMORY"].append(linha)
+        else:
+            grupos["OTHER CONFIRMED MEMORY"].append(linha)
+    return "\n".join(
+        f"{nome}:\n" + "\n".join(linhas)
+        for nome, linhas in grupos.items() if linhas
+    )
+
+
 class Recall:
     def __init__(self, memoria) -> None:
         self._memoria = memoria
@@ -35,29 +61,23 @@ class Recall:
 
         relevantes = self._memoria.buscar_fatos(texto, limite=max_fatos,
                                                 embedding=embedding)
-        conversas = self._memoria.buscar_conversas(texto, limite=4)
-
         vistos: set[int] = set()
-        linhas: list[str] = []
+        fatos_unicos: list[dict] = []
         for fato in essenciais + relevantes:
             if fato["id"] in vistos:
                 continue
             vistos.add(fato["id"])
-            linhas.append(f"- [{fato['categoria']}] {fato['valor']}")
+            fatos_unicos.append(fato)
 
-        blocos: list[str] = []
-        if linhas:
-            blocos.append("FATOS PESSOAIS CONFIRMADOS:\n" + "\n".join(linhas[:max_fatos + 8]))
-        if conversas:
-            blocos.append(
-                "TRECHOS DE CONVERSAS ANTERIORES (contexto, nao prova externa):\n"
-                + "\n".join(
-                    f"- ({c['papel']}) {c['conteudo'][:260]}" for c in conversas
-                )
+        if fatos_unicos:
+            return (
+                "FATOS PESSOAIS CONFIRMADOS:\n"
+                + _formatar_camadas(fatos_unicos, max_fatos + 8)
             )
-        if not blocos:
-            return ""
-        return "\n\n".join(blocos)
+        # Conversas recentes já entram como histórico com papéis user/assistant.
+        # Não promovemos texto bruto antigo ao prompt de sistema: memória durável
+        # nesse nível é composta somente por fatos confirmados.
+        return ""
 
     async def buscar_para_ferramenta(self, consulta: str) -> dict:
         """Atende a ferramenta buscar_memoria quando o modelo chama."""
@@ -69,16 +89,9 @@ class Recall:
             embedding = await self._cerebro.embedding(consulta)
 
         fatos = self._memoria.buscar_fatos(consulta, limite=10, embedding=embedding)
-        conversas = self._memoria.buscar_conversas(consulta, limite=4)
-
-        blocos: list[str] = []
         if fatos:
-            blocos.append("O que eu sei:\n" + "\n".join(
-                f"- [{f['categoria']}] {f['valor']}" for f in fatos))
-        if conversas:
-            blocos.append("Conversas passadas:\n" + "\n".join(
-                f"- ({c['papel']}) {c['conteudo'][:180]}" for c in conversas))
-
-        if not blocos:
-            return {"ok": True, "saida": f"Não tenho nada guardado sobre '{consulta}'."}
-        return {"ok": True, "saida": "\n\n".join(blocos)}
+            return {
+                "ok": True,
+                "saida": "O que eu sei:\n" + _formatar_camadas(fatos, 10),
+            }
+        return {"ok": True, "saida": f"Não tenho nada guardado sobre '{consulta}'."}

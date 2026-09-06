@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from condor.brain.offline import responder_offline
+from condor.memory.extractor import (
+    pedido_explicito_memoria,
+    pergunta_confirmacao_memoria,
+    sanitizar_para_memoria,
+)
 
 log = logging.getLogger("condor.sessao")
 
@@ -58,6 +63,7 @@ class Sessao:
         self._ocupado = asyncio.Lock()
         self._futuro_senha: asyncio.Future | None = None
         self._avisar: Callable[[dict], Awaitable[None]] | None = None
+        self._ultimo_aprendizado: dict | None = None
 
         guarda.registrar_pedido_senha(self._pedir_senha)
 
@@ -92,6 +98,14 @@ class Sessao:
     def guardar_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
+    def bloquear_por_presenca(self, motivo: str) -> None:
+        """Agenda o sono a partir da thread local de visao, sem bloquear inferencia."""
+        if self._loop is None or self._loop.is_closed():
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.preparar_bloqueio(f"trava facial: {motivo}"), self._loop
+        )
+
     def ao_ouvir(self, wav: bytes) -> None:
         """Chamado DE DENTRO da thread do microfone. Só empurra pro laço
         de eventos e sai — nada pesado pode rodar aqui."""
@@ -123,41 +137,72 @@ class Sessao:
     # ── O caminho comum ────────────────────────────────────────────────────
 
     async def processar(self, texto: str, por_voz: bool) -> None:
-        if self._ocupado.locked():
-            # Antes isto era um return mudo: quem digitava durante uma resposta
-            # via a mensagem sumir da interface sem nenhum sinal, e nao tinha
-            # como saber se o Condor recebeu.
-            log.info("Já estou no meio de um pedido — avisando e ignorando o novo.")
-            await self._evento(
-                "ocupado",
-                mensagem="Ainda estou terminando o pedido anterior. Manda de novo daqui a pouco.",
-                texto=texto,
-            )
-            return
-
+        # asyncio.Lock e justo: pedidos simultaneos aguardam aqui na ordem em
+        # que chegaram. Nada e descartado se voz, outra janela ou uma corrida de
+        # rede enviar enquanto o Condor ainda esta fechando a resposta anterior.
         async with self._ocupado:
             if not self.acordado:
                 await self.acordar()
             self.ultimo_contato = time.time()
+            await self._mudar_estado(PENSANDO)
 
-            if not self.cerebro.pronto:
-                resposta = await responder_offline(texto, self.memoria, self.guarda)
-                self.memoria.salvar_turno("user", texto)
-                self.memoria.salvar_turno("assistant", resposta)
+            # Fatos pessoais inequívocos são registrados antes da resposta. É
+            # rápido, local e funciona até quando Ollama ou uma API falham.
+            aprendizado = await self.extrator.aprender_local(texto)
+            pedido_de_memoria = pedido_explicito_memoria(texto)
+            verificacao_de_memoria = pergunta_confirmacao_memoria(texto)
+            if (aprendizado.get("saved") or aprendizado.get("unchanged")
+                    or pedido_de_memoria):
+                self._ultimo_aprendizado = dict(aprendizado)
+
+            aprendizado_resposta = aprendizado
+            if verificacao_de_memoria:
+                aprendizado_resposta = dict(self._ultimo_aprendizado or {
+                    "saved": [], "unchanged": [], "complete": False,
+                    "verified_count": 0,
+                })
+                aprendizado_resposta["verification"] = True
+
+            # Credencial digitada no chat nunca segue para modelo/conector e
+            # também não fica escondida dentro do histórico cifrado.
+            # Aprender um fato durante uma conversa normal nao substitui mais a
+            # resposta inteligente. A confirmacao deterministica assume o turno
+            # inteiro apenas quando o dono pediu explicitamente para salvar ou
+            # verificar, quando um segredo foi bloqueado, ou quando nao ha IA.
+            if (aprendizado.get("blocked")
+                    or not bool(getattr(self.memoria, "unlocked", True))
+                    or not self.cerebro.pronto
+                    or pedido_de_memoria
+                    or verificacao_de_memoria):
+                resposta = await responder_offline(
+                    texto, self.memoria, self.guarda, aprendizado=aprendizado_resposta,
+                )
+                fala_dono = sanitizar_para_memoria(texto)
+                fala_condor = sanitizar_para_memoria(resposta)
+                self._salvar_turno_seguro("user", fala_dono)
+                self._salvar_turno_seguro("assistant", fala_condor)
+                self.historico.extend((
+                    {"role": "user", "content": fala_dono},
+                    {"role": "assistant", "content": fala_condor},
+                ))
+                self._podar_historico()
                 await self._evento("resposta.fim", texto=resposta, fontes=[])
                 if por_voz:
                     await self.voz.falar(resposta)
                 await self._mudar_estado(OUVINDO)
+                await self._evento("memoria.stats", **self.memoria.estatisticas())
+                await self._evento("custo", **self.memoria.custo_hoje())
                 return
 
-            await self._mudar_estado(PENSANDO)
-            self.memoria.salvar_turno("user", texto)
             self.historico.append({"role": "user", "content": texto})
             self._podar_historico()
 
             # A memória é sempre do Condor. O provedor ativo recebe somente os
             # trechos relevantes recuperados do banco cifrado local.
+            # A fala atual ainda não foi persistida, portanto não reaparece
+            # falsamente dentro de "conversas anteriores" no próprio prompt.
             referencia = await self.recall.contexto_para(texto)
+            self._salvar_turno_seguro("user", texto)
 
             async def on_token(t: str) -> None:
                 await self._evento("resposta.token", texto=t)
@@ -173,7 +218,13 @@ class Sessao:
                 "resposta.fim", texto=resposta,
                 fontes=list(getattr(self.cerebro, "ultimas_fontes", []) or []),
             )
-            self.memoria.salvar_turno("assistant", resposta)
+            resposta_memoria = sanitizar_para_memoria(resposta)
+            self._salvar_turno_seguro("assistant", resposta_memoria)
+            if self.historico and self.historico[-1].get("role") == "assistant":
+                self.historico[-1]["content"] = resposta_memoria
+            else:
+                self.historico.append({"role": "assistant", "content": resposta_memoria})
+                self._podar_historico()
             self.ultimo_contato = time.time()
 
             self.extrator.enfileirar(texto, resposta)
@@ -191,6 +242,12 @@ class Sessao:
             await self._evento("memoria.stats", **self.memoria.estatisticas())
             await self._evento("custo", **self.memoria.custo_hoje())
 
+    def _salvar_turno_seguro(self, papel: str, conteudo: str) -> None:
+        """Não cria a ilusão de persistência quando o cofre já foi bloqueado."""
+        if not bool(getattr(self.memoria, "unlocked", True)):
+            return
+        self.memoria.salvar_turno(papel, sanitizar_para_memoria(conteudo))
+
     def _podar_historico(self, maximo: int = 30) -> None:
         """Segura o custo: mantém as últimas trocas, mas nunca corta no meio
         de uma chamada de ferramenta (deixaria mensagem órfã e a API recusa)."""
@@ -200,6 +257,21 @@ class Sessao:
         while corte < len(self.historico) and self.historico[corte].get("role") == "tool":
             corte += 1
         self.historico = self.historico[corte:]
+
+    async def nova_conversa(self) -> int:
+        """Encerra o fio atual e começa outro sem apagar a memória aprendida."""
+        async with self._ocupado:
+            if not bool(getattr(self.memoria, "unlocked", False)):
+                raise RuntimeError("cofre bloqueado")
+            self.memoria.fechar_sessao("nova conversa iniciada pelo dono")
+            removidas = self.memoria.limpar_conversas()
+            self.historico = []
+            if self.acordado:
+                self.memoria.abrir_sessao()
+                self.ultimo_contato = time.time()
+            await self._evento("conversa.limpa", removidas=removidas)
+            await self._evento("memoria.stats", **self.memoria.estatisticas())
+            return removidas
 
     # ── Acordar e dormir ───────────────────────────────────────────────────
 
@@ -236,6 +308,11 @@ class Sessao:
 
         if self._cfg.sessao.fechar_janela_ao_dormir:
             self._fechar_janela()
+
+    async def preparar_bloqueio(self, motivo: str = "cofre bloqueado") -> None:
+        """Espera o turno em voo terminar antes de fechar a memória persistente."""
+        async with self._ocupado:
+            await self.dormir(motivo)
 
     async def vigia(self) -> None:
         """Roda pra sempre: cobra o relógio da sessão."""

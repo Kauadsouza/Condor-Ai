@@ -18,16 +18,117 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 from openai import AsyncOpenAI
 
 from condor.brain import tools as ferramentas
 from condor.brain.anthropic import AnthropicAPIError, AnthropicMessagesClient
+from condor.brain.offline import responder_offline
 from condor.brain.persona import montar_prompt
+from condor.memory.extractor import extrair_fatos_locais
+from condor.media import LocalImageGenerator
+from condor.knowledge import EngineeringKnowledgeBase
 from condor.vision.local import VisaoLocal
 
 log = logging.getLogger("condor.cerebro")
+
+
+def _texto_local_normalizado(texto: str) -> str:
+    value = "".join(
+        char for char in unicodedata.normalize("NFKD", str(texto or ""))
+        if not unicodedata.combining(char)
+    )
+    return re.sub(r"\s+", " ", value.casefold()).strip()
+
+
+def _selecionar_esquemas_locais(historico: list[dict]) -> list[dict]:
+    """Entrega ao modelo local apenas capacidades relacionadas à fala atual.
+
+    Um simples cumprimento não precisa carregar dezenas de contratos de PC,
+    dispositivos e laboratório. A guarda continua avaliando toda ferramenta
+    selecionada; isto reduz contexto, não reduz segurança.
+    """
+    fala = ""
+    for mensagem in reversed(historico):
+        if mensagem.get("role") == "user" and isinstance(mensagem.get("content"), str):
+            fala = mensagem["content"]
+            break
+    texto = _texto_local_normalizado(fala)
+    nomes = {"buscar_memoria"}
+
+    def contem(*termos: str) -> bool:
+        return any(termo in texto for termo in termos)
+
+    if contem("cpu", "memoria ram", "uso da ram", "estado do pc", "estado do computador",
+              "espaco em disco", "armazenamento", "bateria do pc", "info do sistema"):
+        nomes.add("info_sistema")
+
+    contexto_arquivo = contem("arquivo", "pasta", "diretorio", "diretório", ".pdf", "downloads", "documentos")
+    if contexto_arquivo:
+        if contem("listar", "liste", "mostrar a pasta", "mostre a pasta", "conteudo da pasta", "conteúdo da pasta"):
+            nomes.add("listar_pasta")
+        if contem("buscar", "procurar", "encontrar", "localizar"):
+            nomes.add("buscar_arquivos")
+        if contem("ler", "leia", "conteudo do arquivo", "conteúdo do arquivo", "resumir", "abra o arquivo"):
+            nomes.update({"ler_arquivo", "ler_pdf"})
+        if contem("abrir", "abra"):
+            nomes.add("abrir")
+        if contem("escrever", "criar arquivo", "salvar arquivo", "edite o arquivo", "editar o arquivo"):
+            nomes.add("escrever_arquivo")
+        if contem("deletar", "excluir", "apagar"):
+            nomes.add("deletar")
+        if contem("mover"):
+            nomes.add("mover")
+        if contem("copiar"):
+            nomes.add("copiar")
+        if re.search(r"\b(?:baixar|baixe|download)\b", texto):
+            nomes.add("baixar")
+
+    if contem("janela", "aplicativo", "programa", "navegador", "chrome", "edge"):
+        nomes.add("listar_janelas")
+        if contem("abrir", "iniciar"):
+            nomes.add("abrir")
+        if contem("fechar", "encerre"):
+            nomes.add("fechar_app")
+        if contem("focar", "trazer para frente", "mudar para"):
+            nomes.add("focar_janela")
+
+    if contem("captura de tela", "screenshot", "print da tela"):
+        nomes.add("screenshot")
+    if contem("clique", "clicar"):
+        nomes.add("clicar")
+    if contem("digite", "digitar"):
+        nomes.add("digitar")
+    if contem("atalho de teclado", "pressione as teclas"):
+        nomes.add("atalho")
+    if contem("clipboard", "area de transferencia", "área de transferência"):
+        nomes.add("ler_clipboard")
+        if contem("copie", "copiar", "escreva"):
+            nomes.add("escrever_clipboard")
+
+    if contem("projeto", "condor x", "regiao", "região", "peca", "peça"):
+        nomes.update({"condor_estado", "condor_abrir_projeto", "condor_selecionar_regiao"})
+        if contem("rascunho", "nova peca", "nova peça", "criar peca", "criar peça"):
+            nomes.add("condor_criar_rascunho")
+    if contem("codigo", "código", "programacao", "programação", "revisao", "revisão"):
+        nomes.update({"condor_estado", "condor_salvar_codigo", "condor_historico_codigo"})
+        if contem("restaurar", "voltar revisao", "voltar revisão"):
+            nomes.add("condor_restaurar_codigo")
+    if contem("laboratorio", "laboratório", "experimento"):
+        nomes.update({"condor_estado", "condor_criar_experimento", "condor_atualizar_experimento"})
+    if contem("dispositivo", "arduino", "serial", "porta usb"):
+        nomes.update({
+            "condor_estado", "condor_buscar_dispositivos", "condor_conectar_dispositivo",
+            "condor_desconectar_dispositivo",
+        })
+
+    return [
+        schema for schema in ferramentas.ESQUEMAS
+        if schema["function"]["name"] in nomes
+    ]
 
 # Preço por 1 milhão de tokens (USD). Serve pro contador da interface —
 # se a OpenAI mudar a tabela, é só ajustar aqui.
@@ -69,6 +170,9 @@ class Cerebro:
         self._audio_cliente: AsyncOpenAI | None = None
         self._anthropic: AnthropicMessagesClient | None = None
         self._visao = VisaoLocal(config)
+        self._imagem = LocalImageGenerator(config)
+        self._engineering = EngineeringKnowledgeBase()
+        self._image_prompt_client: AsyncOpenAI | None = None
         self._orchestrator = None
         self._provider_tests: dict[str, dict[str, Any]] = {
             name: {"verified": None, "detail": "ainda não testado", "tested_at": None}
@@ -219,8 +323,13 @@ class Cerebro:
         if provider == "offline":
             return False
         # Depois de uma falha real, nao repete a mesma tentativa em todo turno.
-        # O Condor permanece util no modo deterministico ate o proximo teste.
-        return self._provider_tests[provider].get("verified") is not False
+        # O local ganha uma nova tentativa após um intervalo curto: reiniciar o
+        # Ollama não pode exigir reiniciar também o Condor inteiro.
+        teste = self._provider_tests[provider]
+        if teste.get("verified") is False:
+            ultima = float(teste.get("tested_at") or 0.0)
+            return provider == "local" and time.time() - ultima >= 20.0
+        return True
 
     @property
     def memoria(self):
@@ -233,6 +342,77 @@ class Cerebro:
 
     async def visao_pronta(self) -> bool:
         return await self._visao.pronto()
+
+    async def analisar_imagem(self, imagem_b64: str, pedido: str = "") -> str:
+        """Analisa um quadro no modelo multimodal local configurado."""
+        return await self._visao.analisar(imagem_b64, pedido)
+
+    async def gerar_imagem(self, prompt: str, *, size: str = "1024x1024",
+                           quality: str = "medium") -> dict[str, Any]:
+        """Melhora o prompt e gera no PC sem enviar texto ou imagem a nuvem."""
+        enhanced = await self._melhorar_prompt_imagem_local(prompt)
+        result = await self._imagem.generate(enhanced, size=size, quality=quality)
+        result["prompt_enhanced_locally"] = enhanced != " ".join(str(prompt or "").split())
+        return result
+
+    async def _melhorar_prompt_imagem_local(self, prompt: str) -> str:
+        """Traduz/estrutura pedidos em portugues usando somente o Ollama local.
+
+        O endpoint e validado novamente aqui: mesmo que um conector externo
+        esteja selecionado para o chat, prompts de imagem nunca usam esse
+        conector. Se o modelo local estiver desligado, a geracao continua com
+        um enriquecimento deterministico.
+        """
+        clean = " ".join(str(prompt or "").split()).strip()
+        fallback = (
+            f"{clean}. coherent composition, precise anatomy and geometry, detailed materials, "
+            "natural lighting, sharp focus, high visual fidelity, no text, no watermark"
+        )
+        endpoint = str(self._cfg.cerebro.endpoint_local or "").strip()
+        parsed = urlparse(endpoint)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {
+            "127.0.0.1", "localhost", "::1"
+        } or not self._cfg.cerebro.modelo_local.strip():
+            return fallback
+        try:
+            if self._image_prompt_client is None:
+                self._image_prompt_client = AsyncOpenAI(
+                    api_key="condor-local-image-prompt",
+                    base_url=endpoint,
+                    timeout=35.0,
+                    max_retries=0,
+                )
+            response = await self._image_prompt_client.chat.completions.create(
+                model=self._cfg.cerebro.modelo_local.strip(),
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a local image prompt editor. Rewrite the user's request as one "
+                            "concise English diffusion prompt. Preserve subject and intent; add concrete "
+                            "composition, camera/framing, lighting, materials, environment and style only "
+                            "when compatible. Do not add brands, prose, explanations or quotation marks."
+                        ),
+                    },
+                    {"role": "user", "content": clean},
+                ],
+                temperature=0.25,
+                max_tokens=220,
+            )
+            candidate = " ".join((response.choices[0].message.content or "").split()).strip()
+            if 20 <= len(candidate) <= 1800:
+                return candidate
+        except Exception as exc:
+            log.info("Editor local de prompt indisponivel; usando fallback: %s", exc)
+        return fallback
+
+    @property
+    def image_generator_state(self) -> dict[str, Any]:
+        return self._imagem.status()
+
+    @property
+    def engineering_knowledge_state(self) -> dict[str, Any]:
+        return self._engineering.status()
 
     async def testar_chave(self, provider: str | None = None) -> tuple[bool, str]:
         """Valida um conector real sem trocar o provedor ativo do Condor."""
@@ -336,14 +516,29 @@ class Cerebro:
         """Loop de ferramentas pela Responses API; externo usa ``store=False``."""
         cfg = self._cfg.cerebro
         self.ultimas_fontes = []
-        sistema = montar_prompt(self._cfg.nome_dono, memoria_relevante, modo_voz)
+        pedido_atual = ""
+        for mensagem in reversed(historico):
+            if mensagem.get("role") == "user" and isinstance(mensagem.get("content"), str):
+                pedido_atual = mensagem["content"]
+                break
+        sistema = montar_prompt(
+            self._cfg.nome_dono,
+            memoria_relevante,
+            modo_voz,
+            mensagem_atual=pedido_atual,
+            contexto_estruturado=memoria_relevante,
+            conhecimento_tecnico=self._engineering.context(pedido_atual),
+        )
         if self.provedor == "claude":
             return await self._responder_claude(
                 historico, sistema, on_token=on_token, on_evento=on_evento
             )
         resposta_final = ""
         input_items = _historico_para_responses(historico)
-        schemas = ferramentas.ESQUEMAS
+        schemas = (
+            _selecionar_esquemas_locais(historico)
+            if self.provedor == "local" else ferramentas.ESQUEMAS
+        )
         response_tools = [_response_tool(schema) for schema in schemas]
         # A pesquisa hospedada devolve fontes e citacoes no proprio Responses
         # API. O conector local continua usando buscar_web/ler_site, pois
@@ -390,8 +585,8 @@ class Cerebro:
                         pedido_original = mensagem["content"]
                         break
                 resposta_pesquisa = await self.completar(
-                    (
-                        "Voce e o Condor. Responda em portugues natural, direto e humano. "
+                    sistema + (
+                        "\n\nTAREFA DE PESQUISA ATUAL\n"
                         "Use somente os resultados publicos atuais fornecidos. Nao use uma "
                         "lembranca antiga quando ela contradizer a pesquisa. Nao invente. "
                         "Os links aparecerao como fontes clicaveis na interface, entao cite "
@@ -459,6 +654,22 @@ class Cerebro:
                     False, f"{self.provedor}: {str(exc)[:150]}", self.provedor
                 )
                 log.error("Erro na chamada ao conector de IA: %s", exc)
+                if self.provedor == "local":
+                    pedido = ""
+                    for mensagem in reversed(historico):
+                        if (mensagem.get("role") == "user"
+                                and isinstance(mensagem.get("content"), str)):
+                            pedido = mensagem["content"]
+                            break
+                    fatos = extrair_fatos_locais(pedido)
+                    fallback = await responder_offline(
+                        pedido, self._memoria, self._guarda,
+                        aprendizado={"saved": fatos} if fatos else None,
+                    )
+                    if on_token and fallback:
+                        await on_token(fallback)
+                    historico.append({"role": "assistant", "content": fallback})
+                    return fallback
                 return _erro_amigavel(exc)
 
             self.mark_connection_test(

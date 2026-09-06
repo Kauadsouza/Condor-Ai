@@ -1,0 +1,62 @@
+{
+  "schema": "condor-x-cadx-partial-baseline-v1",
+  "id": "CX-M01-CADX-R1",
+  "status": "PARTIAL_REFERENCE_ONLY",
+  "modelLevel": "GEOMETRY_ONLY",
+  "source": {
+    "tool": "Cadx Design Engine",
+    "format": "STEP AP242 / Open CASCADE",
+    "delivery": "user-provided"
+  },
+  "units": "mm",
+  "coordinateAlignment": {
+    "source": "STEP source geometry is Z-up",
+    "condorX": "X right / Y up / Z forward",
+    "status": "DATA_REQUIRED",
+    "note": "Axis handedness, forward direction, registration to the Condor X mannequin and fit are not yet verified."
+  },
+  "assets": [
+    {
+      "id": "CADX-HULL-HEAD-NECK-R1",
+      "file": "HULL_HEAD_NECK.step",
+      "sha256": "6bf59b438281a4e2e9670302c9c32db97edf2b811fd11a2b32486b4ae73a9276",
+      "regions": ["head", "neck"],
+      "observedControlPointBoundsMm": {
+        "x": [-160.0, 80.0],
+        "y": [-173.20508075688, 173.20508075688],
+        "z": [1535.0, 1870.0]
+      }
+    },
+    {
+      "id": "CADX-HULL-TORSO-R1",
+      "file": "HULL_TORSO.step",
+      "sha256": "0b1c80bd3ef7598d27d4c4ffae50c78e4882ac10f755760b49d08ed4391c0825",
+      "regions": ["torso", "chest", "abdomen"],
+      "observedControlPointBoundsMm": {
+        "x": [-265.63143108575, 265.63143108575],
+        "y": [-167.01889629262, 167.01889629262],
+        "z": [920.0, 1540.0]
+      }
+    },
+    {
+      "id": "CADX-MANNEQUIN-OBJ-R1",
+      "file": "Untitled-Project.obj",
+      "viewerAsset": "ui/assets/cadx/Untitled-Project.obj",
+      "sha256": "88a7e72df832314c209cb7b7326e4856b163b0a44205acb77978f0021f578314",
+      "regions": ["head", "neck", "torso", "limbs"],
+      "observedBoundsMm": {
+        "x": [-252.95025634765625, 252.95025634765625],
+        "y": [-205.59268188476562, 155.6580352783203],
+        "z": [0.0, 1870.0]
+      },
+      "viewerTransform": "source X -> Condor X, source Z -> Condor Y, source Y -> negative Condor Z"
+    }
+  ],
+  "limitations": [
+    "The STEP delivery contains only head-neck and torso B-Rep source bodies; it is not a complete assembly.",
+    "The OBJ delivery is a visual reference mannequin and does not add armor or engineering systems.",
+    "No armor, wings, joints, hands, legs, propulsion, fuel, control, structural, aerodynamic or safety validation is represented by these files.",
+    "The current browser modeler does not render raw STEP B-Rep; the files remain preserved source references until a verified translation workflow is added.",
+    "This baseline is for digital geometry review only and must not be used as flight, manufacturing, fit or safety authorization."
+  ]
+}

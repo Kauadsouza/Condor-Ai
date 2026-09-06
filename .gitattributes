@@ -1,0 +1,6 @@
+# CAD exchange and mesh files are generated assets. Treat them as binary so
+# line-ending normalisation and whitespace checks cannot alter their geometry.
+*.step binary
+*.stp binary
+*.obj binary
+*.stl binary

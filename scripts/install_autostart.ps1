@@ -1,13 +1,32 @@
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$RunScript = Join-Path $ProjectRoot "scripts\run.ps1"
+$Launcher = Join-Path $ProjectRoot "Condor.exe"
+$IconPath = Join-Path $ProjectRoot "condor\ui\assets\condor-logo.ico"
+$IdentitySource = Join-Path $ProjectRoot "windows\ShortcutIdentity.cs"
+$AppId = "ARTX.Condor.Local"
 $Startup = [Environment]::GetFolderPath("Startup")
 $ShortcutPath = Join-Path $Startup "Condor Local.lnk"
+
+foreach ($Required in @($Launcher, $IconPath, $IdentitySource)) {
+    if (-not (Test-Path -LiteralPath $Required)) {
+        throw "Componente necessario para a inicializacao silenciosa nao encontrado: $Required"
+    }
+}
+
+if (-not ("Condor.Windows.ShortcutIdentity" -as [type])) {
+    Add-Type -TypeDefinition (Get-Content -Raw -LiteralPath $IdentitySource) -Language CSharp
+}
+
 $Shell = New-Object -ComObject WScript.Shell
 $Shortcut = $Shell.CreateShortcut($ShortcutPath)
-$Shortcut.TargetPath = (Get-Command powershell.exe).Source
-$Shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$RunScript`""
+$Shortcut.TargetPath = $Launcher
+$Shortcut.Arguments = ""
 $Shortcut.WorkingDirectory = $ProjectRoot
-$Shortcut.Description = "Condor e ARTX Hub locais"
+$Shortcut.Description = "Condor - inicializacao local sem console"
+$Shortcut.IconLocation = "$IconPath,0"
+$Shortcut.WindowStyle = 1
 $Shortcut.Save()
-Write-Host "Inicializacao local instalada em $ShortcutPath" -ForegroundColor Green
+[Runtime.InteropServices.Marshal]::FinalReleaseComObject($Shortcut) | Out-Null
+[Condor.Windows.ShortcutIdentity]::Apply($ShortcutPath, $AppId)
+
+Write-Host "Inicializacao silenciosa do Condor instalada em $ShortcutPath" -ForegroundColor Green

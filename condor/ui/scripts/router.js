@@ -40,6 +40,7 @@ const CondorRouter = (() => {
     // Recarrega os dados da tela que acabou de abrir. Chamada direta: os
     // módulos são `const` de topo de script, então não existem em `window`.
     if (naTelaErros) CondorErros.atualizar();
+    else if (tela === 'cell') CondorCell.atualizar();
     else if (tela === 'memoria') CondorMemoria.atualizar();
     else if (tela === 'projetos') CondorProjetos.atualizar();
     else CondorCoreUI.atualizar(tela);

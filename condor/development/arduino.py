@@ -138,6 +138,27 @@ class ArduinoToolchain:
             })
         return {"installed": True, "detected": detected, "common_boards": list(COMMON_AVR_BOARDS)}
 
+    async def automatic_target(self) -> dict[str, str]:
+        """Resolve um único alvo real; nunca escolhe por chute quando há ambiguidade."""
+        detection = await self.detect_boards()
+        candidates: list[dict[str, str]] = []
+        for item in detection.get("detected") or []:
+            port = str(item.get("port") or "")
+            for board in item.get("boards") or []:
+                if port and board.get("fqbn"):
+                    candidates.append({
+                        "port": port, "fqbn": str(board["fqbn"]),
+                        "name": str(board.get("name") or board["fqbn"]),
+                    })
+        unique = {(item["port"], item["fqbn"]): item for item in candidates}
+        candidates = list(unique.values())
+        if not candidates:
+            raise ValueError("nenhuma placa compatível foi identificada automaticamente")
+        if len(candidates) != 1:
+            names = ", ".join(f"{item['name']} em {item['port']}" for item in candidates[:4])
+            raise ValueError(f"mais de um alvo de firmware foi detectado: {names}")
+        return candidates[0]
+
     @staticmethod
     def _validate(content: str, port: str, fqbn: str, available_ports: set[str]) -> None:
         if not content.strip():

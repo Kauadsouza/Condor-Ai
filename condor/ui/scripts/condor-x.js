@@ -1,4 +1,5 @@
-import { CondorBody3D, CondorModeler3D } from './modeler-3d.js';
+import { CondorModeler3D } from './modeler-3d.js';
+import { CondorDesignStudio3D } from './design-studio-3d.js';
 
 const viewport = document.getElementById('condorXViewport');
 
@@ -118,9 +119,11 @@ if (viewport && !viewport.dataset.ready) {
   let bodyParts = [];
   let active = !document.getElementById('projectDetail')?.hidden;
   let animationFrame = 0;
-  const bodyViewer = new CondorBody3D(document.getElementById('cxFullBody3D'), (region) => {
-    window.dispatchEvent(new CustomEvent('condor-x-open-region', { detail: { id: region } }));
+  const bodyViewer = new CondorDesignStudio3D(document.getElementById('cxFullBody3D'), {
+    onBodyPick: (region) => window.dispatchEvent(new CustomEvent('condor-x-open-region', { detail: { id: region } })),
   });
+  window.CondorXDesignStudioViewer = bodyViewer;
+  window.dispatchEvent(new CustomEvent('condor-design-viewer-ready', { detail: { viewer: bodyViewer } }));
 
   async function loadBodyAssembly() {
     try {

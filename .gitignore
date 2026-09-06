@@ -12,6 +12,8 @@
 /.condor/
 /runtime/
 /data/
+/output/
+/tmp/
 
 # ── Logs e temporários ────────────────────────────────────────────
 *.log
@@ -34,6 +36,11 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+/cloud/node_modules/
+/cloud/.next/
+/cloud/.vercel/
+/cloud/coverage/
+/cloud/*.tsbuildinfo
 
 # ── OS ────────────────────────────────────────────────────────────
 .DS_Store

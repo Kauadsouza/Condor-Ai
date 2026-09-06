@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any, AsyncIterator
 
+from condor.brain.identity import contrato_runtime
+
 
 class MockAIProvider:
     """Fallback explícito: nunca finge que uma IA externa está conectada."""
@@ -45,6 +47,7 @@ class AIGateway:
             "ready": bool(ready),
             "gateway": "online",
             "context_contract": "v1",
+            "identity_contract": contrato_runtime(),
             "streaming": "transport_ready",
             "orchestrator": (
                 "ready" if getattr(self._provider, "_orchestrator", None) is not None

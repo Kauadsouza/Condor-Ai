@@ -16,13 +16,46 @@ const CondorErros = (() => {
 
   async function atualizar() {
     try {
-      const s = await fetch('/api/saude').then(r => r.json());
+      const response = await fetch('/api/saude', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`saúde indisponível (${response.status})`);
+      const s = normalizeHealth(await response.json());
       pintarSaude(s);
       pintarLista(s);
       $('errCount').textContent = (s.criticos || 0) + (s.avisos || 0);
     } catch (e) {
       console.warn('[erros] não consegui carregar', e);
     }
+  }
+
+  function isExpectedSecurityDenial(action) {
+    if (String(action?.ferramenta || '').toLowerCase() !== 'security') return false;
+    let result = '';
+    let actionName = '';
+    try {
+      const payload = JSON.parse(String(action?.entrada || ''));
+      result = String(payload?.result || '');
+      actionName = String(payload?.input || '').trim().toLowerCase();
+    } catch (_) {
+      result = String(action?.entrada || '');
+    }
+    const normalized = result.trim().toUpperCase();
+    return normalized === 'DENIED' || normalized.startsWith('DENIED:')
+      || (actionName === 'face_presence' && normalized.startsWith('BLOQUEADO:'));
+  }
+
+  function normalizeHealth(snapshot) {
+    const s = { ...(snapshot || {}) };
+    const received = Array.isArray(s.falhas) ? s.falhas : [];
+    s.falhas = received.filter((action) => !isExpectedSecurityDenial(action));
+    const ignored = received.length - s.falhas.length;
+    if (ignored) {
+      // Compatibilidade com respostas produzidas por nucleos anteriores: eles
+      // descontavam ate 20 pontos e somavam ate 9 avisos por recusas normais
+      // e por bloqueios biometricos que funcionaram corretamente.
+      s.pontos = Math.min(100, Number(s.pontos || 0) + Math.min(20, ignored * 3));
+      s.avisos = Math.max(0, Number(s.avisos || 0) - Math.min(9, ignored));
+    }
+    return s;
   }
 
   function pintarSaude(s) {

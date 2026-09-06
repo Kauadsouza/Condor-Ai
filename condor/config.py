@@ -104,6 +104,38 @@ class EscutaConfig(BaseModel):
     indice_microfone: int = -1         # -1 = microfone padrao do sistema
 
 
+class ImagemConfig(BaseModel):
+    """Geracao criativa independente de nuvem."""
+
+    ativa: bool = True
+    provedor: str = "local"
+    motor: str = "stable-diffusion.cpp"
+    modelo: str = "sdxl-lightning-4step"
+    passos: int = 20
+    timeout_segundos: int = 900
+
+    @field_validator("provedor")
+    @classmethod
+    def _provedor_local(cls, value: str) -> str:
+        if value.strip().lower() != "local":
+            raise ValueError("a geracao principal de imagens do Condor precisa ser local")
+        return "local"
+
+    @field_validator("passos")
+    @classmethod
+    def _passos_validos(cls, value: int) -> int:
+        if value < 4 or value > 40:
+            raise ValueError("passos de imagem precisa estar entre 4 e 40")
+        return value
+
+    @field_validator("timeout_segundos")
+    @classmethod
+    def _timeout_valido(cls, value: int) -> int:
+        if value < 60 or value > 3600:
+            raise ValueError("timeout de imagem precisa estar entre 60 e 3600 segundos")
+        return value
+
+
 class SessaoConfig(BaseModel):
     """Ciclo dormindo → acordado → dormindo."""
 
@@ -158,16 +190,57 @@ class VisualizacaoMovelConfig(BaseModel):
         return value
 
 
+class CondorCloudConfig(BaseModel):
+    """Cliente privado da mente online; credenciais ficam somente no cofre."""
+
+    ativa: bool = False
+    api_url: str = ""
+    supabase_url: str = ""
+    supabase_publishable_key: str = ""
+    intervalo_sync_segundos: int = 30
+
+    @field_validator("api_url", "supabase_url")
+    @classmethod
+    def _url_cloud_segura(cls, value: str) -> str:
+        clean = value.strip().rstrip("/")
+        if not clean:
+            return ""
+        parsed = urlsplit(clean)
+        local = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+        if parsed.scheme != ("http" if local else "https"):
+            raise ValueError("Condor Cloud exige HTTPS; HTTP e aceito apenas no localhost.")
+        if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("URL do Condor Cloud invalida.")
+        return clean
+
+    @field_validator("supabase_publishable_key")
+    @classmethod
+    def _chave_publica_limitada(cls, value: str) -> str:
+        clean = value.strip()
+        if clean and (len(clean) < 20 or len(clean) > 2048):
+            raise ValueError("Chave publica do Supabase invalida.")
+        return clean
+
+    @field_validator("intervalo_sync_segundos")
+    @classmethod
+    def _intervalo_seguro(cls, value: int) -> int:
+        if value < 15 or value > 900:
+            raise ValueError("Intervalo do Condor Cloud precisa ficar entre 15 e 900 segundos.")
+        return value
+
+
 class Config(BaseModel):
     cerebro: CerebroConfig = Field(default_factory=CerebroConfig)
     voz: VozConfig = Field(default_factory=VozConfig)
     escuta: EscutaConfig = Field(default_factory=EscutaConfig)
+    imagem: ImagemConfig = Field(default_factory=ImagemConfig)
     sessao: SessaoConfig = Field(default_factory=SessaoConfig)
     seguranca: SegurancaConfig = Field(default_factory=SegurancaConfig)
     servidor: ServidorConfig = Field(default_factory=ServidorConfig)
     visualizacao_movel: VisualizacaoMovelConfig = Field(
         default_factory=VisualizacaoMovelConfig
     )
+    cloud: CondorCloudConfig = Field(default_factory=CondorCloudConfig)
     _vault: Any = PrivateAttr(default=None)
 
     def ligar_cofre(self, vault: Any) -> None:

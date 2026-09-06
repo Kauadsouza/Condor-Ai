@@ -1,7 +1,7 @@
 /**
  * CondorVoz — o estado da voz na tela.
  *
- * O clique no orbe grava somente a fala atual e envia ao STT local. Se o dono
+ * O clique no orbe ou no Condor Pet grava somente a fala atual e envia ao STT local. Se o dono
  * configurar um detector passivo, a palavra Condor também pode acordar o app.
  * Em ambos os casos o áudio permanece no próprio PC.
  */
@@ -23,6 +23,12 @@ const CondorVoz = (() => {
   let fluxo = null;
   let partes = [];
   let limiteGravacao = null;
+  let continuous = false;
+  let microphoneAuthorized = false;
+  let microphonePending = false;
+  let restartTimer = null;
+  let silenceMonitor = null;
+  let cancelRecording = false;
 
   function init() {
     CondorWS.ao('estado', aplicar);
@@ -43,6 +49,12 @@ const CondorVoz = (() => {
     // Clique uma vez para começar e outra para enviar. O limite de vinte
     // segundos encerra sozinho para o microfone nunca ficar aberto sem querer.
     $('voiceOrb').addEventListener('click', alternarGravacaoLocal);
+    window.addEventListener('condor-permission-resolved', (event) => {
+      if (!microphonePending || event.detail?.capability !== 'microphone') return;
+      microphonePending = false;
+      microphoneAuthorized = event.detail.decision !== 'block';
+      if (microphoneAuthorized) iniciarGravacaoLocal(false);
+    });
 
     relogio = setInterval(() => {
       if (restam > 0) { restam -= 1; pintarRelogio(); }
@@ -52,6 +64,7 @@ const CondorVoz = (() => {
   function aplicar(m) {
     const nome = m.estado || 'dormindo';
     const e = ESTADOS[nome] || ESTADOS.dormindo;
+    if (nome !== 'ouvindo') clearTimeout(restartTimer);
 
     const status = $('voiceStatus');
     status.textContent = e.rotulo;
@@ -85,6 +98,10 @@ const CondorVoz = (() => {
       $('modelName').textContent = 'modo apresentação';
       $('modelName').style.color = 'var(--amber)';
     }
+    if (nome === 'ouvindo' && continuous && (!gravador || gravador.state !== 'recording')) {
+      clearTimeout(restartTimer);
+      restartTimer = setTimeout(() => iniciarGravacaoLocal(true), 520);
+    }
   }
 
   async function alternarGravacaoLocal() {
@@ -92,6 +109,22 @@ const CondorVoz = (() => {
       gravador.stop();
       return;
     }
+    await iniciarGravacaoLocal(false);
+  }
+
+  async function autorizarMicrofone() {
+    if (microphoneAuthorized) return true;
+    if (typeof CondorMedia === 'undefined') return false;
+    microphoneAuthorized = await CondorMedia.ensurePermission(
+      'microphone', 'Ouvir somente enquanto o modo de voz estiver ativo.', 'voice_chat',
+    );
+    microphonePending = !microphoneAuthorized;
+    return microphoneAuthorized;
+  }
+
+  async function iniciarGravacaoLocal(autoStop) {
+    if (gravador?.state === 'recording') return;
+    if (!await autorizarMicrofone()) return;
     if (!navigator.mediaDevices || !window.MediaRecorder) {
       CondorWS.enviar({ tipo: 'acordar' });
       $('voiceHint').textContent = 'NAVEGADOR SEM CAPTURA DE ÁUDIO';
@@ -106,18 +139,22 @@ const CondorVoz = (() => {
         .find((tipo) => MediaRecorder.isTypeSupported(tipo));
       gravador = new MediaRecorder(fluxo, preferido ? { mimeType: preferido } : undefined);
       partes = [];
+      cancelRecording = false;
       gravador.addEventListener('dataavailable', (evento) => {
         if (evento.data.size) partes.push(evento.data);
       });
       gravador.addEventListener('stop', enviarGravacaoLocal, { once: true });
       gravador.start(250);
+      if (autoStop) monitorarSilencio(fluxo);
       limiteGravacao = setTimeout(() => {
         if (gravador && gravador.state === 'recording') gravador.stop();
       }, 20000);
       $('voiceStatus').textContent = '● GRAVANDO';
       $('voiceStatus').style.color = 'var(--pink)';
       $('voiceHint').textContent = 'FALE AGORA · CLIQUE DE NOVO PARA ENVIAR';
+      if (continuous) $('voiceHint').textContent = 'CONVERSA CONTÍNUA · PODE FALAR';
       $('orbCore').classList.add('active');
+      CondorPet.setState('listening');
     } catch (erro) {
       $('voiceHint').textContent = 'PERMISSÃO DO MICROFONE NÃO CONCEDIDA';
       $('listenStatus').textContent = 'MICROFONE BLOQUEADO';
@@ -127,7 +164,11 @@ const CondorVoz = (() => {
 
   async function enviarGravacaoLocal() {
     clearTimeout(limiteGravacao);
+    pararMonitorSilencio();
     if (fluxo) fluxo.getTracks().forEach((trilha) => trilha.stop());
+    if (cancelRecording) {
+      partes = []; gravador = null; fluxo = null; cancelRecording = false; return;
+    }
     $('voiceStatus').textContent = '● TRANSCREVENDO';
     $('voiceStatus').style.color = 'var(--violet)';
     $('voiceHint').textContent = 'FASTER WHISPER · PROCESSAMENTO LOCAL';
@@ -145,15 +186,41 @@ const CondorVoz = (() => {
       if (!resposta.ok) throw new Error(dados.erro || 'não entendi a fala');
       CondorConversa.adicionarUsuario(dados.texto);
       $('voiceHint').textContent = 'CONDOR ESTÁ PROCESSANDO LOCALMENTE';
+      CondorPet.setState('thinking');
     } catch (erro) {
       $('voiceStatus').textContent = '● VOZ LOCAL';
       $('voiceStatus').style.color = 'var(--cyan)';
       $('voiceHint').textContent = String(erro.message || erro).toUpperCase();
+      if (continuous) restartTimer = setTimeout(() => iniciarGravacaoLocal(true), 900);
     } finally {
       partes = [];
       gravador = null;
       fluxo = null;
     }
+  }
+
+  function monitorarSilencio(stream) {
+    pararMonitorSilencio();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const context = new AudioCtx(); const analyser = context.createAnalyser();
+    analyser.fftSize = 512; context.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Uint8Array(analyser.fftSize); const started = performance.now();
+    let heardSpeech = false; let lastSpeech = started;
+    const timer = setInterval(() => {
+      if (!gravador || gravador.state !== 'recording') return pararMonitorSilencio();
+      analyser.getByteTimeDomainData(samples);
+      let energy = 0; for (const value of samples) { const normalized = (value - 128) / 128; energy += normalized * normalized; }
+      const rms = Math.sqrt(energy / samples.length); const now = performance.now();
+      if (rms > .035) { heardSpeech = true; lastSpeech = now; }
+      if ((heardSpeech && now - lastSpeech > 1050) || (!heardSpeech && now - started > 8000)) gravador.stop();
+    }, 120);
+    silenceMonitor = { timer, context };
+  }
+
+  function pararMonitorSilencio() {
+    if (!silenceMonitor) return;
+    clearInterval(silenceMonitor.timer); silenceMonitor.context.close().catch(() => {}); silenceMonitor = null;
   }
 
   function pintarRelogio() {
@@ -212,5 +279,12 @@ const CondorVoz = (() => {
     if (antigo) antigo.remove();
   }
 
-  return { init, pedirSenha, fecharSenha };
+  function stopForSecurity() {
+    continuous = false; cancelRecording = true;
+    clearTimeout(restartTimer); clearTimeout(limiteGravacao); pararMonitorSilencio();
+    if (gravador?.state === 'recording') gravador.stop();
+    fluxo?.getTracks().forEach((track) => track.stop()); fluxo = null;
+  }
+
+  return { init, pedirSenha, fecharSenha, stopForSecurity, toggleLocalVoice: alternarGravacaoLocal };
 })();

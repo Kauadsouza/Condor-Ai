@@ -115,6 +115,45 @@ function buildParametricShell(params, options = {}) {
   return geometry;
 }
 
+function buildShellEndCap(params, axial, profile = null, options = {}) {
+  const segments = options.segments || 48; const radialRings = options.radialRings || 5;
+  const endY = (axial - .5) * params.length; const direction = axial >= .5 ? 1 : -1;
+  const domeHeight = options.domeHeight || Math.max(8, Math.min(params.proximalWidth, params.proximalDepth) * .1);
+  const edge = [];
+  for (let segment = 0; segment < segments; segment += 1) {
+    edge.push(surfaceSample(params, axial, segment / segments * Math.PI * 2, false, profile));
+  }
+  const centerX = edge.reduce((sum, point) => sum + point.x, 0) / edge.length;
+  const centerZ = edge.reduce((sum, point) => sum + point.z, 0) / edge.length;
+  const vertices = [centerX, endY + direction * domeHeight, centerZ]; const indices = [];
+  for (let ring = 1; ring <= radialRings; ring += 1) {
+    const radial = ring / radialRings; const crown = 1 - radial * radial;
+    edge.forEach((point) => {
+      vertices.push(
+        THREE.MathUtils.lerp(centerX, point.x, radial),
+        endY + direction * domeHeight * crown,
+        THREE.MathUtils.lerp(centerZ, point.z, radial),
+      );
+    });
+  }
+  for (let segment = 0; segment < segments; segment += 1) {
+    const next = (segment + 1) % segments;
+    if (direction > 0) indices.push(0, 1 + next, 1 + segment);
+    else indices.push(0, 1 + segment, 1 + next);
+  }
+  for (let ring = 1; ring < radialRings; ring += 1) {
+    const inner = 1 + (ring - 1) * segments; const outer = inner + segments;
+    for (let segment = 0; segment < segments; segment += 1) {
+      const next = (segment + 1) % segments;
+      if (direction > 0) indices.push(inner + segment, outer + next, outer + segment, inner + segment, inner + next, outer + next);
+      else indices.push(inner + segment, outer + segment, outer + next, inner + segment, outer + next, inner + next);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3)); geometry.setIndex(indices);
+  geometry.computeVertexNormals(); geometry.computeBoundingBox(); geometry.computeBoundingSphere(); return geometry;
+}
+
 function transformGeometry(geometry, transform = {}) {
   if (transform.scale) geometry.scale(...transform.scale);
   if (transform.rotation) {
@@ -141,24 +180,177 @@ function organicPart(parameters, transform = {}, options = {}) {
   return transformGeometry(buildParametricShell(parameters, options), transform);
 }
 
-function buildHeadGeometry(params) {
+function helmetDefinition(params) {
   const width = Math.max(params.proximalWidth, params.distalWidth) + params.clearance * 2;
   const depth = Math.max(params.proximalDepth, params.distalDepth) + params.clearance * 2;
   const skull = { ...params, proximalWidth: width, distalWidth: width, proximalDepth: depth, distalDepth: depth, bulge: 0, clearance: 0, asymmetry: 0, shape: Math.max(2.05, params.shape) };
-  const skullProfile = (axial, angle) => {
+  const profile = (axial, angle) => {
     const curve = Math.sin(Math.PI * axial);
-    const widthFactor = .16 + Math.pow(Math.max(0, curve), .43) * (.87 + .13 * axial);
-    const depthFactor = .2 + Math.pow(Math.max(0, curve), .46) * (.82 + .18 * axial);
-    const front = Math.pow(Math.max(0, Math.sin(angle)), 8);
-    const nose = Math.exp(-Math.pow((axial - .47) / .075, 2)) * depth * .105 * front;
-    const brow = Math.exp(-Math.pow((axial - .61) / .07, 2)) * depth * .025 * front;
-    const jaw = axial < .28 ? (1 - axial / .28) * width * .018 * Math.cos(angle) : 0;
-    return { width: widthFactor, depth: depthFactor, x: jaw, z: nose + brow };
+    const jawTaper = .6 + .4 * Math.min(1, axial / .36);
+    const widthFactor = (.025 + Math.pow(Math.max(0, curve), .48) * (.8 + .08 * axial)) * jawTaper;
+    const depthFactor = .04 + Math.pow(Math.max(0, curve), .48) * (.82 + .1 * axial);
+    const front = Math.pow(Math.max(0, Math.sin(angle)), 6);
+    const rear = Math.pow(Math.max(0, -Math.sin(angle)), 6);
+    const faceKeel = Math.exp(-Math.pow((axial - .43) / .2, 2)) * depth * .075 * front;
+    const commandBrow = Math.exp(-Math.pow((axial - .64) / .075, 2)) * depth * .055 * front;
+    const mandible = Math.exp(-Math.pow((axial - .22) / .13, 2)) * depth * .045 * front;
+    const sweptCrown = Math.exp(-Math.pow((axial - .78) / .18, 2)) * depth * .035 * rear;
+    return { width: widthFactor, depth: depthFactor, z: faceKeel + commandBrow + mandible + sweptCrown };
   };
-  const pieces = [buildParametricShell(skull, { rings: 38, segments: 64, profile: skullProfile })];
-  const earParams = { ...skull, length: params.length * .2, proximalWidth: width * .12, distalWidth: width * .1, proximalDepth: depth * .15, distalDepth: depth * .12, thickness: Math.min(params.thickness, width * .035), shape: 2.15 };
-  pieces.push(organicPart(earParams, { position: [-width * .49, params.length * .07, 0], rotation: [0, 0, -.08] }, { rings: 14, segments: 24 }));
-  pieces.push(organicPart(earParams, { position: [width * .49, params.length * .07, 0], rotation: [0, 0, .08] }, { rings: 14, segments: 24 }));
+  return { width, depth, length: params.length, skull, profile };
+}
+
+function helmetSurfacePoint(definition, axial, angle, offset = 0) {
+  const point = surfaceSample(definition.skull, axial, angle, false, definition.profile);
+  if (offset) {
+    const axialDelta = .002; const angleDelta = .002;
+    const axialBefore = surfaceSample(definition.skull, Math.max(0, axial - axialDelta), angle, false, definition.profile);
+    const axialAfter = surfaceSample(definition.skull, Math.min(1, axial + axialDelta), angle, false, definition.profile);
+    const angleBefore = surfaceSample(definition.skull, axial, angle - angleDelta, false, definition.profile);
+    const angleAfter = surfaceSample(definition.skull, axial, angle + angleDelta, false, definition.profile);
+    const axialTangent = axialAfter.sub(axialBefore); const angleTangent = angleAfter.sub(angleBefore);
+    const outward = axialTangent.cross(angleTangent).normalize();
+    if (outward.lengthSq() > 0) point.addScaledVector(outward, offset);
+  }
+  return point;
+}
+
+function helmetFrontPoint(definition, axial, lateral, offset = 0) {
+  const angle = Math.acos(Math.max(-.96, Math.min(.96, lateral)));
+  return helmetSurfacePoint(definition, axial, angle, offset);
+}
+
+function buildPanelGeometry(points) {
+  const vertices = [];
+  points.forEach((point) => vertices.push(point.x, point.y, point.z));
+  const indices = [];
+  for (let index = 1; index < points.length - 1; index += 1) indices.push(0, index, index + 1);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3)); geometry.setIndex(indices);
+  geometry.computeVertexNormals(); geometry.computeBoundingBox(); geometry.computeBoundingSphere(); return geometry;
+}
+
+function buildCurvedHelmetVisor(definition, side) {
+  const segments = 22; const vertices = []; const indices = [];
+  for (let step = 0; step <= segments; step += 1) {
+    const lateral = side * (.08 + step / segments * .92); const outward = Math.abs(lateral);
+    const angle = Math.PI / 2 - lateral * 1.03;
+    const topAxial = .625 + outward * .05; const bottomAxial = .55 + outward * .065;
+    const outerTop = helmetSurfacePoint(definition, topAxial, angle, 5.2);
+    const outerBottom = helmetSurfacePoint(definition, bottomAxial, angle, 5.2);
+    const innerTop = helmetSurfacePoint(definition, topAxial, angle, 2.4);
+    const innerBottom = helmetSurfacePoint(definition, bottomAxial, angle, 2.4);
+    vertices.push(
+      outerTop.x, outerTop.y, outerTop.z, outerBottom.x, outerBottom.y, outerBottom.z,
+      innerTop.x, innerTop.y, innerTop.z, innerBottom.x, innerBottom.y, innerBottom.z,
+    );
+    if (step < segments) {
+      const outerTopNow = step * 4; const outerBottomNow = outerTopNow + 1; const innerTopNow = outerTopNow + 2; const innerBottomNow = outerTopNow + 3;
+      const outerTopNext = outerTopNow + 4; const outerBottomNext = outerTopNow + 5; const innerTopNext = outerTopNow + 6; const innerBottomNext = outerTopNow + 7;
+      indices.push(
+        outerTopNow, outerBottomNow, outerTopNext, outerTopNext, outerBottomNow, outerBottomNext,
+        innerTopNow, innerTopNext, innerBottomNow, innerTopNext, innerBottomNext, innerBottomNow,
+        outerTopNow, outerTopNext, innerTopNow, outerTopNext, innerTopNext, innerTopNow,
+        outerBottomNow, innerBottomNow, outerBottomNext, outerBottomNext, innerBottomNow, innerBottomNext,
+      );
+    }
+  }
+  for (const step of [0, segments]) {
+    const outerTop = step * 4; const outerBottom = outerTop + 1; const innerTop = outerTop + 2; const innerBottom = outerTop + 3;
+    if (step === 0) indices.push(outerTop, innerTop, outerBottom, outerBottom, innerTop, innerBottom);
+    else indices.push(outerTop, outerBottom, innerTop, outerBottom, innerBottom, innerTop);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3)); geometry.setIndex(indices);
+  geometry.computeVertexNormals(); geometry.computeBoundingBox(); geometry.computeBoundingSphere(); return geometry;
+}
+
+function buildHelmetKeel(definition, records) {
+  const vertices = []; const indices = [];
+  records.forEach(([axial, halfWidth]) => {
+    const left = helmetFrontPoint(definition, axial, -halfWidth, 8);
+    const right = helmetFrontPoint(definition, axial, halfWidth, 8);
+    vertices.push(left.x, left.y, left.z, right.x, right.y, right.z);
+  });
+  for (let row = 0; row < records.length - 1; row += 1) {
+    const left = row * 2; const right = left + 1; const nextLeft = left + 2; const nextRight = left + 3;
+    indices.push(left, right, nextLeft, right, nextRight, nextLeft);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3)); geometry.setIndex(indices);
+  geometry.computeVertexNormals(); geometry.computeBoundingBox(); geometry.computeBoundingSphere(); return geometry;
+}
+
+function buildHelmetPatch(definition, records, offset = 3.2) {
+  return buildPanelGeometry(records.map(([axial, angle]) => helmetSurfacePoint(definition, axial, angle, offset)));
+}
+
+function helmetDetailMaterial(color, options = {}) {
+  const material = createRobotMaterial(color, options);
+  material.userData.baseOpacity = options.opacity ?? 1;
+  material.userData.helmetDetail = true;
+  return material;
+}
+
+function createHelmetLine(points, color = 0x65737a, opacity = .52) {
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false }));
+  line.userData.helmetDetail = true; line.material.userData.baseOpacity = opacity; return line;
+}
+
+function createHelmetDetails(params) {
+  const definition = helmetDefinition(params); const group = new THREE.Group();
+  group.name = 'CX-H01-SENTINEL'; group.userData.region = 'head'; group.userData.helmetDesign = 'CX-H01-SENTINEL';
+
+  const visorMaterial = helmetDetailMaterial(0x02080d, { emissive: 0x06191c, metalness: .48, roughness: .08, clearcoat: 1, clearcoatRoughness: .06 });
+  for (const side of [-1, 1]) {
+    const visor = new THREE.Mesh(buildCurvedHelmetVisor(definition, side), side < 0 ? visorMaterial : visorMaterial.clone());
+    visor.name = side < 0 ? 'FLIGHT-VISOR-L' : 'FLIGHT-VISOR-R'; visor.userData.helmetDetail = true; group.add(visor);
+  }
+
+  const pearl = helmetDetailMaterial(0xdfe6e4, { emissive: 0x020708, metalness: .26, roughness: .25, clearcoat: .94, clearcoatRoughness: .13 });
+  const keelRecords = [[.58, .025], [.5, .05], [.38, .11], [.18, .012]];
+  const keel = new THREE.Mesh(buildHelmetKeel(definition, keelRecords), pearl);
+  keel.name = 'CONDOR-CENTRAL-KEEL'; keel.userData.helmetDetail = true; group.add(keel);
+  for (const side of [-1, 1]) {
+    group.add(createHelmetLine(keelRecords.map(([axial, halfWidth]) => helmetFrontPoint(definition, axial, side * halfWidth, 8.6)), 0x65737a, .38));
+  }
+
+  for (const side of [-1, 1]) {
+    const mirror = side < 0 ? (angle) => Math.PI - angle : (angle) => angle;
+    const temple = new THREE.Mesh(buildHelmetPatch(definition, [
+      [.62, mirror(.12)], [.6, mirror(.39)], [.43, mirror(.41)], [.42, mirror(.1)],
+    ], 5), helmetDetailMaterial(0x101820, { emissive: 0x020608, metalness: .5, roughness: .27, clearcoat: .68, clearcoatRoughness: .2 }));
+    temple.name = side < 0 ? 'TEMPLE-MODULE-L' : 'TEMPLE-MODULE-R'; temple.userData.helmetDetail = true; group.add(temple);
+
+    const browPoints = [];
+    for (let step = 0; step <= 9; step += 1) {
+      const lateral = side * (.08 + step / 9 * .78); const angle = Math.PI / 2 - lateral * 1.03;
+      browPoints.push(helmetSurfacePoint(definition, .655 + step / 9 * .04, angle, 6));
+    }
+    group.add(createHelmetLine(browPoints, 0x17242a, .78));
+
+    const crownSeam = [
+      helmetFrontPoint(definition, .91, side * .14, 3.2),
+      helmetFrontPoint(definition, .79, side * .34, 3.4),
+      helmetFrontPoint(definition, .71, side * .48, 3.6),
+    ];
+    group.add(createHelmetLine(crownSeam, 0x617078, .48));
+
+    for (let vent = 0; vent < 3; vent += 1) {
+      const axial = .31 - vent * .04; const start = helmetFrontPoint(definition, axial + .018, side * (.47 + vent * .025), 4.5);
+      const end = helmetFrontPoint(definition, axial - .012, side * (.64 + vent * .018), 4.5);
+      group.add(createHelmetLine([start, end], 0x111a20, .82));
+    }
+  }
+
+  group.traverse((item) => { if (item.isMesh || item.isLine) item.userData.helmetDetail = true; });
+  return group;
+}
+
+function buildHeadGeometry(params) {
+  const definition = helmetDefinition(params); const { skull, profile } = definition;
+  const pieces = [buildParametricShell(skull, { rings: 42, segments: 72, profile })];
   return mergeGeometryParts(pieces);
 }
 
@@ -204,7 +396,9 @@ function buildShoulderGeometry(region, params) {
     const frontCrown = Math.pow(Math.max(0, Math.sin(angle)), 4) * depth * .045 * deltoid;
     return { width: widthFactor, depth: depthFactor, x: innerLift, z: frontCrown };
   };
-  return buildParametricShell(shoulder, { rings: 30, segments: 48, profile: shoulderProfile });
+  const shell = buildParametricShell(shoulder, { rings: 30, segments: 48, profile: shoulderProfile });
+  const crown = buildShellEndCap(shoulder, 1, shoulderProfile, { segments: 48, radialRings: 6, domeHeight: width * .075 });
+  return mergeGeometryParts([shell, crown]);
 }
 
 function buildFootGeometry(region, params) {
@@ -368,12 +562,79 @@ function createRobotMaterial(color, options = {}) {
 
 function createBodyMaterial(region, saved) {
   const joint = DARK_JOINT_REGIONS.has(region);
+  const helmet = region === 'head';
   const color = joint ? 0x10171c : (saved ? 0xf7fbfa : 0xdde4e5);
-  const material = createRobotMaterial(color, joint
+  const material = createRobotMaterial(color, helmet
+    ? { emissive: saved ? 0x061516 : 0x030708, metalness: .3, roughness: .24, clearcoat: .96, clearcoatRoughness: .12 }
+    : joint
     ? { emissive: 0x020709, metalness: .5, roughness: .3, clearcoat: .48 }
     : { emissive: saved ? 0x061516 : 0x030708, metalness: .74, roughness: .17, clearcoat: 1 });
   material.userData.baseColor = color; material.userData.baseEmissive = joint ? 0x020709 : (saved ? 0x061516 : 0x030708);
   return material;
+}
+
+function createArmorClosureDetails(parameters, layout, savedRegions = new Map()) {
+  const group = new THREE.Group();
+  group.name = 'CX-BODY-CLOSED-CASING'; group.userData.bodyArmorDetail = true;
+
+  const addClosure = (name, region, params, transform, profile = null, closureOptions = {}) => {
+    const saved = savedRegions.has(region);
+    const material = createRobotMaterial(saved ? 0xf7fbfa : 0xe7eeee, {
+      emissive: saved ? 0x061516 : 0x030708, metalness: .68, roughness: .2,
+      clearcoat: .98, clearcoatRoughness: .13,
+    });
+    material.userData.baseColor = saved ? 0xf7fbfa : 0xe7eeee;
+    material.userData.baseEmissive = saved ? 0x061516 : 0x030708;
+    const parts = [organicPart(params, transform, { rings: 28, segments: 48, profile })];
+    if (Number.isFinite(closureOptions.capAxial)) {
+      const cap = buildShellEndCap(params, closureOptions.capAxial, profile, {
+        segments: 48, radialRings: 6, domeHeight: closureOptions.domeHeight,
+      });
+      parts.push(transformGeometry(cap, transform));
+    }
+    const mesh = new THREE.Mesh(parts.length > 1 ? mergeGeometryParts(parts) : parts[0], material);
+    mesh.name = name; mesh.userData.region = region; mesh.userData.saved = saved;
+    mesh.userData.armorClosure = true; mesh.userData.bodyArmorDetail = true; group.add(mesh);
+  };
+
+  const neck = parameters.neck;
+  const neckWidth = Math.max(neck.proximalWidth, neck.distalWidth) + neck.clearance * 2;
+  const neckDepth = Math.max(neck.proximalDepth, neck.distalDepth) + neck.clearance * 2;
+  const collar = {
+    ...neck, length: Math.max(82, neck.length * .78),
+    proximalWidth: neckWidth + 22, distalWidth: neckWidth + 10,
+    proximalDepth: neckDepth + 18, distalDepth: neckDepth + 8,
+    bulge: 0, clearance: 0, asymmetry: 0, thickness: Math.max(5, neck.thickness), shape: 2.45,
+  };
+  addClosure('SEALED-COLLAR-COWL', 'neck', collar, { position: [0, layout.positions.neck[1] - 4, 0] },
+    (axial) => ({ width: .94 + Math.sin(Math.PI * axial) * .06, depth: .95 + Math.sin(Math.PI * axial) * .05 }),
+    { capAxial: 1, domeHeight: 10 });
+
+  for (const side of ['left', 'right']) {
+    const direction = side === 'left' ? -1 : 1;
+    const shoulderRegion = `${side}-shoulder`; const upperRegion = `${side}-upper-arm`;
+    const shoulder = parameters[shoulderRegion]; const upper = parameters[upperRegion];
+    const bridgeWidth = Math.max(shoulder.proximalWidth, shoulder.distalWidth) * .66 + shoulder.clearance * 2;
+    const bridgeDepth = Math.max(shoulder.proximalDepth, shoulder.distalDepth) * .72 + shoulder.clearance * 2;
+    const bridge = {
+      ...shoulder, length: Math.max(136, shoulder.length * .88),
+      proximalWidth: bridgeWidth, distalWidth: Math.max(upper.proximalWidth, upper.distalWidth) + upper.clearance * 1.6,
+      proximalDepth: bridgeDepth, distalDepth: Math.max(upper.proximalDepth, upper.distalDepth) + upper.clearance * 1.4,
+      bulge: 7, clearance: 0, asymmetry: 0, thickness: Math.max(5, shoulder.thickness), shape: 2.32,
+    };
+    const shoulderPosition = layout.positions[shoulderRegion]; const upperPosition = layout.positions[upperRegion];
+    const bridgePosition = [
+      shoulderPosition[0] - direction * bridgeWidth * .19,
+      THREE.MathUtils.lerp(upperPosition[1], shoulderPosition[1], .68),
+      3,
+    ];
+    const closureName = side === 'left' ? 'LEFT-SHOULDER-ROOT-GUSSET' : 'RIGHT-SHOULDER-ROOT-GUSSET';
+    addClosure(closureName, shoulderRegion, bridge,
+      { position: bridgePosition, rotation: [0, 0, -direction * .16] },
+      (axial) => ({ width: .86 + Math.sin(Math.PI * axial) * .14, depth: .9 + Math.sin(Math.PI * axial) * .1 }));
+  }
+
+  return group;
 }
 
 function stlText(geometry, name) {
@@ -470,12 +731,17 @@ export class CondorModeler3D {
     if (this.pointCloud) { this.group.remove(this.pointCloud); this.pointCloud.geometry.dispose(); }
     if (this.frontGuides) { this.group.remove(this.frontGuides); disposeObject3D(this.frontGuides); }
     if (this.chestEmblem) { this.group.remove(this.chestEmblem); disposeObject3D(this.chestEmblem); }
+    if (this.helmetDetails) { this.group.remove(this.helmetDetails); disposeObject3D(this.helmetDetails); }
     const geometry = buildRegionGeometry(this.region, this.parameters);
     const joint = DARK_JOINT_REGIONS.has(this.region); this.shellMaterial.color.setHex(joint ? 0x10171c : 0xf1f7f6); this.shellMaterial.emissive.setHex(joint ? 0x020709 : 0x030809);
+    const helmet = this.region === 'head';
+    this.shellMaterial.metalness = helmet ? .3 : (joint ? .5 : .72); this.shellMaterial.roughness = helmet ? .24 : (joint ? .3 : .18);
+    this.shellMaterial.clearcoat = helmet ? .96 : (joint ? .48 : .95); this.shellMaterial.clearcoatRoughness = helmet ? .12 : (joint ? .24 : .15);
     this.shellMaterial.wireframe = this.layers.wireframe; this.shell = new THREE.Mesh(geometry, this.shellMaterial); this.group.add(this.shell);
     this.reference = new THREE.Mesh(geometry.clone(), this.referenceMaterial); this.reference.scale.set(.92, .985, .92); this.reference.visible = this.layers.reference; this.group.add(this.reference);
     this.frontGuides = createFrontGuides(this.region, this.parameters, .62); this.group.add(this.frontGuides);
     this.chestEmblem = this.region === 'chest' ? createChestEmblem(this.parameters) : null; if (this.chestEmblem) this.group.add(this.chestEmblem);
+    this.helmetDetails = this.region === 'head' ? createHelmetDetails(this.parameters) : null; if (this.helmetDetails) this.group.add(this.helmetDetails);
     const pointGeometry = new THREE.BufferGeometry(); const positions = [];
     this.points.forEach((point) => { const position = surfaceSample(this.parameters, point.axial, THREE.MathUtils.degToRad(point.angle)); positions.push(position.x, position.y, position.z); });
     pointGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -576,6 +842,8 @@ function bodyLayout(parameters) {
 export class CondorBody3D {
   constructor(host, onPick) {
     this.host = host; this.onPick = onPick; this.parts = []; this.meshes = []; this.selected = [];
+    this.engineeringMeshes = []; this.engineeringEnabled = false; this.engineeringDrag = null;
+    this.onEngineeringMove = null; this.onEngineeringSelect = null;
     this.scene = new THREE.Scene(); this.camera = new THREE.PerspectiveCamera(32, 1, 1, 9000);
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.7)); this.renderer.outputColorSpace = THREE.SRGBColorSpace; this.renderer.setClearColor(0x020812, 0);
@@ -612,6 +880,7 @@ export class CondorBody3D {
       const material = createBodyMaterial(region, saved);
       const mesh = new THREE.Mesh(buildRegionGeometry(region, parameters[region]), material); mesh.userData.region = region; mesh.userData.saved = saved; group.add(mesh); this.meshes.push(mesh);
       group.add(createFrontGuides(region, parameters[region], saved ? .72 : .5, 0x25343b));
+      if (region === 'head') group.add(createHelmetDetails(parameters[region]));
       if (region === 'chest') group.add(createChestEmblem(parameters[region]));
       const points = active.get(region)?.technicalPoints || [];
       if (points.length) {
@@ -621,6 +890,9 @@ export class CondorBody3D {
       }
       this.body.add(group);
     });
+    this.armorClosures = createArmorClosureDetails(parameters, layout, active);
+    this.armorClosures.traverse((item) => { if (item.isMesh) this.meshes.push(item); });
+    this.body.add(this.armorClosures);
     this.fitView(); this.select(this.selected); this.render();
   }
 
@@ -645,9 +917,35 @@ export class CondorBody3D {
 
   installControls() {
     const canvas = this.renderer.domElement; let dragging = false; let moved = 0; let lastX = 0; let lastY = 0;
-    canvas.addEventListener('pointerdown', (event) => { dragging = true; moved = 0; lastX = event.clientX; lastY = event.clientY; canvas.setPointerCapture(event.pointerId); });
-    canvas.addEventListener('pointermove', (event) => { if (!dragging) return; const dx = event.clientX - lastX; const dy = event.clientY - lastY; moved += Math.abs(dx) + Math.abs(dy); this.yaw -= dx * .007; this.pitch = Math.max(-.85, Math.min(.85, this.pitch - dy * .005)); lastX = event.clientX; lastY = event.clientY; this.render(); });
+    const pick = (event, objects) => { const rect = canvas.getBoundingClientRect(); const pointer = new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1); const raycaster = new THREE.Raycaster(); raycaster.setFromCamera(pointer, this.camera); return raycaster.intersectObjects(objects, true)[0]; };
+    canvas.addEventListener('pointerdown', (event) => {
+      if (this.engineeringEnabled) {
+        const hit = pick(event, this.engineeringMeshes);
+        const root = hit?.object;
+        const unitId = root?.userData?.unitId || root?.parent?.userData?.unitId;
+        if (unitId) {
+          const object = this.engineeringMeshes.find((item) => item.userData.unitId === unitId);
+          this.engineeringDrag = { unitId, object, startX: event.clientX, startY: event.clientY, origin: object.position.clone(), moved: 0 };
+          canvas.setPointerCapture(event.pointerId); this.onEngineeringSelect?.(unitId); return;
+        }
+      }
+      dragging = true; moved = 0; lastX = event.clientX; lastY = event.clientY; canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (this.engineeringDrag) {
+        const dx = event.clientX - this.engineeringDrag.startX; const dy = event.clientY - this.engineeringDrag.startY;
+        this.engineeringDrag.moved = Math.abs(dx) + Math.abs(dy);
+        this.engineeringDrag.object.position.set(this.engineeringDrag.origin.x + dx * 2.2, this.engineeringDrag.origin.y - dy * 2.2, this.engineeringDrag.origin.z);
+        this.render(); return;
+      }
+      if (!dragging) return; const dx = event.clientX - lastX; const dy = event.clientY - lastY; moved += Math.abs(dx) + Math.abs(dy); this.yaw -= dx * .007; this.pitch = Math.max(-.85, Math.min(.85, this.pitch - dy * .005)); lastX = event.clientX; lastY = event.clientY; this.render();
+    });
     canvas.addEventListener('pointerup', (event) => {
+      if (this.engineeringDrag) {
+        const drag = this.engineeringDrag; this.engineeringDrag = null;
+        if (drag.moved > 2) this.onEngineeringMove?.(drag.unitId, { x: drag.object.position.x / 1000, y: drag.object.position.y / 1000, z: drag.object.position.z / 1000 });
+        return;
+      }
       dragging = false; if (moved > 6) return; const rect = canvas.getBoundingClientRect(); const pointer = new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
       const raycaster = new THREE.Raycaster(); raycaster.setFromCamera(pointer, this.camera); const hit = raycaster.intersectObjects(this.meshes, false)[0]; if (hit?.object?.userData?.region) this.onPick?.(hit.object.userData.region);
     });
@@ -656,6 +954,85 @@ export class CondorBody3D {
 
   resize() { const width = Math.max(1, this.host.clientWidth); const height = Math.max(1, this.host.clientHeight); this.renderer.setSize(width, height, false); this.camera.aspect = width / height; this.camera.updateProjectionMatrix(); this.render(); }
   render() { const cp = Math.cos(this.pitch); this.camera.position.set(Math.sin(this.yaw) * cp * this.distance, this.target.y + Math.sin(this.pitch) * this.distance, Math.cos(this.yaw) * cp * this.distance); this.camera.lookAt(this.target); this.renderer.render(this.scene, this.camera); }
+}
+
+const PROPULSION_ZONE_COLORS = { FAVORABLE: 0x48df9b, COMPROMISES: 0xf5d76e, HIGH_RISK: 0xff9d45, REJECTED: 0xff566c, NOT_EVALUATED: 0x718096 };
+
+function engineeringMaterial(color, opacity = .24, wireframe = false) {
+  return new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, wireframe, side: THREE.DoubleSide });
+}
+
+function vectorFromRecord(value) { return new THREE.Vector3(Number(value?.x || 0), Number(value?.y || 0), Number(value?.z || 0)); }
+
+/** Visualizador 3D exclusivo do Propulsion Placement Lab. */
+export class CondorPropulsion3D extends CondorBody3D {
+  constructor(host, callbacks = {}) {
+    super(host, callbacks.onBodyPick);
+    this.onEngineeringMove = callbacks.onUnitMove;
+    this.onEngineeringSelect = callbacks.onUnitSelect;
+    this.propulsionLayer = new THREE.Group(); this.scene.add(this.propulsionLayer);
+    this.engineeringEnabled = true; this.engineeringState = null;
+    this.engineeringToggles = { zones: true, vectors: true, flow: false, thermal: false, moments: true, loadPaths: false };
+  }
+
+  setState(layout, analysis, toggles = {}) {
+    this.engineeringState = { layout, analysis };
+    this.engineeringToggles = { ...this.engineeringToggles, ...toggles };
+    this.rebuildEngineering();
+  }
+
+  rebuildEngineering() {
+    disposeObject3D(this.propulsionLayer); this.propulsionLayer.clear(); this.engineeringMeshes = [];
+    const layout = this.engineeringState?.layout; const analysis = this.engineeringState?.analysis;
+    if (!layout) { this.render(); return; }
+    const zoneRows = analysis?.candidateZones || [];
+    if (this.engineeringToggles.zones) zoneRows.forEach((zone) => {
+      const color = PROPULSION_ZONE_COLORS[zone.status] || PROPULSION_ZONE_COLORS.NOT_EVALUATED;
+      const geometry = new THREE.BoxGeometry(180, 150, 180);
+      const mesh = new THREE.Mesh(geometry, engineeringMaterial(color, .14, true));
+      mesh.position.set(zone.position.x * 1000, zone.position.y * 1000, zone.position.z * 1000);
+      mesh.userData.zoneId = zone.id; this.propulsionLayer.add(mesh);
+    });
+    const states = new Map((analysis?.propulsionEngine?.unitStates || []).map((state) => [state.unitId, state]));
+    layout.units.forEach((unit) => {
+      const state = states.get(unit.id); const failed = unit.status === 'FAILED';
+      const color = failed ? 0xff566c : state?.saturated ? 0xff9d45 : 0x71fff0;
+      const group = new THREE.Group(); group.userData.unitId = unit.id;
+      group.position.set(unit.positionX * 1000, unit.positionY * 1000, unit.positionZ * 1000);
+      const width = Math.max(42, Number(unit.installationEnvelope?.width || .09) * 1000);
+      const height = Math.max(74, Number(unit.installationEnvelope?.height || .16) * 1000);
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(width * .42, width * .52, height, 20), new THREE.MeshPhysicalMaterial({ color, emissive: color, emissiveIntensity: .12, metalness: .72, roughness: .22, transparent: true, opacity: .92 }));
+      body.userData.unitId = unit.id; group.add(body);
+      const direction = vectorFromRecord(state?.direction || { y: 1 }).normalize();
+      group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+      this.propulsionLayer.add(group); this.engineeringMeshes.push(group);
+      if (this.engineeringToggles.vectors && state?.thrust > 0) {
+        const length = Math.max(90, Math.log1p(state.thrust) * 60); const arrow = new THREE.ArrowHelper(direction, group.position.clone(), length, color, 38, 18); this.propulsionLayer.add(arrow);
+      }
+      if (this.engineeringToggles.thermal && unit.thermalRadiusEstimate) {
+        const sphere = new THREE.Mesh(new THREE.SphereGeometry(unit.thermalRadiusEstimate * 1000, 18, 12), engineeringMaterial(0xff6b4a, .075)); sphere.position.copy(group.position); this.propulsionLayer.add(sphere);
+      }
+      if (this.engineeringToggles.flow) {
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(width * .75, 260, 18, 1, true), engineeringMaterial(0x67e8f9, .10)); cone.position.copy(group.position).addScaledVector(direction, -150); cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), direction); this.propulsionLayer.add(cone);
+      }
+      if (this.engineeringToggles.loadPaths) {
+        const points = [group.position.clone(), new THREE.Vector3(0, 650, 0)]; const geometry = new THREE.BufferGeometry().setFromPoints(points); this.propulsionLayer.add(new THREE.Line(geometry, new THREE.LineDashedMaterial({ color: 0xfac775, dashSize: 22, gapSize: 14, transparent: true, opacity: .55 })));
+      }
+    });
+    const cg = analysis?.massEngine?.vehicleCg;
+    if (cg) { const marker = new THREE.Mesh(new THREE.SphereGeometry(24, 16, 12), engineeringMaterial(0xfac775, .95)); marker.position.copy(vectorFromRecord(cg).multiplyScalar(1000)); this.propulsionLayer.add(marker); }
+    const center = analysis?.propulsionEngine?.centerOfThrust;
+    if (center) { const marker = new THREE.Mesh(new THREE.OctahedronGeometry(28), engineeringMaterial(0x9d8cff, .95)); marker.position.copy(vectorFromRecord(center).multiplyScalar(1000)); this.propulsionLayer.add(marker); }
+    const resultant = analysis?.propulsionEngine?.totalForce;
+    if (this.engineeringToggles.vectors && center && resultant) {
+      const vector = vectorFromRecord(resultant); const force = vector.length(); if (force > 0) this.propulsionLayer.add(new THREE.ArrowHelper(vector.normalize(), vectorFromRecord(center).multiplyScalar(1000), Math.max(130, Math.log1p(force) * 75), 0xffffff, 48, 23));
+    }
+    if (this.engineeringToggles.moments && analysis?.propulsionEngine?.totalMoment) {
+      const moment = analysis.propulsionEngine.totalMoment; const axes = [['x', 0xff9d45, [0, Math.PI / 2, 0]], ['y', 0x9d8cff, [Math.PI / 2, 0, 0]], ['z', 0x71fff0, [0, 0, 0]]];
+      axes.forEach(([axis, color, rotation]) => { if (Math.abs(moment[axis]) < 1e-6) return; const torus = new THREE.Mesh(new THREE.TorusGeometry(95, 4, 10, 48, Math.PI * 1.55), engineeringMaterial(color, .8)); torus.rotation.set(...rotation); torus.position.copy(vectorFromRecord(cg || {}).multiplyScalar(1000)); this.propulsionLayer.add(torus); });
+    }
+    this.render();
+  }
 }
 
 export { defaultsFor };

@@ -48,6 +48,15 @@ class OwnerAuth:
     def setup(self, passphrase: str) -> None:
         if self.configured:
             raise RuntimeError("A identidade do dono ja esta configurada.")
+        self._write_verifier(passphrase)
+
+    def rotate(self, current: str, replacement: str) -> None:
+        """Troca o verificador somente depois de validar a frase atual."""
+        if not self.verify(current):
+            raise ValueError("Palavra de acesso atual incorreta.")
+        self._write_verifier(replacement)
+
+    def _write_verifier(self, passphrase: str) -> None:
         salt = os.urandom(16)
         record = {
             "version": 1,

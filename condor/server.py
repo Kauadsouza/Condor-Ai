@@ -24,19 +24,39 @@ from fastapi.staticfiles import StaticFiles
 
 from condor.actions.guard import Guarda
 from condor.brain.client import Cerebro
+from condor.cloud_sync import CloudError, CloudSyncClient
 from condor.config import Config, salvar_config
-from condor.core import AIGateway, CondorOrchestrator, ContextEngine, EventBus, ProjectEngine
-from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge
+from condor.core import (
+    AIGateway,
+    CondorOrchestrator,
+    ContextEngine,
+    DeviceMesh,
+    DurableTaskEngine,
+    EventBus,
+    ProjectEngine,
+    WorldStateLedger,
+)
+from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge, GestureEngine
 from condor.development import ArduinoToolchain, detect_language, human_model_contract
+from condor.engine import PropulsionLabEngine
+from condor.engine.contracts import CANDIDATE_ZONES, MODEL_LEVEL, PROPULSION_GROUPS
 from condor.memory.db import Memoria
-from condor.memory.extractor import Extrator
+from condor.memory.extractor import (
+    CATEGORIAS_VALIDAS,
+    Extrator,
+    contem_segredo,
+    normalizar_chave,
+    sanitizar_para_memoria,
+)
 from condor.memory.recall import Recall
 from condor.mobile import MobileViewer
 from condor.paths import CODE_ROOT, state_path, state_root
 from condor.security.integrity import CodeIntegrity
+from condor.security.passphrase import PassphraseRotationError, rotate_passphrase
 from condor.security.session import LocalSessionSecurity
 from condor.security.vault import CondorVault, VaultError
 from condor.security.identity import DeviceIdentity
+from condor.security.face_guard import FacePresenceGuard
 from condor.session import Sessao
 from condor.voice.stt import Ouvidos
 from condor.voice.tts import Voz
@@ -45,6 +65,9 @@ from condor.voice.wake import Escuta
 log = logging.getLogger("condor.servidor")
 
 ROOT = CODE_ROOT
+CADX_PARTIAL_BASELINE_MANIFEST = (
+    CODE_ROOT / "condor" / "knowledge" / "cadx_partial_baseline" / "manifest.json"
+)
 HUB_OUT = Path(
     os.getenv("CONDOR_HUB_OUT")
     or (CODE_ROOT.parent.parent / "ARTX Hub" / "out")
@@ -71,12 +94,38 @@ def _falha_operacional(acao: dict) -> bool:
     if str(acao.get("ferramenta") or "").lower() != "security":
         return True
     entrada = str(acao.get("entrada") or "")
+    nome_acao = ""
     try:
         payload = json.loads(entrada)
-        resultado = str(payload.get("result") or "") if isinstance(payload, dict) else ""
+        if isinstance(payload, dict):
+            resultado = str(payload.get("result") or "")
+            nome_acao = str(payload.get("input") or "").strip().lower()
+        else:
+            resultado = ""
     except (TypeError, ValueError, json.JSONDecodeError):
         resultado = entrada
-    return not resultado.upper().startswith("DENIED:")
+    normalizado = resultado.strip().upper()
+    if normalizado == "DENIED" or normalizado.startswith("DENIED:"):
+        return False
+    # Compatibilidade com auditorias produzidas pelo monitor facial antigo.
+    # owner_absent, unknown_face, multiple_faces e heartbeat perdido indicam
+    # que a defesa bloqueou o acesso; nao que o Condor tenha quebrado.
+    if nome_acao == "face_presence" and normalizado.startswith("BLOQUEADO:"):
+        return False
+    return True
+
+
+def _historico_para_interface(memoria: Memoria, limite: int = 24) -> list[dict]:
+    if not memoria.unlocked:
+        return []
+    return [
+        {
+            "role": item.get("role"),
+            "content": sanitizar_para_memoria(str(item.get("content") or ""))[:4000],
+        }
+        for item in memoria.historico(limite=limite)
+        if item.get("role") in {"user", "assistant"}
+    ]
 
 
 def _hub_inline_script_sources() -> str:
@@ -146,6 +195,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     local_security = LocalSessionSecurity(config.servidor.host, config.servidor.porta)
     identity = DeviceIdentity(vault)
     integrity = CodeIntegrity(state_path("security", "code-manifest.json"), identity)
+    cloud = CloudSyncClient(config, vault, identity)
 
     # ── Memória ────────────────────────────────────────────────────────────
     memoria = Memoria(data_root / "memory" / "condor.memory.enc")
@@ -158,13 +208,19 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     # Toda IA, inclusive a implementação local existente, passa pelo gateway.
     recall = Recall(memoria)
     guarda = Guarda(config, memoria, identity)
+    face_guard = FacePresenceGuard(memoria, guarda)
     provider = Cerebro(config, memoria, guarda, recall)
     cerebro = AIGateway(provider, context_engine, event_bus)
     recall.ligar_cerebro(cerebro)
     extrator = Extrator(memoria, cerebro, config, event_bus)
     project_engine = ProjectEngine(memoria, context_engine, event_bus)
+    world_state = WorldStateLedger(memoria, event_bus)
+    task_engine = DurableTaskEngine(memoria, event_bus)
+    device_mesh = DeviceMesh(memoria, event_bus)
+    propulsion_lab = PropulsionLabEngine()
     safety_layer = ActionSafetyLayer()
     device_bridge = DeviceBridge(memoria, event_bus, safety_layer)
+    gesture_engine = GestureEngine()
     arduino_toolchain = ArduinoToolchain()
     camera_bridge = CameraBridge(memoria, event_bus, provider._visao)
     orchestrator = CondorOrchestrator(
@@ -181,6 +237,11 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     sessao = Sessao(config, memoria, cerebro, recall, extrator,
                     guarda, escuta, ouvidos, voz)
     sessao_ref["s"] = sessao
+    def _face_locked(reason: str) -> None:
+        escuta.silenciar()
+        sessao.bloquear_por_presenca(reason)
+
+    face_guard.set_lock_callback(_face_locked)
 
     async def _ensure_voice() -> None:
         """Inicia ou recria a thread de voz somente com cofre e modelo prontos."""
@@ -214,9 +275,15 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     app.state.context_engine = context_engine
     app.state.ai_gateway = cerebro
     app.state.project_engine = project_engine
+    app.state.world_state = world_state
+    app.state.task_engine = task_engine
+    app.state.device_mesh = device_mesh
     app.state.device_bridge = device_bridge
+    app.state.gesture_engine = gesture_engine
     app.state.camera_bridge = camera_bridge
+    app.state.face_guard = face_guard
     app.state.orchestrator = orchestrator
+    app.state.cloud = cloud
     app.router.add_event_handler("shutdown", device_bridge.close_all)
 
     def _mobile_snapshot() -> dict:
@@ -300,7 +367,11 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             content_length = int(request.headers.get("content-length") or 0)
         except ValueError:
             return JSONResponse({"erro": "tamanho de requisicao invalido"}, status_code=400)
-        media_upload = path == "/api/voice/transcribe" or (
+        media_upload = path in {
+            "/api/voice/transcribe", "/api/vision/analyze", "/api/biometria/enroll",
+            "/api/biometria/enroll/check",
+            "/api/biometria/challenge/frame", "/api/biometria/presence",
+        } or (
             path.startswith("/api/cameras/") and path.endswith("/frame")
         )
         body_limit = 20 * 1024 * 1024 if media_upload else 1024 * 1024
@@ -332,6 +403,14 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                         status_code=429,
                         headers={"Retry-After": "60"},
                     )
+                biometric_recovery = path.startswith("/api/biometria/") or path in {
+                    "/api/seguranca/estado", "/api/seguranca/bloquear",
+                }
+                if face_guard.access_blocked and not biometric_recovery:
+                    return JSONResponse(
+                        {"erro": "presenca do dono necessaria", "reason": face_guard.status()["reason"]},
+                        status_code=423,
+                    )
         resposta = await call_next(request)
         if path.startswith(("/api", "/ui", "/hub")):
             resposta.headers["Cache-Control"] = "no-store, must-revalidate"
@@ -360,7 +439,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         resposta.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
         resposta.headers["Referrer-Policy"] = "no-referrer"
         resposta.headers["Permissions-Policy"] = (
-            "camera=(), display-capture=(), microphone=(self), geolocation=(), "
+            "camera=(self), display-capture=(), microphone=(self), geolocation=(), "
             "payment=(), usb=(), serial=(), bluetooth=()"
         )
         return resposta
@@ -427,6 +506,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         return {
             "owner_configured": guarda.configurada,
             "owner_session_active": guarda.owner_session_active,
+            "face_guard": face_guard.status(),
             "vault_exists": vault.exists,
             "vault_unlocked": vault.unlocked,
             "profile": config.seguranca.perfil,
@@ -451,6 +531,109 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if not config.visualizacao_movel.ativa:
             return JSONResponse({"erro": "visualizacao movel desativada"}, status_code=404)
         return mobile_viewer.access.details()
+
+    # ── Condor Cloud: mesma mente no PC e no celular ─────────────────────
+
+    @app.get("/api/cloud/status")
+    async def api_cloud_status():
+        return cloud.status()
+
+    @app.post("/api/cloud/configure")
+    async def api_cloud_configure(payload: dict):
+        if not vault.unlocked or not memoria.unlocked or not guarda.owner_session_active:
+            return JSONResponse(
+                {"erro": "desbloqueie a sessao do dono antes de conectar o celular"},
+                status_code=423,
+            )
+        try:
+            cloud_data = config.cloud.model_dump()
+            cloud_data.update({
+                "ativa": True,
+                "api_url": _texto(payload, "api_url", 500),
+                "supabase_url": _texto(payload, "supabase_url", 500),
+                "supabase_publishable_key": _texto(payload, "supabase_publishable_key", 2048),
+                "intervalo_sync_segundos": int(payload.get("interval_seconds") or 30),
+            })
+            config.cloud = type(config.cloud)(**cloud_data)
+            salvar_config(config)
+            await asyncio.to_thread(
+                cloud.login,
+                _texto(payload, "email", 320),
+                _texto(payload, "password", 512),
+            )
+            await asyncio.to_thread(cloud.register_device)
+            synced = await asyncio.to_thread(cloud.sync, memoria)
+            guarda.auditar("cloud", "configure", "CONNECTED", True, False)
+            return {"ok": True, "sync": synced, "status": cloud.status()}
+        except (CloudError, ValueError, TypeError) as exc:
+            guarda.auditar("cloud", "configure", "DENIED", False, False)
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/cloud/logout")
+    async def api_cloud_logout():
+        if not vault.unlocked or not guarda.owner_session_active:
+            return JSONResponse({"erro": "sessao do dono bloqueada"}, status_code=423)
+        await asyncio.to_thread(cloud.logout)
+        return {"ok": True, "status": cloud.status()}
+
+    @app.post("/api/cloud/sync")
+    async def api_cloud_sync():
+        if response := _memoria_pronta():
+            return response
+        if not cloud.status()["authenticated"]:
+            return JSONResponse({"erro": "Condor Cloud ainda nao conectado"}, status_code=409)
+        result = await asyncio.to_thread(cloud.safe_sync, memoria)
+        return result if result.get("ok") else JSONResponse(
+            {"erro": result.get("error") or "sincronizacao indisponivel"}, status_code=502
+        )
+
+    @app.get("/api/cloud/history")
+    async def api_cloud_history(conversation_id: str = ""):
+        if not vault.unlocked:
+            return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
+        try:
+            return await asyncio.to_thread(cloud.history, conversation_id[:80])
+        except CloudError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=502)
+
+    @app.get("/api/cloud/notes")
+    async def api_cloud_notes():
+        if not vault.unlocked:
+            return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
+        try:
+            return await asyncio.to_thread(cloud.notes)
+        except CloudError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=502)
+
+    @app.post("/api/cloud/notes")
+    async def api_cloud_note_create(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            result = await asyncio.to_thread(
+                cloud.create_note,
+                _texto(payload, "title", 160),
+                _texto(payload, "body", 16000),
+            )
+            await asyncio.to_thread(cloud.safe_sync, memoria)
+            return result
+        except (CloudError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=502)
+
+    @app.post("/api/cloud/chat")
+    async def api_cloud_chat(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            result = await asyncio.to_thread(
+                cloud.chat,
+                _texto(payload, "message", 8000),
+                _texto(payload, "conversation_id", 80, False),
+            )
+            await asyncio.to_thread(cloud.safe_sync, memoria)
+            return result
+        except (CloudError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=502)
 
     @app.post("/api/seguranca/configurar")
     async def api_security_setup(payload: dict):
@@ -501,26 +684,62 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             vault.unlock(_passphrase(payload))
             identity.ensure()
             memoria.unlock(base64.b64decode(vault.get("MEMORY_KEY")))
-            guarda.unlock_owner_session()
+            face_required = face_guard.after_vault_unlock()
+            if not face_required:
+                guarda.unlock_owner_session()
+            extrator.iniciar()
             salvar_config(config)
-            await _ensure_voice()
-            connector_task = asyncio.create_task(
-                cerebro.testar_conectores(), name="condor-testar-conectores"
-            )
-            _EM_VOO.add(connector_task)
-            connector_task.add_done_callback(_EM_VOO.discard)
-            if not guarda.stopped:
-                escuta.voltar_a_ouvir()
+            if not face_required:
+                await conexoes.transmitir({
+                    "tipo": "conversa.historico",
+                    "mensagens": _historico_para_interface(memoria),
+                })
+            if not face_required:
+                await _ensure_voice()
+                connector_task = asyncio.create_task(
+                    cerebro.testar_conectores(), name="condor-testar-conectores"
+                )
+                _EM_VOO.add(connector_task)
+                connector_task.add_done_callback(_EM_VOO.discard)
+                if not guarda.stopped:
+                    escuta.voltar_a_ouvir()
         except (ValueError, VaultError):
             return _auth_failed("unlock")
         local_security.auth_succeeded("unlock")
-        return {"ok": True}
+        return {"ok": True, "face_required": face_required}
 
     @app.post("/api/seguranca/bloquear")
     async def api_security_lock():
         guarda.lock_owner_session()
+        await sessao.preparar_bloqueio()
+        await extrator.encerrar()
+        face_guard.on_vault_lock()
         memoria.lock()
         vault.lock()
+        return {"ok": True}
+
+    @app.post("/api/seguranca/trocar-frase")
+    async def api_security_rotate_passphrase(payload: dict):
+        if not vault.unlocked or not guarda.owner_session_active:
+            return JSONResponse({"erro": "sessao do dono bloqueada"}, status_code=423)
+        if response := _auth_wait("passphrase_rotate"):
+            return response
+        try:
+            current = _passphrase({"passphrase": payload.get("current_passphrase")})
+            replacement = _passphrase({"passphrase": payload.get("new_passphrase")}, 12)
+            confirmation = _passphrase({"passphrase": payload.get("confirm_passphrase")}, 12)
+        except ValueError:
+            local_security.auth_failed("passphrase_rotate")
+            return JSONResponse({"erro": "palavra de acesso fora do limite seguro"}, status_code=400)
+        if replacement != confirmation:
+            return JSONResponse({"erro": "a confirmacao nao corresponde"}, status_code=400)
+        try:
+            rotate_passphrase(vault, guarda.owner, current, replacement)
+        except PassphraseRotationError as exc:
+            local_security.auth_failed("passphrase_rotate")
+            return JSONResponse({"erro": str(exc)}, status_code=401)
+        local_security.auth_succeeded("passphrase_rotate")
+        guarda.auditar("security", "passphrase_rotate", "CONCLUIDA", True, True)
         return {"ok": True}
 
     @app.post("/api/seguranca/segredos")
@@ -648,9 +867,26 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         guarda.auditar("security", "integrity_refresh", f"{count} arquivos", True, True)
         return {"ok": True, "files": count}
 
+    @app.delete("/api/conversa/historico")
+    async def api_limpar_historico():
+        if response := _memoria_pronta():
+            return response
+        removidas = await sessao.nova_conversa()
+        guarda.auditar(
+            "chat", "limpar_historico",
+            f"{removidas} mensagens removidas; memorias preservadas", True, False,
+        )
+        return {"ok": True, "removidas": removidas}
+
     @app.get("/api/memoria/grafo")
     async def api_grafo():
         return {**memoria.grafo(), "estatisticas": memoria.estatisticas()}
+
+    @app.get("/api/memoria/mapa")
+    async def api_mapa_memoria():
+        if response := _memoria_pronta():
+            return response
+        return memoria.mapa_memoria()
 
     @app.get("/api/memoria/fluxo")
     async def api_fluxo():
@@ -659,6 +895,54 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     @app.get("/api/memoria/fatos")
     async def api_fatos(categoria: str | None = None, limite: int = 50):
         return {"fatos": memoria.fatos_recentes(limite, categoria)}
+
+    @app.post("/api/memoria/perfil")
+    async def api_importar_perfil(payload: dict):
+        """Importa fatos explicitos do Owner em lote e confirma o estado gravado."""
+        if response := _memoria_pronta():
+            return response
+        raw_facts = payload.get("facts")
+        if not isinstance(raw_facts, list) or not raw_facts:
+            return JSONResponse({"erro": "facts deve ser uma lista nao vazia"}, status_code=400)
+        facts: list[dict] = []
+        for item in raw_facts[:100]:
+            if not isinstance(item, dict):
+                continue
+            category = str(item.get("categoria") or "pessoal").lower()
+            key = normalizar_chave(str(item.get("chave") or ""))
+            value = str(item.get("valor") or "").strip()
+            if category not in CATEGORIAS_VALIDAS or not key or len(value) < 4:
+                continue
+            if contem_segredo(value):
+                return JSONResponse(
+                    {"erro": f"conteudo sensivel recusado em {key}"}, status_code=400
+                )
+            try:
+                confidence = max(0.0, min(1.0, float(item.get("confianca", 1.0))))
+            except (TypeError, ValueError):
+                confidence = 1.0
+            facts.append({
+                "categoria": category,
+                "chave": key,
+                "valor": value[:2000],
+                "confianca": confidence,
+                "origem": "perfil_owner_confirmado",
+            })
+        if not facts:
+            return JSONResponse({"erro": "nenhum fato valido recebido"}, status_code=400)
+        confirmed = memoria.salvar_fatos_lote(facts, "perfil_owner_confirmado")
+        await event_bus.publish(
+            "MEMORY_PROFILE_IMPORTED",
+            {"facts": len(confirmed), "stats": memoria.estatisticas()},
+            source="owner_profile",
+        )
+        return {
+            "ok": len(confirmed) == len(facts),
+            "received": len(facts),
+            "verified": len(confirmed),
+            "keys": [item["chave"] for item in confirmed],
+            "stats": memoria.estatisticas(),
+        }
 
     @app.delete("/api/memoria/fatos/{fato_id}")
     async def api_esquecer(fato_id: int):
@@ -673,6 +957,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     @app.get("/api/core/status")
     async def api_core_status():
         permissions = memoria.permissions() if memoria.unlocked else []
+        permission_requests = memoria.pending_permission_requests() if memoria.unlocked else []
         session_state = sessao.snapshot()
         return {
             "core": "online",
@@ -689,10 +974,135 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 "wake_reason": session_state.get("motivo_escuta") or "",
             },
             "vision": "ready" if await provider.visao_pronta() else "not_ready",
-            "gesture": "not_configured",
+            "image_generation": provider.image_generator_state,
+            "engineering_knowledge": provider.engineering_knowledge_state,
+            "face_guard": face_guard.status(),
+            "independence": {
+                "core_local": True,
+                "memory_local_encrypted": True,
+                "cloud_required": False,
+                "external_connectors_optional": True,
+            },
+            "durable_tasks": (
+                {"resumable": len(task_engine.resumable())} if memoria.unlocked
+                else {"locked": True}
+            ),
+            "device_mesh": (
+                device_mesh.status() if memoria.unlocked else {"locked": True}
+            ),
+            "gesture": gesture_engine.status(),
             "wearable": "not_connected",
             "permissions": permissions,
+            "permission_requests": permission_requests,
         }
+
+    @app.get("/api/core/world")
+    async def api_world_state(limite: int = 100, incluir_antigas: bool = False):
+        if response := _memoria_pronta():
+            return response
+        return world_state.snapshot(
+            limit=max(1, min(limite, 250)), include_outdated=incluir_antigas
+        )
+
+    @app.post("/api/core/world/episodes")
+    async def api_world_episode(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {"episode": await world_state.remember_episode(payload)}
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/core/world/beliefs")
+    async def api_world_belief(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {"belief": await world_state.assert_belief(payload)}
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.get("/api/core/tasks")
+    async def api_durable_tasks(status: str | None = None, limite: int = 100):
+        if response := _memoria_pronta():
+            return response
+        if status and status not in DurableTaskEngine.STATUS:
+            return JSONResponse({"erro": "status de tarefa inválido"}, status_code=400)
+        return {"tasks": memoria.list_durable_tasks(limite, status)}
+
+    @app.post("/api/core/tasks")
+    async def api_durable_task_create(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {"task": await task_engine.create(payload)}
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.get("/api/core/tasks/{task_id}")
+    async def api_durable_task_detail(task_id: str):
+        if response := _memoria_pronta():
+            return response
+        task = memoria.durable_task(task_id[:80])
+        if task is None:
+            return JSONResponse({"erro": "tarefa não encontrada"}, status_code=404)
+        return {"task": task}
+
+    @app.patch("/api/core/tasks/{task_id}")
+    async def api_durable_task_update(task_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {
+                "task": await task_engine.transition(
+                    task_id[:80], _texto(payload, "status", 24)
+                )
+            }
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/core/tasks/{task_id}/checkpoints")
+    async def api_durable_task_checkpoint(task_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {"checkpoint": await task_engine.checkpoint(task_id[:80], payload)}
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.get("/api/core/device-mesh")
+    async def api_device_mesh_status():
+        if response := _memoria_pronta():
+            return response
+        return device_mesh.status()
+
+    @app.post("/api/core/device-mesh/register")
+    async def api_device_mesh_register(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {"device": await device_mesh.register(payload)}
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/core/device-mesh/{device_id}/trust")
+    async def api_device_mesh_trust(device_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {
+                "device": await device_mesh.set_trust(
+                    device_id[:80], _texto(payload, "state", 24)
+                )
+            }
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
 
     @app.get("/api/context")
     async def api_context_get():
@@ -720,6 +1130,17 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if snapshot["project"] is None:
             return JSONResponse({"erro": "projeto não encontrado"}, status_code=404)
         return snapshot
+
+    @app.get("/api/projects/condor-x/cad-baseline")
+    async def api_condor_x_cad_baseline():
+        """Return the user-provided CADx source registry without importing it into the modeler."""
+        if response := _memoria_pronta():
+            return response
+        try:
+            return json.loads(CADX_PARTIAL_BASELINE_MANIFEST.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            log.warning("manifesto CADx parcial indisponível", exc_info=True)
+            return JSONResponse({"erro": "baseline CADx indisponível"}, status_code=503)
 
     @app.post("/api/projects/{project_id}/open")
     async def api_project_open(project_id: str):
@@ -834,6 +1255,30 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return response
         return await device_bridge.plan_command(device_id[:80], payload)
 
+    @app.post("/api/devices/commands/route")
+    async def api_device_command_route(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        project_id = str(payload.get("project_id") or context_engine.snapshot().get("project_id") or "condor-x")[:80]
+        try:
+            result = await device_bridge.send_text(
+                str(payload.get("device_id") or "")[:80],
+                str(payload.get("command") or ""), project_id,
+                confirmed=bool(payload.get("confirmed")),
+            )
+            if result.get("executed"):
+                device = result["device"]
+                context_engine.update(
+                    project_id=project_id, device_id=device["device_id"],
+                    device_name=device["name"], connection_state="connected", mode="programming",
+                )
+            return result
+        except PermissionError as exc:
+            request_item = memoria.request_permission("serial", str(exc), "device_command_router")
+            return JSONResponse({"erro": str(exc), "permission_request": request_item}, status_code=403)
+        except (ValueError, RuntimeError, TypeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
     @app.get("/api/programming/buffer")
     async def api_programming_buffer(project_id: str = ""):
         if response := _memoria_pronta():
@@ -885,6 +1330,112 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             arduino_toolchain.detect_boards(), arduino_toolchain.status()
         )
         return {**toolchain, **detection}
+
+    @app.get("/api/programming/auto-target")
+    async def api_programming_auto_target():
+        try:
+            return {"available": True, "target": await arduino_toolchain.automatic_target()}
+        except (ValueError, RuntimeError) as exc:
+            return {"available": False, "target": None, "reason": str(exc)}
+
+    @app.post("/api/programming/auto-run")
+    async def api_programming_auto_run(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        if not bool(payload.get("confirmed")):
+            return JSONResponse({"erro": "confirmação explícita necessária"}, status_code=409)
+        if not memoria.permission_allowed("arduino_upload"):
+            request_item = memoria.request_permission(
+                "arduino_upload", "Gravar o código atual na placa detectada automaticamente.",
+                "programming_auto_router",
+            )
+            return JSONResponse(
+                {"erro": "gravação Arduino bloqueada no painel Sistema", "permission_request": request_item},
+                status_code=403,
+            )
+        try:
+            project_id = str(payload.get("project_id") or context_engine.snapshot().get("project_id") or "condor-x")[:80]
+            if memoria.get_project(project_id) is None:
+                raise ValueError("projeto não encontrado")
+            buffer = memoria.code_buffer(project_id)
+            if not buffer or buffer.get("language") != "arduino":
+                raise ValueError("salve um código Arduino com setup() e loop() antes de executar")
+            target = await arduino_toolchain.automatic_target()
+            available_ports = device_bridge.available_ports()
+            released = await device_bridge.release_port(target["port"], project_id)
+            await event_bus.publish(
+                "ARDUINO_AUTO_RUN_STARTED",
+                {"target": target["name"], "revision": buffer.get("revision")},
+                source="programming_auto_router", project_id=project_id,
+            )
+            result = await arduino_toolchain.compile_and_upload(
+                content=str(buffer.get("content") or ""),
+                sketch_name=str(buffer.get("name") or "programa.ino"),
+                port=target["port"], fqbn=target["fqbn"], available_ports=available_ports,
+            )
+            await event_bus.publish(
+                "ARDUINO_AUTO_RUN_COMPLETED" if result["success"] else "ARDUINO_AUTO_RUN_FAILED",
+                {"target": target["name"], "revision": buffer.get("revision"), "success": result["success"]},
+                source="programming_auto_router", project_id=project_id,
+            )
+            return {**result, "target": target, "serial_released": released}
+        except (ValueError, RuntimeError, TypeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.get("/api/gestures/status")
+    async def api_gestures_status():
+        return gesture_engine.status()
+
+    @app.post("/api/gestures/authorize")
+    async def api_gestures_authorize():
+        if response := _memoria_pronta():
+            return response
+        if memoria.permission_available("gesture_camera"):
+            return {"allowed": True, **gesture_engine.status()}
+        request_item = memoria.request_permission(
+            "gesture_camera",
+            "Usar a câmera física somente enquanto o controle gestual estiver ligado; quadros não serão armazenados.",
+            "gesture_controller",
+        )
+        return JSONResponse(
+            {"erro": "permissão gestual necessária", "permission_request": request_item}, status_code=403,
+        )
+
+    @app.post("/api/gestures/session")
+    async def api_gestures_session(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        if not memoria.permission_allowed("gesture_camera"):
+            return JSONResponse({"erro": "permissão gestual necessária"}, status_code=403)
+        camera_label = str(payload.get("camera_label") or "")[:200]
+        if not face_guard.physical_camera_label(camera_label):
+            return JSONResponse({"erro": "use uma câmera física; câmera virtual bloqueada"}, status_code=400)
+        try:
+            session = gesture_engine.start()
+            await event_bus.publish(
+                "GESTURE_SESSION_STARTED", {"frame_storage": False}, source="gesture_controller"
+            )
+            return session
+        except RuntimeError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=503)
+
+    @app.post("/api/gestures/frame")
+    async def api_gestures_frame(payload: dict):
+        token = str(payload.get("token") or "")[:120]
+        image = str(payload.get("image") or "")
+        try:
+            return await asyncio.to_thread(gesture_engine.analyze, token, image)
+        except PermissionError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=403)
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/gestures/stop")
+    async def api_gestures_stop(payload: dict):
+        stopped = gesture_engine.stop(str(payload.get("token") or "")[:120])
+        if stopped:
+            await event_bus.publish("GESTURE_SESSION_STOPPED", {}, source="gesture_controller")
+        return {"ok": True, "stopped": stopped}
 
     @app.post("/api/programming/arduino/run")
     async def api_programming_arduino_run(payload: dict):
@@ -958,55 +1509,29 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     @app.get("/api/cameras")
     async def api_cameras():
-        if response := _memoria_pronta():
-            return response
-        state = camera_bridge.status()
-        state["vision_ready"] = await provider.visao_pronta()
-        return state
+        return {
+            "bridge": "disabled_by_owner",
+            "camera_policy": "biometric_authentication_only",
+            "sources": [],
+        }
 
     @app.post("/api/cameras")
     async def api_camera_create(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            source = await camera_bridge.add_source(
-                _texto(payload, "name", 120),
-                _texto(payload, "protocol", 20).lower(),
-                _texto(payload, "endpoint", 1200),
-                _texto(payload, "zone", 120, obrigatorio=False),
-            )
-            return {"camera": source}
-        except ValueError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
+        return JSONResponse(
+            {"erro": "cameras desativadas fora da biometria facial"}, status_code=403
+        )
 
     @app.post("/api/cameras/{camera_id}/events")
     async def api_camera_event(camera_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            confidence = payload.get("confidence")
-            if confidence is not None:
-                confidence = max(0.0, min(1.0, float(confidence)))
-            return await camera_bridge.record_event(
-                camera_id[:80], _texto(payload, "event_type", 40), confidence
-            )
-        except KeyError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=404)
-        except (TypeError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
+        return JSONResponse(
+            {"erro": "cameras desativadas fora da biometria facial"}, status_code=403
+        )
 
     @app.post("/api/cameras/{camera_id}/frame")
     async def api_camera_frame(camera_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            return await camera_bridge.analyze_frame(
-                camera_id[:80], _texto(payload, "image_b64", 8_000_000)
-            )
-        except KeyError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=404)
-        except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
+        return JSONResponse(
+            {"erro": "cameras desativadas fora da biometria facial"}, status_code=403
+        )
 
     @app.get("/api/alerts")
     async def api_alerts(limite: int = 50):
@@ -1018,7 +1543,42 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     async def api_permissions():
         if response := _memoria_pronta():
             return response
-        return {"permissions": memoria.permissions()}
+        return {
+            "permissions": memoria.permissions(),
+            "requests": memoria.pending_permission_requests(),
+        }
+
+    @app.post("/api/permissions/request")
+    async def api_permission_request(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        capability = _texto(payload, "capability", 80)
+        known = next(
+            (item for item in memoria.permissions() if item["capability"] == capability), None
+        )
+        if known is None:
+            return JSONResponse({"erro": "permissao desconhecida"}, status_code=404)
+        require_persistent = payload.get("require_persistent") is True
+        persistent = known.get("decision") == "always"
+        if memoria.permission_available(capability) and (persistent or not require_persistent):
+            return {
+                "ok": True, "allowed": True, "request": None,
+                "decision": known.get("decision") or "always",
+            }
+        request_item = memoria.request_permission(
+            capability,
+            _texto(payload, "reason", 500, obrigatorio=False)
+            or "O Condor precisa desta permissao para concluir a acao solicitada.",
+            _texto(payload, "source", 80, obrigatorio=False) or "chat",
+            force=require_persistent,
+        )
+        if request_item:
+            await event_bus.publish(
+                "PERMISSION_REQUESTED",
+                {"request": request_item},
+                source="security",
+            )
+        return {"ok": True, "allowed": False, "request": request_item, "decision": "ask"}
 
     @app.patch("/api/permissions/{capability}")
     async def api_permission_update(capability: str, payload: dict):
@@ -1026,14 +1586,251 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return response
         if response := _verify_owner("permission_change", payload):
             return response
-        if not isinstance(payload.get("allowed"), bool):
-            return JSONResponse({"erro": "allowed deve ser booleano"}, status_code=400)
-        updated = memoria.set_permission(capability[:80], payload["allowed"])
-        if not updated:
-            return JSONResponse({"erro": "permissão desconhecida"}, status_code=404)
-        event = "PERMISSION_GRANTED" if payload["allowed"] else "PERMISSION_REVOKED"
-        await event_bus.publish(event, {"capability": capability}, source="security")
-        return {"ok": True, "permissions": memoria.permissions()}
+        decision = payload.get("decision")
+        if decision is None and isinstance(payload.get("allowed"), bool):
+            decision = "allow_always" if payload["allowed"] else "block"
+        if decision not in {"allow_always", "allow_once", "block"}:
+            return JSONResponse(
+                {"erro": "decision deve ser allow_always, allow_once ou block"},
+                status_code=400,
+            )
+        request_id = str(payload.get("request_id") or "")[:100]
+        if request_id:
+            pending = next(
+                (
+                    item for item in memoria.pending_permission_requests()
+                    if item["id"] == request_id and item["capability"] == capability[:80]
+                ),
+                None,
+            )
+            if pending is None:
+                return JSONResponse({"erro": "solicitacao pendente nao encontrada"}, status_code=404)
+            resolved = memoria.resolve_permission_request(request_id, decision)
+            if not resolved:
+                return JSONResponse({"erro": "solicitacao pendente nao encontrada"}, status_code=404)
+        else:
+            updated = memoria.set_permission_decision(capability[:80], decision)
+            if not updated:
+                return JSONResponse({"erro": "permissão desconhecida"}, status_code=404)
+        allowed = decision != "block"
+        event = "PERMISSION_GRANTED" if allowed else "PERMISSION_REVOKED"
+        await event_bus.publish(
+            event, {"capability": capability, "decision": decision}, source="security"
+        )
+        return {
+            "ok": True,
+            "decision": decision,
+            "permissions": memoria.permissions(),
+            "requests": memoria.pending_permission_requests(),
+        }
+
+    @app.post("/api/vision/analyze")
+    async def api_vision_analyze(payload: dict):
+        return JSONResponse(
+            {
+                "erro": (
+                    "camera reservada exclusivamente ao cadastro e a autenticacao facial; "
+                    "analise comum de camera foi desativada pelo Owner"
+                ),
+                "camera_policy": "biometric_authentication_only",
+            },
+            status_code=403,
+        )
+
+    @app.post("/api/media/images/generate")
+    async def api_generate_image(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        if not memoria.permission_allowed("ai_media"):
+            request_item = memoria.request_permission(
+                "ai_media",
+                "Gerar esta imagem inteiramente neste PC e mostrar o resultado no chat.",
+                "chat_image_generation",
+            )
+            return JSONResponse(
+                {"erro": "permissao de geracao de imagem pendente", "permission_request": request_item},
+                status_code=403,
+            )
+        prompt = _texto(payload, "prompt", 32000)
+        try:
+            result = await cerebro.gerar_imagem(
+                prompt,
+                size=_texto(payload, "size", 20, obrigatorio=False) or "1024x1024",
+                quality=_texto(payload, "quality", 20, obrigatorio=False) or "medium",
+            )
+        except (ValueError, RuntimeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        except Exception as exc:
+            log.error("Geracao de imagem falhou: %s", exc)
+            return JSONResponse(
+                {"erro": "o gerador local de imagem falhou; confira a instalacao local"},
+                status_code=502,
+            )
+        await event_bus.publish(
+            "IMAGE_GENERATED",
+            {"model": result["model"], "prompt_chars": len(prompt)},
+            source="local_image",
+        )
+        await world_state.remember_episode({
+            "kind": "created_image",
+            "summary": (
+                sanitizar_para_memoria(prompt)[:4000] or "imagem gerada localmente"
+            ),
+            "source": "local_image",
+            "confidence": 1.0,
+            "metadata": {
+                "model": result["model"],
+                "width": result["width"],
+                "height": result["height"],
+                "stored_bitmap": False,
+            },
+        })
+        return {"ok": True, "prompt": prompt, **result}
+
+    @app.get("/api/media/images/status")
+    async def api_image_status():
+        return cerebro.image_generator_state
+
+    # ── Trava de presenca facial local ───────────────────────────────────
+
+    def _camera_fisica(payload: dict) -> JSONResponse | None:
+        label = str(payload.get("camera_label") or "")[:200]
+        if not face_guard.physical_camera_label(label):
+            return JSONResponse(
+                {"erro": "use a camera fisica deste PC; cameras virtuais sao bloqueadas"},
+                status_code=400,
+            )
+        if not memoria.unlocked or not memoria.permission_allowed("camera"):
+            request_item = (
+                memoria.request_permission(
+                    "camera", "Manter a trava local de presenca facial ativa.", "face_guard"
+                ) if memoria.unlocked else None
+            )
+            return JSONResponse(
+                {"erro": "permissao de camera necessaria", "permission_request": request_item},
+                status_code=403,
+            )
+        return None
+
+    @app.get("/api/biometria/status")
+    async def api_face_status():
+        return face_guard.status()
+
+    @app.post("/api/biometria/window-lock")
+    async def api_face_window_lock():
+        if not vault.unlocked:
+            return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
+        required = face_guard.require_owner_face("window_open")
+        if required:
+            await event_bus.publish("FACE_GUARD_WINDOW_LOCKED", {}, source="security")
+        return {"ok": True, "required": required, "status": face_guard.status()}
+
+    @app.post("/api/biometria/enroll")
+    async def api_face_enroll(payload: dict):
+        if not vault.unlocked or not guarda.owner_session_active:
+            return JSONResponse({"erro": "desbloqueie o Condor antes do cadastro"}, status_code=423)
+        if response := _verify_owner("face_enroll", payload):
+            return response
+        if response := _camera_fisica(payload):
+            return response
+        samples = payload.get("samples")
+        if not isinstance(samples, list):
+            return JSONResponse({"erro": "quadros de cadastro ausentes"}, status_code=400)
+        try:
+            result = await asyncio.to_thread(face_guard.enroll, samples)
+        except (ValueError, RuntimeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        await event_bus.publish(
+            "FACE_GUARD_ENROLLED", {"sample_count": result["sample_count"]}, source="security"
+        )
+        return {**result, "status": face_guard.status()}
+
+    @app.post("/api/biometria/enroll/check")
+    async def api_face_enroll_check(payload: dict):
+        if not vault.unlocked or not guarda.owner_session_active:
+            return JSONResponse({"erro": "desbloqueie o Condor antes do cadastro"}, status_code=423)
+        if response := _camera_fisica(payload):
+            return response
+        try:
+            return await asyncio.to_thread(
+                face_guard.check_enrollment_frame,
+                str(payload.get("image_b64") or ""),
+                str(payload.get("step") or ""),
+                int(payload.get("first_side") or 0),
+            )
+        except (TypeError, ValueError, RuntimeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/biometria/challenge")
+    async def api_face_challenge(payload: dict):
+        if not vault.unlocked:
+            return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
+        if response := _camera_fisica(payload):
+            return response
+        try:
+            return face_guard.begin_challenge()
+        except RuntimeError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=409)
+
+    @app.post("/api/biometria/challenge/frame")
+    async def api_face_challenge_frame(payload: dict):
+        if response := _camera_fisica(payload):
+            return response
+        try:
+            result = await asyncio.to_thread(
+                face_guard.challenge_frame,
+                str(payload.get("token") or ""),
+                str(payload.get("image_b64") or ""),
+            )
+        except PermissionError as exc:
+            return JSONResponse({"erro": str(exc), "locked": True}, status_code=403)
+        except (ValueError, RuntimeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        if result.get("verified"):
+            await conexoes.transmitir({
+                "tipo": "conversa.historico",
+                "mensagens": _historico_para_interface(memoria),
+            })
+            await _ensure_voice()
+            connector_task = asyncio.create_task(
+                cerebro.testar_conectores(), name="condor-testar-conectores-face"
+            )
+            _EM_VOO.add(connector_task)
+            connector_task.add_done_callback(_EM_VOO.discard)
+            if not guarda.stopped:
+                escuta.voltar_a_ouvir()
+            await event_bus.publish("FACE_GUARD_UNLOCKED", {}, source="security")
+        return result
+
+    @app.post("/api/biometria/presence")
+    async def api_face_presence(payload: dict):
+        return JSONResponse(
+            {
+                "erro": "monitoramento facial continuo desativado pelo Owner",
+                "camera_policy": "biometric_authentication_only",
+            },
+            status_code=410,
+        )
+
+    @app.post("/api/biometria/disable")
+    async def api_face_disable(payload: dict):
+        if not vault.unlocked:
+            return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
+        if response := _verify_owner("face_disable", payload):
+            return response
+        face_guard.disable_with_recovery()
+        await event_bus.publish("FACE_GUARD_DISABLED", {}, source="security")
+        return {"ok": True, "status": face_guard.status()}
+
+    @app.delete("/api/biometria/profile")
+    async def api_face_delete(payload: dict):
+        if not vault.unlocked:
+            return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
+        if response := _verify_owner("face_delete", payload):
+            return response
+        face_guard.remove_with_recovery()
+        await event_bus.publish("FACE_GUARD_PROFILE_REMOVED", {}, source="security")
+        return {"ok": True, "status": face_guard.status()}
 
     @app.get("/api/biometrics")
     async def api_biometrics():
@@ -1212,6 +2009,121 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return response
         return {"ok": memoria.condor_x_delete_region_item(item_id[:80])}
 
+    def _propulsion_layout_from(payload: dict) -> dict:
+        if isinstance(payload.get("layout"), dict):
+            return propulsion_lab.normalize(payload["layout"])
+        layout_id = str(payload.get("layoutId") or "")[:80]
+        layout = memoria.condor_x_propulsion_layout(layout_id)
+        if layout is None:
+            raise KeyError("layout não encontrado")
+        return propulsion_lab.normalize(layout)
+
+    @app.get("/api/condor-x/propulsion")
+    async def api_condor_x_propulsion():
+        if response := _memoria_pronta():
+            return response
+        return {
+            "layouts": memoria.condor_x_propulsion_layouts(),
+            "candidateZones": list(CANDIDATE_ZONES.values()),
+            "controlGroups": sorted(PROPULSION_GROUPS),
+            "modelLevel": MODEL_LEVEL,
+            "scope": "CONDOR_X_ABSTRACT_SIMULATION_ONLY",
+        }
+
+    @app.post("/api/condor-x/propulsion/layouts")
+    async def api_condor_x_propulsion_layout_create(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            layout = propulsion_lab.normalize(payload)
+            if memoria.condor_x_propulsion_layout(layout["id"]) is not None:
+                return JSONResponse({"erro": "id de layout já existe"}, status_code=409)
+            return {"layout": memoria.condor_x_save_propulsion_layout(layout)}
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.put("/api/condor-x/propulsion/layouts/{layout_id}")
+    async def api_condor_x_propulsion_layout_update(layout_id: str, payload: dict):
+        if response := _memoria_pronta():
+            return response
+        if memoria.condor_x_propulsion_layout(layout_id[:80]) is None:
+            return JSONResponse({"erro": "layout não encontrado"}, status_code=404)
+        try:
+            layout = propulsion_lab.normalize({**payload, "id": layout_id[:80]})
+            return {"layout": memoria.condor_x_save_propulsion_layout(layout)}
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.delete("/api/condor-x/propulsion/layouts/{layout_id}")
+    async def api_condor_x_propulsion_layout_delete(layout_id: str):
+        if response := _memoria_pronta():
+            return response
+        return {"ok": memoria.condor_x_delete_propulsion_layout(layout_id[:80])}
+
+    @app.post("/api/condor-x/propulsion/analyze")
+    async def api_condor_x_propulsion_analyze(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {"analysis": propulsion_lab.analyze(_propulsion_layout_from(payload))}
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/condor-x/propulsion/simulate")
+    async def api_condor_x_propulsion_simulate(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            layout = _propulsion_layout_from(payload)
+            layout = memoria.condor_x_save_propulsion_layout(layout)
+            analysis = propulsion_lab.analyze(layout)
+            run = memoria.condor_x_record_propulsion_run(layout, analysis)
+            await event_bus.publish(
+                "CONDOR_X_PROPULSION_SIMULATED",
+                {"run": run, "decision": analysis["decision"]},
+                source="propulsion_lab", project_id="condor-x",
+            )
+            return {"analysis": analysis, "run": run}
+        except KeyError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=404)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/condor-x/propulsion/compare")
+    async def api_condor_x_propulsion_compare(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            layouts = payload.get("layouts") if isinstance(payload.get("layouts"), list) else []
+            if not layouts and isinstance(payload.get("layoutIds"), list):
+                layouts = []
+                for layout_id in payload["layoutIds"][:8]:
+                    layout = memoria.condor_x_propulsion_layout(str(layout_id)[:80])
+                    if layout is not None:
+                        layouts.append(layout)
+            if len(layouts) < 2:
+                raise ValueError("selecione pelo menos dois layouts")
+            return {"comparison": propulsion_lab.compare(layouts)}
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/condor-x/propulsion/auto-layout")
+    async def api_condor_x_propulsion_auto_layout(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        try:
+            return {"result": propulsion_lab.auto_layout(payload)}
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.get("/api/condor-x/propulsion/runs")
+    async def api_condor_x_propulsion_runs(layout_id: str | None = None, limit: int = 25):
+        if response := _memoria_pronta():
+            return response
+        return {"runs": memoria.condor_x_propulsion_runs(layout_id[:80] if layout_id else None, limit)}
+
     @app.post("/api/hub/creator")
     async def api_hub_creator_create(payload: dict):
         if response := _memoria_pronta():
@@ -1264,6 +2176,16 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     @app.post("/api/voice/transcribe")
     async def api_voice_transcribe(request: Request):
         """Push-to-talk local; áudio bruto nunca sai do loopback deste PC."""
+        if not memoria.permission_allowed("microphone"):
+            request_item = memoria.request_permission(
+                "microphone",
+                "Ouvir somente enquanto o Owner estiver usando o chat por voz.",
+                "voice_chat",
+            )
+            return JSONResponse(
+                {"erro": "permissao de microfone pendente", "permission_request": request_item},
+                status_code=403,
+            )
         length = int(request.headers.get("content-length") or 0)
         if length > 20 * 1024 * 1024:
             return JSONResponse({"erro": "audio excede 20 MB"}, status_code=413)
@@ -1364,6 +2286,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 {"tipo": "memoria.stats", **memoria.estatisticas()}, ensure_ascii=False))
             await socket.send_text(json.dumps(
                 {"tipo": "custo", **memoria.custo_hoje()}, ensure_ascii=False))
+            await socket.send_text(json.dumps({
+                "tipo": "conversa.historico",
+                "mensagens": _historico_para_interface(memoria),
+            }, ensure_ascii=False))
 
             while True:
                 bruto = await socket.receive_text()
@@ -1398,6 +2324,13 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     # nunca mais dormiria sozinho.
     tarefas: set[asyncio.Task] = set()
 
+    async def _cloud_sync_loop() -> None:
+        """Heartbeat de saida; o PC nunca fica exposto a internet."""
+        while True:
+            await asyncio.sleep(config.cloud.intervalo_sync_segundos)
+            if cloud.configured and vault.unlocked and memoria.unlocked:
+                await asyncio.to_thread(cloud.safe_sync, memoria)
+
     @app.on_event("startup")
     async def _subir():
         sessao.guardar_loop(asyncio.get_running_loop())
@@ -1406,6 +2339,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         vigia = asyncio.create_task(sessao.vigia(), name="condor-vigia")
         tarefas.add(vigia)
         vigia.add_done_callback(tarefas.discard)
+
+        cloud_task = asyncio.create_task(_cloud_sync_loop(), name="condor-cloud-sync")
+        tarefas.add(cloud_task)
+        cloud_task.add_done_callback(tarefas.discard)
 
         await _ensure_voice()
         if not escuta.ativa and escuta.motivo_inativa:
@@ -1417,8 +2354,14 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     @app.on_event("shutdown")
     async def _descer():
+        for tarefa in tuple(tarefas):
+            tarefa.cancel()
+        if tarefas:
+            await asyncio.gather(*tuple(tarefas), return_exceptions=True)
         escuta.encerrar()
-        await sessao.dormir("servidor encerrando")
+        await sessao.preparar_bloqueio("servidor encerrando")
+        await extrator.encerrar()
+        face_guard.on_vault_lock()
         memoria.lock()
         vault.lock()
 

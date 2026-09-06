@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from condor.brain.identity import construir_identidade, detectar_modos
+
 DIAS = ("segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
         "sexta-feira", "sábado", "domingo")
 MESES = ("janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
@@ -85,8 +87,23 @@ def agora() -> str:
             f"{n.hour:02d}:{n.minute:02d}. Esta é a data e hora reais — nunca invente outra.")
 
 
-def montar_prompt(dono: str, memoria_relevante: str = "", modo_voz: bool = True) -> str:
-    partes = [PERSONA.format(dono=dono), "", agora()]
+def montar_prompt(
+    dono: str,
+    memoria_relevante: str = "",
+    modo_voz: bool = True,
+    mensagem_atual: str = "",
+    contexto_estruturado: str = "",
+    conhecimento_tecnico: str = "",
+) -> str:
+    modos = detectar_modos(mensagem_atual, contexto_estruturado)
+    partes = [
+        construir_identidade(dono, modos),
+        "",
+        "CAMADA DE CONVERSA E OPERACAO",
+        PERSONA.format(dono=dono),
+        "",
+        agora(),
+    ]
 
     if modo_voz:
         partes.append(
@@ -97,5 +114,11 @@ def montar_prompt(dono: str, memoria_relevante: str = "", modo_voz: bool = True)
 
     if memoria_relevante:
         partes.append("\nREFERÊNCIA — o que você já sabe sobre ele:\n" + memoria_relevante)
+
+    if conhecimento_tecnico:
+        partes.append(
+            "\nBASE TÉCNICA LOCAL RECUPERADA PARA ESTE PEDIDO — não trate como "
+            "memória do dono e não invente além dela:\n" + conhecimento_tecnico
+        )
 
     return "\n".join(partes)

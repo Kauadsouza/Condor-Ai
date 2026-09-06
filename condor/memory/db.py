@@ -20,16 +20,19 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sqlite3
 import struct
 import time
+import unicodedata
 import base64
 import os
 import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
@@ -37,8 +40,24 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 log = logging.getLogger("condor.memoria")
 
+
+def _iso_to_timestamp(value: object) -> float:
+    """Converte data ISO da nuvem sem deixar um relogio remoto quebrar o sync."""
+    if not value:
+        return time.time()
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return time.time()
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
+
+CREATE TABLE IF NOT EXISTS memory_meta (
+    chave TEXT PRIMARY KEY,
+    valor TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS fatos (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,6 +103,29 @@ CREATE TABLE IF NOT EXISTS conversas (
     ts       REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_conv_ts ON conversas(ts DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    cloud_id   TEXT UNIQUE,
+    titulo     TEXT NOT NULL,
+    conteudo   TEXT NOT NULL,
+    origem     TEXT NOT NULL DEFAULT 'local',
+    criado     REAL NOT NULL,
+    atualizado REAL NOT NULL,
+    arquivado  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_notes_updated
+ON cloud_notes(arquivado, atualizado DESC);
+
+CREATE TABLE IF NOT EXISTS cloud_sync_map (
+    cloud_id   TEXT PRIMARY KEY,
+    tipo       TEXT NOT NULL,
+    local_ref  TEXT NOT NULL DEFAULT '',
+    sequencia  INTEGER NOT NULL DEFAULT 0,
+    criado     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_sync_sequence
+ON cloud_sync_map(sequencia DESC);
 
 CREATE TABLE IF NOT EXISTS sessoes (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +211,26 @@ CREATE TABLE IF NOT EXISTS condor_x_region_items (
 );
 CREATE INDEX IF NOT EXISTS idx_condor_x_region_items
 ON condor_x_region_items(regiao, atualizado DESC);
+
+CREATE TABLE IF NOT EXISTS condor_x_propulsion_layouts (
+    id        TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    data_json TEXT NOT NULL,
+    criado    REAL NOT NULL,
+    atualizado REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_condor_x_propulsion_layouts_updated
+ON condor_x_propulsion_layouts(atualizado DESC);
+
+CREATE TABLE IF NOT EXISTS condor_x_propulsion_runs (
+    id          TEXT PRIMARY KEY,
+    layout_id   TEXT NOT NULL REFERENCES condor_x_propulsion_layouts(id) ON DELETE CASCADE,
+    input_json  TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    criado      REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_condor_x_propulsion_runs_layout
+ON condor_x_propulsion_runs(layout_id, criado DESC);
 
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
@@ -278,8 +340,22 @@ CREATE TABLE IF NOT EXISTS permissions (
     capability TEXT PRIMARY KEY,
     allowed INTEGER NOT NULL DEFAULT 0,
     scope TEXT NOT NULL DEFAULT 'local',
+    decision TEXT NOT NULL DEFAULT 'ask',
+    one_time_uses INTEGER NOT NULL DEFAULT 0,
     updated REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS permission_requests (
+    id TEXT PRIMARY KEY,
+    capability TEXT NOT NULL REFERENCES permissions(capability) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'condor',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created REAL NOT NULL,
+    resolved REAL
+);
+CREATE INDEX IF NOT EXISTS idx_permission_requests_pending
+ON permission_requests(status, created DESC);
 
 CREATE TABLE IF NOT EXISTS core_events (
     id TEXT PRIMARY KEY,
@@ -291,6 +367,83 @@ CREATE TABLE IF NOT EXISTS core_events (
     timestamp REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_core_events_time ON core_events(timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS memory_episodes (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    source TEXT NOT NULL,
+    project_id TEXT,
+    device_id TEXT,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    occurred_at REAL NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_episodes_time
+ON memory_episodes(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_episodes_project
+ON memory_episodes(project_id, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS world_beliefs (
+    id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    value TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'confirmed',
+    confidence REAL NOT NULL DEFAULT 1.0,
+    source TEXT NOT NULL,
+    valid_from REAL NOT NULL,
+    valid_until REAL,
+    supersedes_id TEXT REFERENCES world_beliefs(id) ON DELETE SET NULL,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    created REAL NOT NULL,
+    updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_world_beliefs_active
+ON world_beliefs(subject, predicate, status, updated DESC);
+
+CREATE TABLE IF NOT EXISTS durable_tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    priority INTEGER NOT NULL DEFAULT 50,
+    source TEXT NOT NULL DEFAULT 'owner',
+    due_at REAL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created REAL NOT NULL,
+    updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_durable_tasks_status
+ON durable_tasks(status, priority DESC, updated DESC);
+
+CREATE TABLE IF NOT EXISTS task_checkpoints (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES durable_tasks(id) ON DELETE CASCADE,
+    step TEXT NOT NULL,
+    status TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints_task
+ON task_checkpoints(task_id, created ASC);
+
+CREATE TABLE IF NOT EXISTS device_identities (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    public_key TEXT NOT NULL UNIQUE,
+    trust_state TEXT NOT NULL DEFAULT 'pending',
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    created REAL NOT NULL,
+    last_seen REAL,
+    updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_device_identities_trust
+ON device_identities(trust_state, updated DESC);
 
 CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
@@ -347,6 +500,17 @@ CREATE TABLE IF NOT EXISTS biometric_readings (
     unit TEXT NOT NULL,
     recorded REAL NOT NULL,
     consent_ref TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS face_identity_profile (
+    owner_id TEXT PRIMARY KEY CHECK(owner_id = 'owner'),
+    template_json TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    threshold REAL NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    model TEXT NOT NULL,
+    created REAL NOT NULL,
+    updated REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS camera_sources (
@@ -424,6 +588,7 @@ DEFAULT_CONDOR_X_PARTS = (
 DEFAULT_PERMISSIONS = (
     ("microphone", 0, "local"),
     ("camera", 0, "local"),
+    ("gesture_camera", 0, "local"),
     ("serial", 0, "device"),
     ("arduino_upload", 1, "physical"),
     ("bluetooth", 0, "device"),
@@ -434,6 +599,7 @@ DEFAULT_PERMISSIONS = (
     ("ai_laboratory", 1, "condor"),
     ("ai_memory", 1, "private"),
     ("ai_devices", 0, "device"),
+    ("ai_media", 0, "local"),
 )
 
 FTS = """
@@ -466,6 +632,24 @@ def _similaridade(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
     return sum(x * y for x, y in zip(a, b))
+
+
+_MEMORY_STOPWORDS = {
+    "a", "ao", "aos", "as", "com", "como", "da", "das", "de", "do", "dos",
+    "e", "em", "ele", "ela", "eu", "me", "meu", "meus", "minha", "minhas",
+    "na", "nas", "no", "nos", "o", "os", "ou", "para", "por", "que", "se",
+    "seu", "seus", "sua", "suas", "tem", "ter", "uma", "um", "voce", "condor",
+}
+
+
+def _termos_memoria(texto: str) -> set[str]:
+    """Termos estáveis para explicar associações, sem depender de um modelo."""
+    normalizado = unicodedata.normalize("NFKD", str(texto).casefold())
+    normalizado = "".join(c for c in normalizado if not unicodedata.combining(c))
+    return {
+        termo for termo in re.findall(r"[a-z0-9]{3,}", normalizado)
+        if termo not in _MEMORY_STOPWORDS and not termo.isdigit()
+    }
 
 
 class Memoria:
@@ -568,9 +752,43 @@ class Memoria:
     def inicializar(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            permission_columns = {
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(permissions)")
+            }
+            if "decision" not in permission_columns:
+                conn.execute(
+                    "ALTER TABLE permissions ADD COLUMN decision TEXT NOT NULL DEFAULT 'ask'"
+                )
+            if "one_time_uses" not in permission_columns:
+                conn.execute(
+                    "ALTER TABLE permissions ADD COLUMN one_time_uses INTEGER NOT NULL DEFAULT 0"
+                )
+            permission_migration = conn.execute(
+                "SELECT valor FROM memory_meta WHERE chave='permission_decisions_v1'"
+            ).fetchone()
+            if permission_migration is None:
+                conn.execute(
+                    """UPDATE permissions
+                       SET decision=CASE WHEN allowed=1 THEN 'always' ELSE 'ask' END,
+                           one_time_uses=0"""
+                )
+                conn.execute(
+                    "INSERT INTO memory_meta(chave,valor) VALUES('permission_decisions_v1','done')"
+                )
             try:
                 conn.executescript(FTS)
                 self._fts = True
+                migrado = conn.execute(
+                    "SELECT valor FROM memory_meta WHERE chave='fts_rebuild_v1'"
+                ).fetchone()
+                if migrado is None:
+                    # Snapshots criados antes do FTS já podem conter fatos. Os
+                    # gatilhos cuidam apenas das próximas escritas, então a
+                    # migração precisa indexar o conteúdo antigo uma vez.
+                    conn.execute("INSERT INTO fatos_fts(fatos_fts) VALUES('rebuild')")
+                    conn.execute(
+                        "INSERT INTO memory_meta(chave,valor) VALUES('fts_rebuild_v1','done')"
+                    )
             except sqlite3.OperationalError as exc:
                 # SQLite sem FTS5 compilado: busca cai pra LIKE, tudo segue.
                 log.warning("FTS5 indisponível (%s) — busca textual usará LIKE.", exc)
@@ -607,10 +825,29 @@ class Memoria:
                     """UPDATE projects SET active_version_id=COALESCE(active_version_id,
                        'project_version_condor_x_1') WHERE id='condor-x'"""
                 )
+                from condor.engine.contracts import blank_layout
+                for layout_id, name in (("layout-a", "LAYOUT A"), ("layout-b", "LAYOUT B")):
+                    layout = blank_layout(layout_id, name)
+                    conn.execute(
+                        """INSERT OR IGNORE INTO condor_x_propulsion_layouts
+                           (id,name,data_json,criado,atualizado) VALUES(?,?,?,?,?)""",
+                        (layout_id, name, json.dumps(layout, ensure_ascii=False, allow_nan=False), agora, agora),
+                    )
                 conn.executemany(
                     """INSERT OR IGNORE INTO permissions
-                       (capability,allowed,scope,updated) VALUES(?,?,?,?)""",
-                    [(*item, agora) for item in DEFAULT_PERMISSIONS],
+                       (capability,allowed,scope,decision,one_time_uses,updated)
+                       VALUES(?,?,?,?,?,?)""",
+                    [
+                        (capability, allowed, scope, "always" if allowed else "ask", 0, agora)
+                        for capability, allowed, scope in DEFAULT_PERMISSIONS
+                    ],
+                )
+                # A geração deixou de transmitir prompts para um conector.
+                # Conserva a decisão do dono, mas corrige o escopo legado.
+                conn.execute(
+                    "UPDATE permissions SET scope='local', updated=? "
+                    "WHERE capability='ai_media' AND scope!='local'",
+                    (agora,),
                 )
         log.info("Memória pronta em RAM; snapshot cifrado: %s", self._path)
 
@@ -657,10 +894,67 @@ class Memoria:
                                (categoria, chave)).fetchone()
             return row["id"] if row else 0
 
+    def salvar_fatos_lote(self, fatos: list[dict], origem: str = "conversa") -> list[dict]:
+        """Insere/atualiza muitos fatos com uma unica persistencia cifrada.
+
+        O snapshot inteiro da memoria e autenticado e recifrado a cada escrita.
+        Fazer um ``salvar_fato`` por item tornava perfis longos proporcionalmente
+        lentos. Este metodo preserva o mesmo upsert por ``(categoria, chave)``,
+        mas confirma todos os itens dentro de uma transacao so.
+        """
+        if not fatos:
+            return []
+        agora = time.time()
+        confirmados: list[dict] = []
+        with self._conn() as conn:
+            for fato in fatos[:100]:
+                categoria = str(fato.get("categoria") or "pessoal")[:40]
+                chave = str(fato.get("chave") or "")[:80]
+                valor = str(fato.get("valor") or "")[:2000]
+                if not chave or not valor:
+                    continue
+                try:
+                    confianca = max(0.0, min(1.0, float(fato.get("confianca", 0.8))))
+                except (TypeError, ValueError):
+                    confianca = 0.8
+                fato_origem = str(fato.get("origem") or origem)[:80]
+                embedding = fato.get("embedding")
+                blob = _empacotar(embedding) if isinstance(embedding, list) and embedding else None
+                conn.execute(
+                    """INSERT INTO fatos(categoria, chave, valor, confianca, origem,
+                                         embedding, criado, atualizado)
+                       VALUES(?,?,?,?,?,?,?,?)
+                       ON CONFLICT(categoria, chave) DO UPDATE SET
+                           valor=excluded.valor,
+                           confianca=excluded.confianca,
+                           origem=excluded.origem,
+                           embedding=COALESCE(excluded.embedding, fatos.embedding),
+                           atualizado=excluded.atualizado""",
+                    (categoria, chave, valor, confianca, fato_origem, blob, agora, agora),
+                )
+                row = conn.execute(
+                    "SELECT id,categoria,chave,valor,confianca,origem,atualizado "
+                    "FROM fatos WHERE categoria=? AND chave=?",
+                    (categoria, chave),
+                ).fetchone()
+                if row:
+                    confirmados.append(dict(row))
+        return confirmados
+
     def esquecer_fato(self, fato_id: int) -> bool:
         with self._conn() as conn:
             cur = conn.execute("DELETE FROM fatos WHERE id=?", (fato_id,))
             return cur.rowcount > 0
+
+    def fato_por_chave(self, categoria: str, chave: str) -> dict | None:
+        """Consulta direta para confirmação/deduplicação do aprendizado local."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id,categoria,chave,valor,confianca,origem,atualizado "
+                "FROM fatos WHERE categoria=? AND chave=?",
+                (categoria, chave),
+            ).fetchone()
+            return dict(row) if row else None
 
     def buscar_fatos(self, consulta: str, limite: int = 8,
                      embedding: list[float] | None = None) -> list[dict]:
@@ -671,8 +965,17 @@ class Memoria:
         with self._conn() as conn:
             # 1. Textual
             if self._fts and consulta.strip():
+                stop = {
+                    "qual", "quais", "quem", "onde", "como", "meu", "minha",
+                    "meus", "minhas", "sobre", "isso", "essa", "esse", "condor",
+                    "voce", "você", "lembra", "sabe", "fale", "diga",
+                }
+                palavras = []
+                for termo in re.findall(r"[\wÀ-ÿ]{3,}", consulta.casefold()):
+                    if termo not in stop and termo not in palavras:
+                        palavras.append(termo)
                 termos = " OR ".join(
-                    f'"{t}"' for t in consulta.split() if len(t) > 2
+                    f'"{termo}"' for termo in palavras[:10]
                 )
                 if termos:
                     try:
@@ -754,6 +1057,17 @@ class Memoria:
                         resumo: str = "") -> int:
         agora = time.time()
         with self._conn() as conn:
+            existente = conn.execute(
+                "SELECT id FROM entidades WHERE nome=? COLLATE NOCASE", (nome,)
+            ).fetchone()
+            if existente:
+                conn.execute(
+                    """UPDATE entidades SET tipo=?,cluster=?,
+                       resumo=CASE WHEN ? != '' THEN ? ELSE resumo END,
+                       mencoes=mencoes+1,atualizado=? WHERE id=?""",
+                    (tipo, cluster, resumo, resumo, agora, existente["id"]),
+                )
+                return existente["id"]
             cur = conn.execute(
                 """INSERT INTO entidades(nome, tipo, cluster, resumo, criado, atualizado)
                    VALUES(?,?,?,?,?,?)
@@ -795,6 +1109,199 @@ class Memoria:
             ]
         return {"nos": nos, "arestas": arestas}
 
+    def mapa_memoria(self) -> dict:
+        """Visão completa e explicável do que está no cofre.
+
+        Fatos e relações confirmadas vêm diretamente do banco. Associações entre
+        fatos são calculadas para a tela usando evidência textual, entidades já
+        conhecidas e embeddings que já existam; elas não alteram nem fundem o
+        conteúdo cifrado.
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id,categoria,chave,valor,confianca,origem,acessos,
+                          criado,atualizado,embedding
+                   FROM fatos ORDER BY atualizado DESC, id DESC"""
+            ).fetchall()
+            entidades = [dict(r) for r in conn.execute(
+                """SELECT id,nome,tipo,cluster,resumo,mencoes,atualizado
+                   FROM entidades ORDER BY mencoes DESC, atualizado DESC"""
+            )]
+            relacoes = [dict(r) for r in conn.execute(
+                """SELECT r.id,r.de_id de,r.para_id para,r.tipo,r.forca,
+                          origem.nome de_nome,destino.nome para_nome
+                   FROM relacoes r
+                   JOIN entidades origem ON origem.id=r.de_id
+                   JOIN entidades destino ON destino.id=r.para_id
+                   ORDER BY r.forca DESC,r.criado DESC"""
+            )]
+
+        fatos = []
+        vetores: dict[int, list[float]] = {}
+        termos: dict[int, set[str]] = {}
+        for row in rows:
+            item = dict(row)
+            blob = item.pop("embedding", None)
+            if blob:
+                try:
+                    vetores[item["id"]] = _desempacotar(blob)
+                except (struct.error, TypeError, ValueError):
+                    pass
+            termos[item["id"]] = _termos_memoria(f'{item["chave"]} {item["valor"]}')
+            fatos.append(item)
+
+        por_id = {fato["id"]: fato for fato in fatos}
+        associacoes: dict[tuple[int, int], dict] = {}
+
+        def registrar(a: int, b: int, tipo: str, pontuacao: float,
+                      evidencia: list[str], rotulo: str) -> None:
+            if a == b:
+                return
+            chave = tuple(sorted((a, b)))
+            atual = associacoes.get(chave)
+            proposta = {
+                "de": chave[0], "para": chave[1], "tipo": tipo,
+                "pontuacao": round(max(0.0, min(1.0, pontuacao)), 3),
+                "evidencia": evidencia[:5], "rotulo": rotulo,
+                "confirmada": False,
+            }
+            if atual is None or proposta["pontuacao"] > atual["pontuacao"]:
+                associacoes[chave] = proposta
+
+        # Termos raros compartilhados dão uma associação auditável. Termos que
+        # aparecem em muitos fatos são ignorados para não ligar tudo a tudo.
+        indice: dict[str, list[int]] = {}
+        for fato_id, itens in termos.items():
+            for termo in itens:
+                indice.setdefault(termo, []).append(fato_id)
+        pares_textuais: dict[tuple[int, int], set[str]] = {}
+        for termo, ids in indice.items():
+            if len(ids) < 2 or len(ids) > max(12, len(fatos) // 2):
+                continue
+            for pos, primeiro in enumerate(ids):
+                for segundo in ids[pos + 1:]:
+                    pares_textuais.setdefault(tuple(sorted((primeiro, segundo))), set()).add(termo)
+        for (a, b), compartilhados in pares_textuais.items():
+            evidencias = sorted(compartilhados, key=lambda t: (-len(t), t))[:5]
+            pontuacao = min(.88, .54 + .08 * (len(compartilhados) - 1))
+            registrar(a, b, "termos_compartilhados", pontuacao, evidencias,
+                      "termos em comum")
+
+        # Uma entidade conhecida mencionada em dois fatos é uma associação mais
+        # forte e continua totalmente explicável ao usuário.
+        for entidade in entidades:
+            nome = str(entidade.get("nome") or "").strip()
+            termos_nome = _termos_memoria(nome)
+            if not termos_nome:
+                continue
+            mencionados = [
+                fato["id"] for fato in fatos
+                if termos_nome.issubset(termos[fato["id"]])
+            ]
+            if len(mencionados) > max(8, len(fatos) // 3):
+                continue
+            for pos, primeiro in enumerate(mencionados[:40]):
+                for segundo in mencionados[pos + 1:40]:
+                    registrar(primeiro, segundo, "entidade_compartilhada", .94,
+                              [nome], "mesma entidade")
+
+        # Reaproveita embeddings já armazenados. Não chama IA nem cria fato novo.
+        cobertura_semantica = len(vetores)
+        ids_vetores = list(vetores)[:220]
+        for pos, a in enumerate(ids_vetores):
+            va = vetores[a]
+            norma_a = math.sqrt(sum(valor * valor for valor in va)) or 1.0
+            for b in ids_vetores[pos + 1:]:
+                vb = vetores[b]
+                if len(va) != len(vb):
+                    continue
+                norma_b = math.sqrt(sum(valor * valor for valor in vb)) or 1.0
+                similaridade = sum(x * y for x, y in zip(va, vb)) / (norma_a * norma_b)
+                if similaridade >= .78:
+                    registrar(a, b, "similaridade_semantica", similaridade,
+                              [], "significado semelhante")
+
+        candidatas = sorted(
+            associacoes.values(),
+            key=lambda item: (-item["pontuacao"], item["de"], item["para"]),
+        )
+        # A tela precisa ser legível: somente evidência forte e no máximo quatro
+        # associações por fato. O restante continua preservado nos fatos, apenas
+        # não vira uma ligação visual fraca.
+        graus = {fato["id"]: 0 for fato in fatos}
+        ligacoes = []
+        for ligacao in candidatas:
+            a, b = ligacao["de"], ligacao["para"]
+            if ligacao["pontuacao"] < .62 or graus[a] >= 4 or graus[b] >= 4:
+                continue
+            ligacoes.append(ligacao)
+            graus[a] += 1
+            graus[b] += 1
+
+        # Componentes conectados viram cadeias. Fatos isolados continuam
+        # presentes, individualmente, para a tela realmente mostrar tudo.
+        pai = {fato["id"]: fato["id"] for fato in fatos}
+        tamanho = {fato["id"]: 1 for fato in fatos}
+
+        def raiz(item: int) -> int:
+            while pai[item] != item:
+                pai[item] = pai[pai[item]]
+                item = pai[item]
+            return item
+
+        def unir(a: int, b: int) -> None:
+            ra, rb = raiz(a), raiz(b)
+            if ra != rb and tamanho[ra] + tamanho[rb] <= 8:
+                pai[rb] = ra
+                tamanho[ra] += tamanho[rb]
+
+        for ligacao in ligacoes:
+            if ligacao["pontuacao"] >= .62:
+                unir(ligacao["de"], ligacao["para"])
+        componentes: dict[int, list[int]] = {}
+        for fato in fatos:
+            componentes.setdefault(raiz(fato["id"]), []).append(fato["id"])
+
+        cadeias = []
+        for indice_cadeia, ids in enumerate(sorted(
+            componentes.values(),
+            key=lambda grupo: (-len(grupo), -max(por_id[item]["atualizado"] for item in grupo)),
+        ), 1):
+            categorias: dict[str, int] = {}
+            for item in ids:
+                categoria = por_id[item]["categoria"]
+                categorias[categoria] = categorias.get(categoria, 0) + 1
+            principal = max(categorias, key=categorias.get) if categorias else "geral"
+            links = [l for l in ligacoes if l["de"] in ids and l["para"] in ids]
+            cadeias.append({
+                "id": f"cadeia-{indice_cadeia}",
+                "titulo": principal.replace("_", " ").upper(),
+                "fatos": ids,
+                "ligacoes": links,
+                "conectada": len(ids) > 1,
+            })
+
+        atualizado = max((fato["atualizado"] for fato in fatos), default=0.0)
+        return {
+            "fatos": fatos,
+            "entidades": entidades,
+            "relacoes_confirmadas": relacoes,
+            "associacoes_sugeridas": ligacoes,
+            "cadeias": cadeias,
+            "inteligencia": {
+                "fatos": len(fatos),
+                "entidades": len(entidades),
+                "relacoes_confirmadas": len(relacoes),
+                "associacoes_sugeridas": len(ligacoes),
+                "cadeias": sum(1 for cadeia in cadeias if cadeia["conectada"]),
+                "isoladas": sum(1 for cadeia in cadeias if not cadeia["conectada"]),
+                "categorias": len({fato["categoria"] for fato in fatos}),
+                "cobertura_semantica": cobertura_semantica,
+                "atualizado": atualizado,
+                "modo": "deterministico_e_semantico_local",
+            },
+        }
+
     # ── Conversas ──────────────────────────────────────────────────────────
 
     def salvar_turno(self, papel: str, conteudo: str) -> None:
@@ -809,6 +1316,177 @@ class Memoria:
                 "SELECT papel, conteudo FROM conversas ORDER BY ts DESC LIMIT ?",
                 (limite,)).fetchall()
             return [{"role": r["papel"], "content": r["conteudo"]} for r in reversed(rows)]
+
+    # ── Condor Cloud ──────────────────────────────────────────────────────
+
+    def cloud_snapshot(self, message_limit: int = 300) -> dict:
+        """Conteudo local duravel que pode ser replicado na mente privada online.
+
+        O chamador ainda precisa aplicar a politica de segredos antes de enviar.
+        A memoria continua cifrada em disco e este metodo nunca retorna acoes,
+        credenciais, arquivos ou dados biometricos.
+        """
+        if not self.unlocked:
+            raise RuntimeError("cofre bloqueado")
+        limit = max(1, min(int(message_limit), 1000))
+        with self._conn() as conn:
+            messages = [
+                dict(row) for row in conn.execute(
+                    """SELECT id,sessao,papel,conteudo,ts FROM conversas
+                       WHERE papel IN ('user','assistant')
+                         AND CAST(id AS TEXT) NOT IN (
+                           SELECT local_ref FROM cloud_sync_map WHERE tipo='message'
+                         )
+                       ORDER BY id DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+            ]
+            facts = [
+                dict(row) for row in conn.execute(
+                    """SELECT id,categoria,chave,valor,confianca,atualizado
+                       FROM fatos WHERE origem!='condor-cloud'
+                       ORDER BY atualizado DESC LIMIT 500"""
+                ).fetchall()
+            ]
+            notes = [
+                dict(row) for row in conn.execute(
+                    """SELECT id,cloud_id,titulo,conteudo,origem,criado,atualizado
+                       FROM cloud_notes WHERE arquivado=0 AND origem!='condor-cloud'
+                       ORDER BY atualizado DESC LIMIT 500"""
+                ).fetchall()
+            ]
+        messages.reverse()
+        return {"messages": messages, "facts": facts, "notes": notes}
+
+    def cloud_cursor(self) -> int:
+        if not self.unlocked:
+            return 0
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT valor FROM memory_meta WHERE chave='condor_cloud_cursor_v1'"
+            ).fetchone()
+        try:
+            return max(0, int(row["valor"])) if row else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def set_cloud_cursor(self, cursor: int) -> None:
+        if not self.unlocked:
+            raise RuntimeError("cofre bloqueado")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO memory_meta(chave,valor)
+                   VALUES('condor_cloud_cursor_v1',?)
+                   ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor""",
+                (str(max(0, int(cursor))),),
+            )
+
+    def cloud_notes(self, limit: int = 100) -> list[dict]:
+        if not self.unlocked:
+            return []
+        with self._conn() as conn:
+            return [
+                dict(row) for row in conn.execute(
+                    """SELECT id,cloud_id,titulo,conteudo,origem,criado,atualizado
+                       FROM cloud_notes WHERE arquivado=0
+                       ORDER BY atualizado DESC LIMIT ?""",
+                    (max(1, min(int(limit), 500)),),
+                ).fetchall()
+            ]
+
+    def criar_cloud_note(self, titulo: str, conteudo: str, origem: str = "local") -> dict:
+        title = str(titulo or "").strip()[:160]
+        body = str(conteudo or "").strip()[:16000]
+        if not title or not body:
+            raise ValueError("titulo e conteudo da nota sao obrigatorios")
+        agora = time.time()
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """INSERT INTO cloud_notes(titulo,conteudo,origem,criado,atualizado)
+                   VALUES(?,?,?,?,?)""",
+                (title, body, origem[:80] or "local", agora, agora),
+            )
+            note_id = int(cursor.lastrowid or 0)
+            row = conn.execute(
+                "SELECT * FROM cloud_notes WHERE id=?", (note_id,)
+            ).fetchone()
+        return dict(row)
+
+    def importar_cloud_event(self, event: dict) -> bool:
+        """Aplica evento remoto uma unica vez e devolve se houve importacao."""
+        if not self.unlocked:
+            raise RuntimeError("cofre bloqueado")
+        sequence = max(0, int(event.get("sequence") or 0))
+        event_id = str(event.get("clientEventId") or "").strip()[:180]
+        kind = str(event.get("type") or "").strip().lower()
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if not event_id or kind not in {"message", "fact", "note"}:
+            return False
+        with self._conn() as conn:
+            if conn.execute(
+                "SELECT 1 FROM cloud_sync_map WHERE cloud_id=?", (event_id,)
+            ).fetchone():
+                return False
+
+            local_ref = ""
+            if kind == "message":
+                role = str(payload.get("role") or "")
+                content = str(payload.get("content") or "").strip()[:8000]
+                if role not in {"user", "assistant"} or not content:
+                    return False
+                created = _iso_to_timestamp(payload.get("createdAt"))
+                cursor = conn.execute(
+                    "INSERT INTO conversas(sessao,papel,conteudo,ts) VALUES(0,?,?,?)",
+                    (role, content, created),
+                )
+                local_ref = str(cursor.lastrowid or "")
+            elif kind == "fact":
+                category = str(payload.get("category") or "pessoal")[:40]
+                key = str(payload.get("key") or "").strip()[:80]
+                value = str(payload.get("value") or "").strip()[:2000]
+                if not key or not value:
+                    return False
+                confidence = min(1.0, max(0.0, float(payload.get("confidence") or 0.8)))
+                agora = _iso_to_timestamp(payload.get("updatedAt"))
+                cursor = conn.execute(
+                    """INSERT INTO fatos(categoria,chave,valor,confianca,origem,criado,atualizado)
+                       VALUES(?,?,?,?,?,?,?)
+                       ON CONFLICT(categoria,chave) DO UPDATE SET
+                         valor=excluded.valor, confianca=excluded.confianca,
+                         origem=excluded.origem, atualizado=excluded.atualizado""",
+                    (category, key, value, confidence, "condor-cloud", agora, agora),
+                )
+                local_ref = str(cursor.lastrowid or f"{category}:{key}")
+            else:
+                title = str(payload.get("title") or "").strip()[:160]
+                body = str(payload.get("body") or "").strip()[:16000]
+                cloud_id = str(payload.get("id") or payload.get("originId") or event_id)[:180]
+                if not title or not body:
+                    return False
+                agora = _iso_to_timestamp(payload.get("updatedAt") or payload.get("createdAt"))
+                conn.execute(
+                    """INSERT INTO cloud_notes(cloud_id,titulo,conteudo,origem,criado,atualizado)
+                       VALUES(?,?,?,?,?,?)
+                       ON CONFLICT(cloud_id) DO UPDATE SET
+                         titulo=excluded.titulo, conteudo=excluded.conteudo,
+                         atualizado=excluded.atualizado, arquivado=0""",
+                    (cloud_id, title, body, "condor-cloud", agora, agora),
+                )
+                local_ref = cloud_id
+
+            conn.execute(
+                """INSERT INTO cloud_sync_map(cloud_id,tipo,local_ref,sequencia,criado)
+                   VALUES(?,?,?,?,?)""",
+                (event_id, kind, local_ref, sequence, time.time()),
+            )
+        return True
+
+    def limpar_conversas(self) -> int:
+        """Apaga somente mensagens; fatos, projetos e demais memórias ficam intactos."""
+        with self._conn() as conn:
+            removidas = int(conn.execute("SELECT COUNT(*) FROM conversas").fetchone()[0])
+            conn.execute("DELETE FROM conversas")
+        return removidas
 
     def buscar_conversas(self, consulta: str, limite: int = 5) -> list[dict]:
         stop = {
@@ -902,6 +1580,243 @@ class Memoria:
                 "SELECT nome, resumo, cluster FROM entidades WHERE tipo='projeto' "
                 "ORDER BY mencoes DESC, atualizado DESC LIMIT ?", (limite,)).fetchall()
             return [dict(r) for r in rows]
+
+    # ── Cérebro temporal e operacional ───────────────────────────────────
+
+    @staticmethod
+    def _json_field(row: sqlite3.Row | dict, field: str, fallback):
+        item = dict(row)
+        try:
+            item[field.removesuffix("_json")] = json.loads(item.pop(field))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            item[field.removesuffix("_json")] = fallback
+        return item
+
+    def record_episode(
+        self, kind: str, summary: str, source: str, *,
+        project_id: str | None = None, device_id: str | None = None,
+        confidence: float = 1.0, occurred_at: float | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        now = time.time()
+        item_id = self._id("episode")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO memory_episodes
+                   (id,kind,summary,source,project_id,device_id,confidence,
+                    occurred_at,metadata_json,created)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (item_id, kind, summary, source, project_id, device_id,
+                 confidence, occurred_at or now,
+                 json.dumps(metadata or {}, ensure_ascii=False), now),
+            )
+            row = conn.execute(
+                "SELECT * FROM memory_episodes WHERE id=?", (item_id,)
+            ).fetchone()
+        return self._json_field(row, "metadata_json", {})
+
+    def list_episodes(
+        self, limit: int = 50, *, project_id: str | None = None,
+        kind: str | None = None,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list = []
+        if project_id:
+            clauses.append("project_id=?")
+            params.append(project_id)
+        if kind:
+            clauses.append("kind=?")
+            params.append(kind)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(int(limit), 250)))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM memory_episodes{where} "
+                "ORDER BY occurred_at DESC LIMIT ?", tuple(params)
+            ).fetchall()
+        return [self._json_field(row, "metadata_json", {}) for row in rows]
+
+    def save_belief(
+        self, subject: str, predicate: str, value: str, *, source: str,
+        status: str = "confirmed", confidence: float = 1.0,
+        evidence: list | None = None, valid_from: float | None = None,
+        valid_until: float | None = None,
+    ) -> dict:
+        """Registra uma versão; uma mudança nunca apaga a crença anterior."""
+        now = time.time()
+        evidence_json = json.dumps(evidence or [], ensure_ascii=False)
+        with self._conn() as conn:
+            previous = conn.execute(
+                """SELECT * FROM world_beliefs
+                   WHERE subject=? AND predicate=?
+                     AND status IN ('confirmed','inferred','conflicted')
+                   ORDER BY updated DESC LIMIT 1""",
+                (subject, predicate),
+            ).fetchone()
+            if previous is not None and previous["value"] == value:
+                conn.execute(
+                    """UPDATE world_beliefs SET status=?, confidence=?, source=?,
+                       valid_until=?, evidence_json=?, updated=? WHERE id=?""",
+                    (status, confidence, source, valid_until, evidence_json,
+                     now, previous["id"]),
+                )
+                item_id = previous["id"]
+            else:
+                previous_id = previous["id"] if previous is not None else None
+                if previous is not None:
+                    conn.execute(
+                        """UPDATE world_beliefs SET status='outdated',
+                           valid_until=COALESCE(valid_until,?), updated=? WHERE id=?""",
+                        (now, now, previous_id),
+                    )
+                item_id = self._id("belief")
+                conn.execute(
+                    """INSERT INTO world_beliefs
+                       (id,subject,predicate,value,status,confidence,source,
+                        valid_from,valid_until,supersedes_id,evidence_json,created,updated)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (item_id, subject, predicate, value, status, confidence,
+                     source, valid_from or now, valid_until, previous_id,
+                     evidence_json, now, now),
+                )
+            row = conn.execute(
+                "SELECT * FROM world_beliefs WHERE id=?", (item_id,)
+            ).fetchone()
+        return self._json_field(row, "evidence_json", [])
+
+    def list_beliefs(
+        self, limit: int = 100, *, subject: str | None = None,
+        include_outdated: bool = False,
+    ) -> list[dict]:
+        clauses = [] if include_outdated else ["status != 'outdated'"]
+        params: list = []
+        if subject:
+            clauses.append("subject=?")
+            params.append(subject)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(int(limit), 500)))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM world_beliefs{where} ORDER BY updated DESC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+        return [self._json_field(row, "evidence_json", []) for row in rows]
+
+    def create_durable_task(
+        self, title: str, objective: str, *, project_id: str | None = None,
+        priority: int = 50, source: str = "owner", due_at: float | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        now = time.time()
+        item_id = self._id("work")
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO durable_tasks
+                   (id,project_id,title,objective,status,priority,source,due_at,
+                    metadata_json,created,updated)
+                   VALUES(?,?,?,?,'pending',?,?,?,?,?,?)""",
+                (item_id, project_id, title, objective, priority, source,
+                 due_at, json.dumps(metadata or {}, ensure_ascii=False), now, now),
+            )
+            row = conn.execute("SELECT * FROM durable_tasks WHERE id=?", (item_id,)).fetchone()
+        return self._json_field(row, "metadata_json", {})
+
+    def update_durable_task(self, task_id: str, status: str) -> dict | None:
+        with self._conn() as conn:
+            changed = conn.execute(
+                "UPDATE durable_tasks SET status=?, updated=? WHERE id=?",
+                (status, time.time(), task_id),
+            )
+            if not changed.rowcount:
+                return None
+            row = conn.execute("SELECT * FROM durable_tasks WHERE id=?", (task_id,)).fetchone()
+        return self._json_field(row, "metadata_json", {})
+
+    def add_task_checkpoint(
+        self, task_id: str, step: str, status: str, summary: str = "",
+        evidence: list | None = None,
+    ) -> dict:
+        now = time.time()
+        item_id = self._id("checkpoint")
+        with self._conn() as conn:
+            if conn.execute("SELECT 1 FROM durable_tasks WHERE id=?", (task_id,)).fetchone() is None:
+                raise KeyError("tarefa não encontrada")
+            conn.execute(
+                """INSERT INTO task_checkpoints
+                   (id,task_id,step,status,summary,evidence_json,created)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (item_id, task_id, step, status, summary,
+                 json.dumps(evidence or [], ensure_ascii=False), now),
+            )
+            conn.execute("UPDATE durable_tasks SET updated=? WHERE id=?", (now, task_id))
+            row = conn.execute("SELECT * FROM task_checkpoints WHERE id=?", (item_id,)).fetchone()
+        return self._json_field(row, "evidence_json", [])
+
+    def list_durable_tasks(self, limit: int = 100, status: str | None = None) -> list[dict]:
+        params: list = []
+        where = ""
+        if status:
+            where = " WHERE status=?"
+            params.append(status)
+        params.append(max(1, min(int(limit), 500)))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM durable_tasks{where} "
+                "ORDER BY priority DESC, updated DESC LIMIT ?", tuple(params)
+            ).fetchall()
+        return [self._json_field(row, "metadata_json", {}) for row in rows]
+
+    def durable_task(self, task_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM durable_tasks WHERE id=?", (task_id,)).fetchone()
+            if row is None:
+                return None
+            checkpoints = conn.execute(
+                "SELECT * FROM task_checkpoints WHERE task_id=? ORDER BY created ASC", (task_id,)
+            ).fetchall()
+        item = self._json_field(row, "metadata_json", {})
+        item["checkpoints"] = [self._json_field(cp, "evidence_json", []) for cp in checkpoints]
+        return item
+
+    def register_device_identity(
+        self, name: str, kind: str, public_key: str, capabilities: list[str]
+    ) -> dict:
+        now = time.time()
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT id FROM device_identities WHERE public_key=?", (public_key,)
+            ).fetchone()
+            item_id = existing["id"] if existing else self._id("peer")
+            conn.execute(
+                """INSERT INTO device_identities
+                   (id,name,kind,public_key,trust_state,capabilities_json,created,last_seen,updated)
+                   VALUES(?,?,?,?,'pending',?,?,?,?)
+                   ON CONFLICT(public_key) DO UPDATE SET name=excluded.name,
+                     kind=excluded.kind, capabilities_json=excluded.capabilities_json,
+                     last_seen=excluded.last_seen, updated=excluded.updated""",
+                (item_id, name, kind, public_key,
+                 json.dumps(capabilities, ensure_ascii=False), now, now, now),
+            )
+            row = conn.execute("SELECT * FROM device_identities WHERE public_key=?", (public_key,)).fetchone()
+        return self._json_field(row, "capabilities_json", [])
+
+    def set_device_trust(self, device_id: str, trust_state: str) -> dict | None:
+        with self._conn() as conn:
+            changed = conn.execute(
+                "UPDATE device_identities SET trust_state=?, updated=? WHERE id=?",
+                (trust_state, time.time(), device_id),
+            )
+            if not changed.rowcount:
+                return None
+            row = conn.execute("SELECT * FROM device_identities WHERE id=?", (device_id,)).fetchone()
+        return self._json_field(row, "capabilities_json", [])
+
+    def list_device_identities(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM device_identities ORDER BY updated DESC"
+            ).fetchall()
+        return [self._json_field(row, "capabilities_json", []) for row in rows]
 
     # ── ARTX Hub local ────────────────────────────────────────────────────
 
@@ -1039,6 +1954,112 @@ class Memoria:
             return conn.execute(
                 "DELETE FROM condor_x_region_items WHERE id=?", (item_id,)
             ).rowcount > 0
+
+    # ── Condor X: Propulsion Placement Lab ────────────────────────────
+
+    def condor_x_propulsion_layouts(self) -> list[dict]:
+        if not self.unlocked:
+            return []
+        with self._conn() as conn:
+            result = []
+            rows = conn.execute(
+                "SELECT id,name,data_json,criado,atualizado FROM condor_x_propulsion_layouts ORDER BY criado,id"
+            ).fetchall()
+            for row in rows:
+                item = dict(row)
+                data = self._decode_json(item.pop("data_json"), {})
+                data["id"] = item["id"]
+                data["name"] = item["name"]
+                data["createdAt"] = item["criado"]
+                data["updatedAt"] = item["atualizado"]
+                result.append(data)
+            return result
+
+    def condor_x_propulsion_layout(self, layout_id: str) -> dict | None:
+        if not self.unlocked:
+            return None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id,name,data_json,criado,atualizado FROM condor_x_propulsion_layouts WHERE id=?",
+                (layout_id,),
+            ).fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            data = self._decode_json(item.pop("data_json"), {})
+            data["id"] = item["id"]
+            data["name"] = item["name"]
+            data["createdAt"] = item["criado"]
+            data["updatedAt"] = item["atualizado"]
+            return data
+
+    def condor_x_save_propulsion_layout(self, layout: dict) -> dict:
+        normalized = self._safe_json_dict(layout, "propulsion layout", 500_000)
+        layout_id = str(normalized.get("id") or "")[:80]
+        name = str(normalized.get("name") or layout_id).strip()[:120]
+        if not layout_id or not name:
+            raise ValueError("id e name do layout são obrigatórios")
+        encoded = json.dumps(normalized, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        agora = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO condor_x_propulsion_layouts(id,name,data_json,criado,atualizado)
+                   VALUES(?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET name=excluded.name,data_json=excluded.data_json,
+                   atualizado=excluded.atualizado""",
+                (layout_id, name, encoded, agora, agora),
+            )
+        return self.condor_x_propulsion_layout(layout_id) or normalized
+
+    def condor_x_delete_propulsion_layout(self, layout_id: str) -> bool:
+        with self._conn() as conn:
+            return conn.execute(
+                "DELETE FROM condor_x_propulsion_layouts WHERE id=?", (layout_id,)
+            ).rowcount > 0
+
+    def condor_x_record_propulsion_run(self, layout: dict, result: dict) -> dict:
+        safe_layout = self._safe_json_dict(layout, "propulsion run input", 500_000)
+        safe_result = self._safe_json_dict(result, "propulsion run result", 2_000_000)
+        layout_id = str(safe_layout.get("id") or "")[:80]
+        if self.condor_x_propulsion_layout(layout_id) is None:
+            raise KeyError("layout não encontrado")
+        run_id = self._id("cxprun")
+        agora = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO condor_x_propulsion_runs
+                   (id,layout_id,input_json,result_json,criado) VALUES(?,?,?,?,?)""",
+                (run_id, layout_id,
+                 json.dumps(safe_layout, ensure_ascii=False, allow_nan=False),
+                 json.dumps(safe_result, ensure_ascii=False, allow_nan=False), agora),
+            )
+        return {"id": run_id, "layoutId": layout_id, "createdAt": agora}
+
+    def condor_x_propulsion_runs(self, layout_id: str | None = None, limit: int = 25) -> list[dict]:
+        if not self.unlocked:
+            return []
+        limit = max(1, min(100, int(limit)))
+        with self._conn() as conn:
+            if layout_id:
+                rows = conn.execute(
+                    """SELECT id,layout_id,result_json,criado FROM condor_x_propulsion_runs
+                       WHERE layout_id=? ORDER BY criado DESC LIMIT ?""", (layout_id, limit)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT id,layout_id,result_json,criado FROM condor_x_propulsion_runs
+                       ORDER BY criado DESC LIMIT ?""", (limit,)
+                ).fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                analysis = self._decode_json(item.pop("result_json"), {})
+                result.append({
+                    "id": item["id"], "layoutId": item["layout_id"], "createdAt": item["criado"],
+                    "decision": analysis.get("decision"), "dashboard": analysis.get("dashboard", {}),
+                    "evidenceChain": analysis.get("evidenceChain", {}),
+                })
+            return result
 
     # ── Condor Core: projetos, peças, versões e eventos ──────────────────
 
@@ -1412,19 +2433,201 @@ class Memoria:
             ]
 
     def set_permission(self, capability: str, allowed: bool) -> bool:
+        return self.set_permission_decision(capability, "always" if allowed else "block")
+
+    def set_permission_decision(self, capability: str, decision: str) -> bool:
+        normalized = str(decision or "").strip().lower()
+        aliases = {
+            "allow_always": "always", "always": "always",
+            "allow_once": "once", "once": "once",
+            "block": "block", "deny": "block",
+        }
+        normalized = aliases.get(normalized, normalized)
+        if normalized not in {"always", "once", "block"}:
+            raise ValueError("decisao de permissao invalida")
+        allowed = normalized != "block"
+        stored_decision = normalized if allowed else "ask"
+        uses = 1 if normalized == "once" else 0
         with self._conn() as conn:
             result = conn.execute(
-                "UPDATE permissions SET allowed=?, updated=? WHERE capability=?",
-                (int(allowed), time.time(), capability),
+                """UPDATE permissions
+                   SET allowed=?,decision=?,one_time_uses=?,updated=?
+                   WHERE capability=?""",
+                (int(allowed), stored_decision, uses, time.time(), capability),
             )
             return result.rowcount > 0
 
-    def permission_allowed(self, capability: str) -> bool:
+    def permission_allowed(self, capability: str, consume_once: bool = True) -> bool:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT allowed FROM permissions WHERE capability=?", (capability,)
+                """SELECT allowed,decision,one_time_uses FROM permissions
+                   WHERE capability=?""", (capability,)
             ).fetchone()
-            return bool(row and row["allowed"])
+            if row is None or not bool(row["allowed"]):
+                return False
+            if row["decision"] != "once":
+                return True
+            remaining = int(row["one_time_uses"] or 0)
+            if remaining <= 0:
+                return False
+            if consume_once:
+                conn.execute(
+                    """UPDATE permissions
+                       SET allowed=0,decision='ask',one_time_uses=0,updated=?
+                       WHERE capability=?""",
+                    (time.time(), capability),
+                )
+            return True
+
+    def permission_available(self, capability: str) -> bool:
+        """Consulta a autoridade sem consumir uma concessao de uso unico."""
+        return self.permission_allowed(capability, consume_once=False)
+
+    def request_permission(
+        self, capability: str, reason: str, source: str = "condor", force: bool = False
+    ) -> dict | None:
+        """Cria uma solicitacao visivel sem conceder autoridade por conta propria."""
+        agora = time.time()
+        with self._conn() as conn:
+            permission = conn.execute(
+                "SELECT capability,allowed,scope FROM permissions WHERE capability=?",
+                (capability,),
+            ).fetchone()
+            if permission is None or (self.permission_available(capability) and not force):
+                return None
+            existing = conn.execute(
+                """SELECT * FROM permission_requests
+                   WHERE capability=? AND status='pending'
+                   ORDER BY created DESC LIMIT 1""",
+                (capability,),
+            ).fetchone()
+            if existing:
+                return dict(existing)
+            request_id = self._id("permission")
+            conn.execute(
+                """INSERT INTO permission_requests
+                   (id,capability,reason,source,status,created)
+                   VALUES(?,?,?,?, 'pending', ?)""",
+                (request_id, capability, reason.strip()[:500], source.strip()[:80], agora),
+            )
+            row = conn.execute(
+                "SELECT * FROM permission_requests WHERE id=?", (request_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def pending_permission_requests(self) -> list[dict]:
+        with self._conn() as conn:
+            return [
+                dict(row) for row in conn.execute(
+                    """SELECT r.id,r.capability,r.reason,r.source,r.status,r.created,p.scope
+                       FROM permission_requests r
+                       JOIN permissions p ON p.capability=r.capability
+                       WHERE r.status='pending' ORDER BY r.created DESC"""
+                ).fetchall()
+            ]
+
+    def resolve_permission_request(self, request_id: str, decision: str | bool) -> dict | None:
+        """Resolve o pedido e atualiza a permissao na mesma persistencia cifrada."""
+        normalized = ("always" if decision else "block") if isinstance(decision, bool) else str(decision)
+        aliases = {"allow_always": "always", "allow_once": "once"}
+        normalized = aliases.get(normalized, normalized)
+        if normalized not in {"always", "once", "block"}:
+            raise ValueError("decisao de permissao invalida")
+        allowed = normalized != "block"
+        stored_decision = normalized if allowed else "ask"
+        uses = 1 if normalized == "once" else 0
+        agora = time.time()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM permission_requests WHERE id=? AND status='pending'",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                """UPDATE permissions
+                   SET allowed=?,decision=?,one_time_uses=?,updated=?
+                   WHERE capability=?""",
+                (int(allowed), stored_decision, uses, agora, row["capability"]),
+            )
+            status = f"granted_{normalized}" if allowed else "blocked"
+            conn.execute(
+                "UPDATE permission_requests SET status=?,resolved=? WHERE id=?",
+                (status, agora, request_id),
+            )
+            return {
+                "id": request_id,
+                "capability": row["capability"],
+                "allowed": bool(allowed),
+                "decision": normalized,
+                "status": status,
+            }
+
+    # ── Identidade facial local ──────────────────────────────────────────
+
+    def face_identity_profile(self) -> dict | None:
+        """Retorna somente o vetor facial guardado no snapshot cifrado."""
+        if not self.unlocked:
+            return None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM face_identity_profile WHERE owner_id='owner'"
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            item["template"] = json.loads(item.pop("template_json"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        item["enabled"] = bool(item["enabled"])
+        return item
+
+    def save_face_identity_profile(
+        self, template: list[float], sample_count: int, threshold: float, model: str
+    ) -> dict:
+        if not self.unlocked:
+            raise RuntimeError("cofre bloqueado")
+        if len(template) < 64 or len(template) > 4096:
+            raise ValueError("vetor facial fora do formato esperado")
+        if not all(isinstance(value, (int, float)) for value in template):
+            raise ValueError("vetor facial invalido")
+        agora = time.time()
+        encoded = json.dumps(
+            [round(float(value), 8) for value in template], separators=(",", ":")
+        )
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO face_identity_profile
+                   (owner_id,template_json,sample_count,threshold,enabled,model,created,updated)
+                   VALUES ('owner',?,?,?,?,?,?,?)
+                   ON CONFLICT(owner_id) DO UPDATE SET
+                     template_json=excluded.template_json,
+                     sample_count=excluded.sample_count,
+                     threshold=excluded.threshold,
+                     enabled=1,
+                     model=excluded.model,
+                     updated=excluded.updated""",
+                (encoded, int(sample_count), float(threshold), 1, model[:120], agora, agora),
+            )
+        return self.face_identity_profile() or {}
+
+    def set_face_identity_enabled(self, enabled: bool) -> bool:
+        if not self.unlocked:
+            raise RuntimeError("cofre bloqueado")
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE face_identity_profile SET enabled=?, updated=? WHERE owner_id='owner'",
+                (int(bool(enabled)), time.time()),
+            )
+        return cursor.rowcount == 1
+
+    def delete_face_identity_profile(self) -> bool:
+        if not self.unlocked:
+            raise RuntimeError("cofre bloqueado")
+        with self._conn() as conn:
+            cursor = conn.execute("DELETE FROM face_identity_profile WHERE owner_id='owner'")
+        return cursor.rowcount == 1
 
     # ── Camera Bridge e alertas locais ───────────────────────────────────
 

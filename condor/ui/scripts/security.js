@@ -243,6 +243,7 @@ const CondorSeguranca = (() => {
     }
     document.documentElement.classList.remove('condor-locked');
     box.remove();
+    window.dispatchEvent(new Event('condor-security-ready'));
   }
 
   function overlay(html, extraClass = '') {
@@ -351,7 +352,7 @@ const CondorSeguranca = (() => {
         <form id="unlockForm" class="cyber-form">
           <label for="ownerPassphrase" class="cyber-label">PALAVRA DE ACESSO</label>
           <div class="cyber-input-shell">
-            <input id="ownerPassphrase" class="cyber-input" name="passphrase" type="password" minlength="12" autocomplete="current-password" spellcheck="false" placeholder="Digite sua palavra de acesso" required>
+            <input id="ownerPassphrase" class="cyber-input" name="passphrase" type="password" minlength="12" autocomplete="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" placeholder="Digite manualmente sua palavra de acesso" required>
           </div>
           <button class="cyber-submit" type="submit">AUTORIZAR ACESSO</button>
           <small class="cyber-error" id="unlockError" role="alert"></small>
@@ -378,7 +379,13 @@ const CondorSeguranca = (() => {
           const result = await response.json().catch(() => ({}));
           throw new Error(result.erro || 'Palavra incorreta ou cofre alterado.');
         }
-        releaseInterface(box);
+        const result = await response.json();
+        if (result.face_required) {
+          submit.textContent = 'ROSTO NECESSÁRIO...';
+          await CondorFaceGuard.showGate(() => releaseInterface(box));
+        } else {
+          releaseInterface(box);
+        }
       } catch (failure) {
         error.textContent = `ACESSO NEGADO // ${failure.message}`;
         input.value = '';
@@ -397,6 +404,27 @@ const CondorSeguranca = (() => {
     const state = await fetch('/api/seguranca/estado').then((response) => response.json());
     if (!state.owner_configured || !state.vault_exists) setupScreen();
     else if (!state.vault_unlocked) unlockScreen();
+    else if (state.face_guard?.enabled) {
+      const box = overlay(`${identityPanel()}<main class="cyber-auth"><div class="cyber-status">TRAVA DE PRESENÇA</div><h1>ROSTO DO<br>DONO</h1><p>A comparação acontece somente neste computador.</p></main>`);
+      try {
+        if (state.owner_session_active) {
+          const response = await fetch('/api/biometria/window-lock', { method: 'POST', cache: 'no-store' });
+          const result = await response.json().catch(() => ({}));
+          // Uma janela antiga pode ainda estar ligada ao núcleo iniciado antes
+          // desta versão. Nesse caso a tela continua exigindo o rosto e o
+          // próximo início do núcleo passa a aplicar também a trava do backend.
+          if (!response.ok && response.status !== 404) throw new Error(result.erro || 'não foi possível iniciar a biometria');
+          if (response.status !== 404 && !result.required) {
+            releaseInterface(box);
+            return;
+          }
+        }
+        await CondorFaceGuard.showGate(() => releaseInterface(box));
+      } catch (failure) {
+        const status = box.querySelector('.cyber-status');
+        if (status) status.textContent = `TRAVA ATIVA · ${failure.message}`.toUpperCase();
+      }
+    }
   }
 
   return { init };

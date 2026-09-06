@@ -31,13 +31,32 @@ O Condor nunca pede conta do Windows nem vinculacao com celular.
 
 ## Modos de uso
 
-- Sem chaves: comandos locais deterministas, data/hora, informacoes do sistema,
-  consulta de memoria e arquivos permitidos.
-- Com conector de IA: conversa e planejamento com ferramentas limitadas pela
-  politica local.
-- Com voz local: clique no orbe, fale e clique novamente. Faster Whisper e
-  Piper processam tudo no PC. A ativacao passiva por palavra e opcional; se for
+- Sem chave de API: o modelo `qwen3:4b-instruct` conversa pelo Ollama local, com
+  custo externo zero. Se ele estiver indisponivel, a mente basica ainda conversa,
+  calcula, consulta e aprende fatos pessoais claros.
+- Para ensinar: diga `meu nome e ...`, `moro em ...`, `tenho ... anos`, `gosto
+  de ...`, `meu foco atual e ...` ou `lembre que ...`. O Condor confirma o que
+  salvou, evita duplicatas e recupera isso depois do reinicio.
+- Com conector externo opcional: conversa e planejamento continuam usando a
+  mesma memoria e ferramentas limitadas pela politica local.
+- Com voz local: clique no orbe para um turno ou ative a conversa continua; o
+  Condor encerra a fala ao detectar silencio e responde pelo Piper. Faster
+  Whisper e Piper processam tudo no PC. O primeiro uso cria um pedido em
+  **Sistema > Permissoes**. A ativacao passiva por palavra e opcional; se for
   configurada, exige um modelo `condor*.ppn` e nao aceita nome alternativo.
+- A camera nao pode ser usada pelo chat: ela abre exclusivamente no cadastro ou
+  na autenticacao facial e fecha ao concluir. Para imagens, escreva
+  `cria uma img de...`: o SDXL local gera o PNG no chat. Prompts e imagens nao
+  saem do PC, e nao existe botao separado.
+- Para ativar a trava facial, abra **Sistema > Cadastrar rosto**, aceite a
+  camera, informe a frase localmente e siga os movimentos mostrados. O Condor
+  aceita apenas camera fisica, guarda somente um vetor cifrado e pede seu rosto
+  quando o Condor e aberto. Apos confirmar, fecha a camera e nao monitora a
+  sessao em segundo plano. Se a camera falhar, use
+  **Recuperar com frase** para entrar e desativar a trava.
+- **Sistema** esconde paineis vazios ou saudaveis. Pedidos pendentes aparecem com
+  **Aceitar** e **Bloquear**; **Eventos recentes** continua sendo o historico de
+  auditoria visivel.
 
 ## Seguranca pratica
 
@@ -48,6 +67,8 @@ O Condor nunca pede conta do Windows nem vinculacao com celular.
 - Para retomar, e obrigatorio digitar a frase secreta.
 - Exclusoes feitas pelo assistente vao para `~/.condor/trash`.
 - Alteracoes em arquivos existentes criam versoes em `~/.condor/versions`.
+- Nunca cole senha, token ou chave no chat. Se isso acontecer, o Condor omite o
+  valor do historico e nao o envia a nenhum modelo; use somente o cofre.
 
 O perfil e sempre `admin` para a sessao autenticada, mas continua limitado ao
 catalogo de ferramentas especificas e as pastas autorizadas. Shell arbitrario,
