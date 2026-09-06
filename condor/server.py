@@ -290,7 +290,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         state = sessao.snapshot()
         integrity_ok = integrity.verify()[0] if vault.unlocked else None
         return {
-            "nome": "Condor",
+            "nome": "Condor AI",
             "estado": state["estado"],
             "acordado": state["acordado"],
             "cerebro_pronto": state["cerebro_pronto"],
@@ -466,7 +466,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 {"erro": "cliente local nao autorizado; abra o Condor pela janela"},
                 status_code=403,
             )
-        response = JSONResponse({"ok": True, "nome": "Condor"})
+        response = JSONResponse({"ok": True, "nome": "Condor AI"})
         response.set_cookie(
             local_security.COOKIE,
             local_security.issue(),
@@ -492,7 +492,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     async def api_app_open():
         if not sessao.abrir_aplicativo():
             return JSONResponse({"erro": "janela local indisponivel"}, status_code=503)
-        return {"ok": True, "app": "Condor", "url": "/ui/index.html"}
+        return {"ok": True, "app": "Condor AI", "url": "/ui/index.html"}
 
     @app.get("/api/estado")
     async def api_estado():
@@ -532,7 +532,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return JSONResponse({"erro": "visualizacao movel desativada"}, status_code=404)
         return mobile_viewer.access.details()
 
-    # ── Condor Cloud: mesma mente no PC e no celular ─────────────────────
+    # ── Condor AI Cloud: mesma mente no PC e no celular ──────────────────
 
     @app.get("/api/cloud/status")
     async def api_cloud_status():
@@ -581,7 +581,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if response := _memoria_pronta():
             return response
         if not cloud.status()["authenticated"]:
-            return JSONResponse({"erro": "Condor Cloud ainda nao conectado"}, status_code=409)
+            return JSONResponse({"erro": "Condor AI Cloud ainda nao conectado"}, status_code=409)
         result = await asyncio.to_thread(cloud.safe_sync, memoria)
         return result if result.get("ok") else JSONResponse(
             {"erro": result.get("error") or "sincronizacao indisponivel"}, status_code=502
@@ -1853,7 +1853,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         # eventos e a interface inteira para junto.
         diagnostico = await asyncio.to_thread(info_sistema)
         snapshot["system"] = {
-            "name": "Condor",
+            "name": "Condor AI",
             "local": True,
             "platform": platform.system(),
             "host": config.servidor.host,

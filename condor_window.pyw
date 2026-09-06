@@ -78,7 +78,7 @@ class NativeBridge:
 
 URL = _com_segredo_de_boot(_url_local(sys.argv[1] if len(sys.argv) > 1 else PADRAO))
 
-TITULO = "Condor"
+TITULO = "Condor AI"
 ROOT = Path(__file__).resolve().parent
 ICON_PATH = ROOT / "condor" / "ui" / "assets" / (
     "condor-logo.ico" if os.name == "nt" else "condor-logo.png"

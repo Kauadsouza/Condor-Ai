@@ -127,11 +127,11 @@ class CloudSyncClient:
             error.status = exc.code  # type: ignore[attr-defined]
             raise error from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise CloudError("nao foi possivel alcancar o Condor Cloud") from exc
+            raise CloudError("nao foi possivel alcancar o Condor AI Cloud") from exc
 
     def login(self, email: str, password: str) -> dict:
         if not self.configured:
-            raise CloudError("configure as URLs do Condor Cloud primeiro")
+            raise CloudError("configure as URLs do Condor AI Cloud primeiro")
         if not self.vault.unlocked:
             raise CloudError("desbloqueie o cofre do Condor")
         email = str(email or "").strip()
@@ -163,7 +163,7 @@ class CloudSyncClient:
     def _refresh(self) -> str:
         refresh = self._token(self.REFRESH)
         if not refresh:
-            raise CloudError("conecte sua conta privada do Condor Cloud")
+            raise CloudError("conecte sua conta privada do Condor AI Cloud")
         url = f"{self.config.cloud.supabase_url}/auth/v1/token?grant_type=refresh_token"
         result = self._json_request(
             url,
@@ -186,7 +186,7 @@ class CloudSyncClient:
 
     def _api(self, path: str, *, method: str = "GET", payload: dict | None = None) -> Any:
         if not self.configured:
-            raise CloudError("Condor Cloud ainda nao configurado")
+            raise CloudError("Condor AI Cloud ainda nao configurado")
         token = self._access_token()
         url = f"{self.config.cloud.api_url}{path}"
         try:
@@ -383,5 +383,5 @@ class CloudSyncClient:
             return self.sync(memory)
         except Exception as exc:
             self.last_error = str(exc)[:240]
-            log.warning("Condor Cloud nao sincronizou: %s", self.last_error)
+            log.warning("Condor AI Cloud nao sincronizou: %s", self.last_error)
             return {"ok": False, "error": self.last_error}

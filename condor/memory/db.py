@@ -560,7 +560,7 @@ CREATE INDEX IF NOT EXISTS idx_missions_updated ON hub_missions(atualizado DESC)
 """
 
 DEFAULT_PROJECTS = (
-    ("condor", "Condor", "IA local", "ativo", 82,
+    ("condor", "Condor AI", "IA local", "ativo", 82,
      "Nucleo privado, memoria cifrada e automacao supervisionada.", "/ui/index.html", "cyan"),
     ("condor-x", "Condor X", "Digital twin", "prototipo", 28,
      "Exoesqueleto conceitual modular, inerte e orientado por simulacao.", "", "amber"),
@@ -1317,7 +1317,7 @@ class Memoria:
                 (limite,)).fetchall()
             return [{"role": r["papel"], "content": r["conteudo"]} for r in reversed(rows)]
 
-    # ── Condor Cloud ──────────────────────────────────────────────────────
+    # ── Condor AI Cloud ──────────────────────────────────────────────────
 
     def cloud_snapshot(self, message_limit: int = 300) -> dict:
         """Conteudo local duravel que pode ser replicado na mente privada online.

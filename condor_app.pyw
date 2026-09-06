@@ -59,7 +59,7 @@ def _notify_failure() -> None:
     if os.name == "nt":
         try:
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, message, "Condor", 0x10)
+            ctypes.windll.user32.MessageBoxW(None, message, "Condor AI", 0x10)
             return
         except Exception:
             pass

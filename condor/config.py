@@ -208,9 +208,9 @@ class CondorCloudConfig(BaseModel):
         parsed = urlsplit(clean)
         local = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
         if parsed.scheme != ("http" if local else "https"):
-            raise ValueError("Condor Cloud exige HTTPS; HTTP e aceito apenas no localhost.")
+            raise ValueError("Condor AI Cloud exige HTTPS; HTTP e aceito apenas no localhost.")
         if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError("URL do Condor Cloud invalida.")
+            raise ValueError("URL do Condor AI Cloud invalida.")
         return clean
 
     @field_validator("supabase_publishable_key")
@@ -225,7 +225,7 @@ class CondorCloudConfig(BaseModel):
     @classmethod
     def _intervalo_seguro(cls, value: int) -> int:
         if value < 15 or value > 900:
-            raise ValueError("Intervalo do Condor Cloud precisa ficar entre 15 e 900 segundos.")
+            raise ValueError("Intervalo do Condor AI Cloud precisa ficar entre 15 e 900 segundos.")
         return value
 
 

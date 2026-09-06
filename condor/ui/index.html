@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#02030A">
 <link rel="icon" type="image/png" href="assets/condor-logo.png">
-<title>CONDOR</title>
+<title>CONDOR AI</title>
 <style>
 :root {
   --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -998,9 +998,9 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
       <main class="cell-grid">
         <section class="cell-card cell-setup" id="cellSetup">
           <div class="cell-setup-inner">
-            <div class="cell-setup-copy"><small>CONEXÃO PRIVADA</small><h2>Conectar este PC ao Condor do celular</h2><p>Use o endereço do Condor Cloud e o usuário privado criado no Supabase. A senha é usada apenas para entrar e não fica salva no computador.</p></div>
+            <div class="cell-setup-copy"><small>CONEXÃO PRIVADA</small><h2>Conectar este PC ao Condor AI no celular</h2><p>Use o endereço do Condor AI Cloud e o usuário privado criado no Supabase. A senha é usada apenas para entrar e não fica salva no computador.</p></div>
             <form class="cell-form" id="cellSetupForm">
-              <label class="wide"><span>ENDEREÇO DO CONDOR CLOUD</span><input id="cellApiUrl" type="url" required placeholder="https://seu-condor.vercel.app" autocomplete="off"></label>
+              <label class="wide"><span>ENDEREÇO DO CONDOR AI CLOUD</span><input id="cellApiUrl" type="url" required placeholder="https://seu-condor.vercel.app" autocomplete="off"></label>
               <label class="wide"><span>ENDEREÇO DO SUPABASE</span><input id="cellSupabaseUrl" type="url" required placeholder="https://seu-projeto.supabase.co" autocomplete="off"></label>
               <label class="wide"><span>CHAVE PÚBLICA DO SUPABASE</span><input id="cellSupabaseKey" type="text" required placeholder="sb_publishable_..." autocomplete="off" spellcheck="false"></label>
               <label><span>E-MAIL PRIVADO</span><input id="cellEmail" type="email" required autocomplete="username"></label>
@@ -1012,7 +1012,7 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
         </section>
         <div class="cell-connected" id="cellConnected" hidden>
           <section class="cell-card cell-chat">
-            <header><div><small>CONVERSA CONTÍNUA</small><h2>Condor Cloud</h2></div><span id="cellConversationLabel">NOVA CONVERSA</span></header>
+            <header><div><small>CONVERSA CONTÍNUA</small><h2>Condor AI Cloud</h2></div><span id="cellConversationLabel">NOVA CONVERSA</span></header>
             <div class="cell-chat-stream" id="cellChatStream"><div class="cell-empty"><strong>MESMA MENTE</strong>O que você conversar aqui também poderá aparecer no celular.</div></div>
             <form class="cell-composer" id="cellChatForm"><textarea id="cellChatInput" maxlength="8000" placeholder="Fale com o Condor do celular..."></textarea><button class="cell-button" id="cellSend" type="submit">ENVIAR</button></form>
           </section>

@@ -161,7 +161,7 @@ class MobileViewer:
         self.app = self._build(snapshot)
 
     def _build(self, snapshot: Callable[[], dict[str, Any]]) -> FastAPI:
-        app = FastAPI(title="Condor Mobile View", docs_url=None, redoc_url=None)
+        app = FastAPI(title="Condor AI Mobile View", docs_url=None, redoc_url=None)
 
         @app.middleware("http")
         async def private_lan_only(request: Request, call_next):

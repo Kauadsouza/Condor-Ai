@@ -27,7 +27,7 @@ namespace Condor.Windows
                 {
                     MessageBox.Show(
                         "Execute scripts\\install.ps1 antes de abrir o Condor.",
-                        "Condor",
+                        "Condor AI",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error
                     );
@@ -49,7 +49,7 @@ namespace Condor.Windows
             {
                 MessageBox.Show(
                     "O Condor não conseguiu iniciar.\n\n" + error.Message,
-                    "Condor",
+                    "Condor AI",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error
                 );

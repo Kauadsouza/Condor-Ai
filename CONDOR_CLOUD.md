@@ -1,7 +1,7 @@
 # CELL: Condor no PC e no celular
 
 A aba `CELL` da interface local e a ponte de configuracao e acompanhamento do
-Condor Cloud. O aplicativo hospedado vive em `cloud/` e permanece independente
+Condor AI Cloud. O aplicativo hospedado vive em `cloud/` e permanece independente
 do ARTX Hub.
 
 Invariante: existe somente a mente `condor-kaua-primary-v1`, com a identidade
@@ -11,11 +11,11 @@ ponto de acesso ou a infraestrutura; nunca personalidades ou memorias separadas.
 Fluxo de dados:
 
 ```text
-Condor local cifrado -> HTTPS de saida -> API Condor Cloud -> Supabase com RLS
+Condor AI local cifrado -> HTTPS de saida -> API Condor AI Cloud -> Supabase com RLS
        ^                                                        |
        +---------------- eventos cifrados de sync --------------+
 
-Celular/PWA -> login privado -> API Condor Cloud -> mesma memoria online
+Celular/PWA -> login privado -> API Condor AI Cloud -> mesma memoria online
 ```
 
 O servidor local continua limitado a `127.0.0.1:7777`. A visualizacao antiga da

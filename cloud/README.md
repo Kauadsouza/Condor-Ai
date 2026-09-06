@@ -1,4 +1,4 @@
-# Condor Cloud
+# Condor AI Cloud
 
 Aplicativo privado e instalavel para manter chat, fatos e anotacoes do Condor
 disponiveis no celular e no PC. Ele e um sistema proprio do Condor: nao usa o

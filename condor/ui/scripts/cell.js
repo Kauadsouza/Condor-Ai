@@ -16,7 +16,7 @@ const CondorCell = (() => {
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.erro || 'Condor Cloud indisponível.');
+    if (!response.ok) throw new Error(data.erro || 'Condor AI Cloud indisponível.');
     return data;
   }
 
@@ -152,7 +152,7 @@ const CondorCell = (() => {
     try {
       const result = await api('/api/cloud/chat', { method: 'POST', body: JSON.stringify({ message, conversation_id: conversationId }) });
       conversationId = result.conversationId || conversationId;
-      el('cellThinking').querySelector('p').textContent = result.answer || 'Resposta concluída no Condor Cloud.';
+      el('cellThinking').querySelector('p').textContent = result.answer || 'Resposta concluída no Condor AI Cloud.';
       await loadCloudData(); setState('MENTE SINCRONIZADA', true);
     } catch (error) {
       const thinking = el('cellThinking'); if (thinking) thinking.querySelector('p').textContent = `Falha: ${error.message}`;

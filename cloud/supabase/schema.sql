@@ -1,4 +1,4 @@
--- Condor Cloud: projeto Supabase exclusivo. Execute apenas no projeto novo.
+-- Condor AI Cloud: projeto Supabase exclusivo. Execute apenas no projeto novo.
 -- Todo conteudo pessoal fica cifrado pela aplicacao antes de chegar ao banco.
 
 create extension if not exists pgcrypto;

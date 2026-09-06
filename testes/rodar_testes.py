@@ -698,7 +698,7 @@ class SessionSecurityTests(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         snapshot = {
-            "nome": "Condor", "estado": "dormindo", "acordado": False,
+            "nome": "Condor AI", "estado": "dormindo", "acordado": False,
             "cerebro_pronto": True, "modelo": "local", "provedor": "local",
             "voz_local_pronta": True, "integridade_ok": True,
             "modo": "somente leitura", "projetos": [],
@@ -815,7 +815,7 @@ class SessionSecurityTests(unittest.TestCase):
                 )
                 app_open = client.post("/api/app/abrir")
                 self.assertEqual(app_open.status_code, 200, app_open.text)
-                self.assertEqual(app_open.json()["app"], "Condor")
+                self.assertEqual(app_open.json()["app"], "Condor AI")
                 self.assertEqual(opened, [True])
                 state_headers = client.get("/api/estado").headers
                 self.assertIn("form-action 'self'", state_headers["content-security-policy"])
