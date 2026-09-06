@@ -698,7 +698,7 @@ def buscar_web(consulta: str, limite: int = 6) -> dict:
         # Fallback sem chave. Resultados sem relacao textual com a consulta sao
         # descartados para uma pagina degradada nao virar "conhecimento" falso.
         if not itens:
-            import xml.etree.ElementTree as ET
+            from defusedxml import ElementTree as ET
             terms, requested_sites = _termos_busca(consulta)
             vistos: set[str] = set()
             consultas_rss = _consultas_bing(consulta)

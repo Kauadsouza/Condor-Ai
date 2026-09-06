@@ -5,6 +5,14 @@
 *.key
 *.pem
 *.secret
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials.json
+service-account*.json
+id_rsa*
 
 # ── Dados pessoais ────────────────────────────────────────────────
 # O padrao e ~/.condor, mas esta regra protege quem apontar CONDOR_HOME
@@ -14,6 +22,14 @@
 /data/
 /output/
 /tmp/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.onnx
+*.ppn
+*.safetensors
+*.gguf
 
 # ── Logs e temporários ────────────────────────────────────────────
 *.log
@@ -50,5 +66,8 @@ desktop.ini
 # ── IDE ───────────────────────────────────────────────────────────
 .vscode/settings.json
 .claude/
+.codex/
+.cursor/
+.gemini/
 .idea/
 *.sublime-workspace

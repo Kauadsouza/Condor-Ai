@@ -18,6 +18,7 @@ pillow>=12.2,<13
 opencv-python-headless>=4.13,<5
 pypdf>=6.14,<7
 pyserial>=3.5,<4
+defusedxml>=0.7,<1
 
 # Voz totalmente local. Os modelos ficam fora do repositorio em ~/.condor/models.
 faster-whisper>=1.2,<2

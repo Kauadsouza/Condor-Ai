@@ -258,6 +258,28 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("https://docs.python.org/pt-br/3/", result["saida"])
         self.assertNotIn("https://example.com/python", result["saida"])
 
+    def test_public_search_rejects_xml_entities(self):
+        empty = b"<html><body>sem resultados</body></html>"
+        malicious_rss = b'''<?xml version="1.0"?>
+        <!DOCTYPE rss [<!ENTITY payload "conteudo-nao-confiavel">]>
+        <rss><channel><item><title>&payload;</title>
+        <link>https://example.com/</link><description>resultado</description>
+        </item></channel></rss>'''
+
+        class Response:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self): return self.body
+
+        with patch(
+            "condor.actions.executor._urlopen_public",
+            side_effect=[Response(empty), Response(malicious_rss)],
+        ):
+            result = executor.buscar_web("fonte verificavel", 3)
+        self.assertFalse(result["ok"])
+        self.assertNotIn("conteudo-nao-confiavel", result["saida"])
+
 
 class HumanInternetMemoryTests(unittest.TestCase):
     def test_local_web_results_become_clickable_sources(self):

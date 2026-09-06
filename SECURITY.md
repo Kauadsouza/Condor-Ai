@@ -69,6 +69,11 @@ conectado, olhando o endereco real do outro lado — nao numa consulta DNS feita
 antes, que um servidor hostil poderia responder diferente na hora da conexao
 (DNS rebinding). Downloads tem limite de 100 MB.
 
+Instaladores de executaveis usam releases fixadas, checksum SHA-256 conhecido e
+validacao Authenticode antes de copiar qualquer binario para o runtime. Modelos
+baixados diretamente tambem usam hashes fixos; conteudo XML vindo da internet e
+processado por um parser que bloqueia entidades externas e expansoes perigosas.
+
 ## Execucao local e parada de emergencia
 
 Ferramentas nao recebem shell arbitrario. Nomes de aplicativo e janela aceitam
