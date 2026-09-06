@@ -432,7 +432,13 @@ class RegressaoSegurancaTests(unittest.TestCase):
     def test_politica_e_executor_resolvem_o_mesmo_destino(self):
         for bruto in (r"%APPDATA%\x", "~/Documents/y.txt", "condor/config.py"):
             with self.subTest(bruto=bruto):
-                self.assertEqual(resolver_alvo(bruto), executor._caminho(bruto))
+                try:
+                    esperado = resolver_alvo(bruto)
+                except ValueError:
+                    with self.assertRaises(ValueError):
+                        executor._caminho(bruto)
+                else:
+                    self.assertEqual(esperado, executor._caminho(bruto))
 
     def test_pasta_permitida_continua_liberada(self):
         decisao = self._politica().decide(
