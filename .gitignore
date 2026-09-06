@@ -30,6 +30,7 @@ id_rsa*
 *.ppn
 *.safetensors
 *.gguf
+/Condor.exe
 
 # ── Logs e temporários ────────────────────────────────────────────
 *.log

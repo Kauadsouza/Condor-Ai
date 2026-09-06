@@ -73,6 +73,8 @@ Instaladores de executaveis usam releases fixadas, checksum SHA-256 conhecido e
 validacao Authenticode antes de copiar qualquer binario para o runtime. Modelos
 baixados diretamente tambem usam hashes fixos; conteudo XML vindo da internet e
 processado por um parser que bloqueia entidades externas e expansoes perigosas.
+O launcher `Condor.exe` e compilado localmente a partir do codigo C# versionado;
+o repositorio nao distribui um executavel do Condor sem assinatura de publicador.
 
 ## Execucao local e parada de emergencia
 

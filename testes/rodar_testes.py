@@ -2973,6 +2973,7 @@ class InterfaceBoundaryTests(unittest.TestCase):
         windows_identity = (ROOT / "condor" / "windows_identity.py").read_text("utf-8")
         windows_shortcut = (ROOT / "scripts" / "install_app_shortcut.ps1").read_text("utf-8")
         windows_autostart = (ROOT / "scripts" / "install_autostart.ps1").read_text("utf-8")
+        windows_build = (ROOT / "scripts" / "build_windows_launcher.ps1").read_text("utf-8")
         linux_shortcut = (ROOT / "scripts" / "install_app_shortcut.sh").read_text("utf-8")
         native_launcher = (ROOT / "windows" / "CondorLauncher.cs").read_text("utf-8")
         shortcut_identity = (ROOT / "windows" / "ShortcutIdentity.cs").read_text("utf-8")
@@ -2999,7 +3000,9 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertIn("SetCurrentProcessExplicitAppUserModelID", native_launcher)
         self.assertIn("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3", shortcut_identity)
         self.assertIn("ARTX.Condor.Local", native_launcher)
-        self.assertTrue((ROOT / "Condor.exe").is_file())
+        self.assertIn('"windows\\CondorLauncher.cs"', windows_build)
+        self.assertIn("/target:winexe", windows_build)
+        self.assertIn("/Condor.exe", (ROOT / ".gitignore").read_text("utf-8"))
         self.assertIn("condor-logo.png", linux_shortcut)
         self.assertIn("Icon=%s", linux_shortcut)
 
