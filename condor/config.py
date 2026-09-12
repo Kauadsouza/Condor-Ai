@@ -42,6 +42,7 @@ class CerebroConfig(BaseModel):
     modelo_visao_local: str = "qwen3-vl:2b"
     temperatura: float = 0.75
     max_tokens: int = 1500
+    contexto_local: int = Field(default=8192, ge=4096, le=32768)
     # Teto de iterações do loop de ferramentas: cobre tarefa de vários passos
     # sem deixar ele girar pra sempre se der ruim.
     max_iteracoes: int = 12
@@ -142,7 +143,7 @@ class SessaoConfig(BaseModel):
     # Sem chamar o Condor por este tempo, ele dorme e fecha a janela.
     timeout_segundos: int = 120
     abrir_janela_ao_acordar: bool = True
-    fechar_janela_ao_dormir: bool = True
+    fechar_janela_ao_dormir: bool = False
     saudacao_ao_acordar: bool = True
 
 

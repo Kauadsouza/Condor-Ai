@@ -38,12 +38,12 @@ def _url_local(bruto: str) -> str:
         partes.scheme != "http"
         or partes.hostname not in {"127.0.0.1", "localhost", "::1"}
         or partes.port != porta_condor
-        or partes.path.rstrip("/") != "/ui/index.html"
+        or partes.path.rstrip("/") not in {"/ui/index.html", "/ui/assistant.html"}
         or partes.username
         or partes.password
     ):
         return PADRAO
-    return f"{partes.scheme}://{partes.netloc}/ui/index.html"
+    return f"{partes.scheme}://{partes.netloc}{partes.path.rstrip('/')}"
 
 
 def _com_segredo_de_boot(url: str) -> str:

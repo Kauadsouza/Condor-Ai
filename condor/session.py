@@ -136,7 +136,7 @@ class Sessao:
 
     # ── O caminho comum ────────────────────────────────────────────────────
 
-    async def processar(self, texto: str, por_voz: bool) -> None:
+    async def processar(self, texto: str, por_voz: bool, *, reproduzir_voz: bool = True) -> None:
         # asyncio.Lock e justo: pedidos simultaneos aguardam aqui na ordem em
         # que chegaram. Nada e descartado se voz, outra janela ou uma corrida de
         # rede enviar enquanto o Condor ainda esta fechando a resposta anterior.
@@ -187,7 +187,7 @@ class Sessao:
                 ))
                 self._podar_historico()
                 await self._evento("resposta.fim", texto=resposta, fontes=[])
-                if por_voz:
+                if por_voz and reproduzir_voz:
                     await self.voz.falar(resposta)
                 await self._mudar_estado(OUVINDO)
                 await self._evento("memoria.stats", **self.memoria.estatisticas())
@@ -229,7 +229,7 @@ class Sessao:
 
             self.extrator.enfileirar(texto, resposta)
 
-            if por_voz and resposta:
+            if por_voz and reproduzir_voz and resposta:
                 await self._mudar_estado(FALANDO)
                 self.escuta.silenciar()
                 try:
@@ -258,13 +258,17 @@ class Sessao:
             corte += 1
         self.historico = self.historico[corte:]
 
-    async def nova_conversa(self) -> int:
+    async def nova_conversa(self, preservar_historico: bool = False) -> int:
         """Encerra o fio atual e começa outro sem apagar a memória aprendida."""
         async with self._ocupado:
             if not bool(getattr(self.memoria, "unlocked", False)):
                 raise RuntimeError("cofre bloqueado")
             self.memoria.fechar_sessao("nova conversa iniciada pelo dono")
-            removidas = self.memoria.limpar_conversas()
+            if preservar_historico:
+                self.memoria.arquivar_conversa()
+                removidas = 0
+            else:
+                removidas = self.memoria.limpar_conversas()
             self.historico = []
             if self.acordado:
                 self.memoria.abrir_sessao()

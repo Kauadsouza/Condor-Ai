@@ -29,7 +29,7 @@ if ((Test-Path -LiteralPath $OllamaExe) -and -not (Test-CondorLocalPort)) {
     $env:OLLAMA_MODELS = Join-Path $StateRoot "models"
     $env:OLLAMA_NO_CLOUD = "1"
     $env:OLLAMA_NOHISTORY = "1"
-    $env:OLLAMA_CONTEXT_LENGTH = "32768"
+    $env:OLLAMA_CONTEXT_LENGTH = "8192"
     $LocalAiProcess = Start-Process -FilePath $OllamaExe -ArgumentList "serve" `
         -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru
     for ($Attempt = 0; $Attempt -lt 80 -and -not (Test-CondorLocalPort); $Attempt++) {
@@ -45,8 +45,10 @@ if ((Test-Path -LiteralPath $OllamaExe) -and -not (Test-CondorLocalPort)) {
 
 try {
     & $PythonExe -m condor
+    $CondorExitCode = $LASTEXITCODE
 } finally {
     if ($LocalAiProcess -and -not $LocalAiProcess.HasExited) {
         Stop-Process -Id $LocalAiProcess.Id
     }
 }
+exit $CondorExitCode

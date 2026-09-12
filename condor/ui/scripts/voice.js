@@ -29,6 +29,8 @@ const CondorVoz = (() => {
   let restartTimer = null;
   let silenceMonitor = null;
   let cancelRecording = false;
+  let capturePending = false;
+  let securityGeneration = 0;
 
   function init() {
     CondorWS.ao('estado', aplicar);
@@ -42,6 +44,7 @@ const CondorVoz = (() => {
     CondorWS.ao('senha.pedido', pedirSenha);
     CondorWS.ao('senha.fim', fecharSenha);
     CondorWS.ao('ws.caiu', () => {
+      stopForSecurity();
       $('listenStatus').textContent = 'SEM CONEXÃO';
       $('listenStatus').style.color = 'var(--pink)';
     });
@@ -49,11 +52,19 @@ const CondorVoz = (() => {
     // Clique uma vez para começar e outra para enviar. O limite de vinte
     // segundos encerra sozinho para o microfone nunca ficar aberto sem querer.
     $('voiceOrb').addEventListener('click', alternarGravacaoLocal);
+    $('continuousVoiceBtn').addEventListener('click', toggleContinuous);
+    CondorWS.ao('seguranca.bloqueado', stopForSecurity);
+    CondorWS.ao('erro', stopForSecurity);
+    window.addEventListener('pagehide', stopForSecurity);
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') stopForSecurity();
+    });
     window.addEventListener('condor-permission-resolved', (event) => {
       if (!microphonePending || event.detail?.capability !== 'microphone') return;
       microphonePending = false;
       microphoneAuthorized = event.detail.decision !== 'block';
-      if (microphoneAuthorized) iniciarGravacaoLocal(false);
+      if (microphoneAuthorized) iniciarGravacaoLocal(continuous);
+      else stopForSecurity();
     });
 
     relogio = setInterval(() => {
@@ -113,18 +124,21 @@ const CondorVoz = (() => {
   }
 
   async function autorizarMicrofone() {
-    if (microphoneAuthorized) return true;
     if (typeof CondorMedia === 'undefined') return false;
     microphoneAuthorized = await CondorMedia.ensurePermission(
       'microphone', 'Ouvir somente enquanto o modo de voz estiver ativo.', 'voice_chat',
+      { requireAlways: continuous },
     );
     microphonePending = !microphoneAuthorized;
     return microphoneAuthorized;
   }
 
   async function iniciarGravacaoLocal(autoStop) {
-    if (gravador?.state === 'recording') return;
-    if (!await autorizarMicrofone()) return;
+    if (gravador || capturePending) return;
+    capturePending = true;
+    const generation = securityGeneration;
+    try {
+    if (!await autorizarMicrofone() || generation !== securityGeneration) return;
     if (!navigator.mediaDevices || !window.MediaRecorder) {
       CondorWS.enviar({ tipo: 'acordar' });
       $('voiceHint').textContent = 'NAVEGADOR SEM CAPTURA DE ÁUDIO';
@@ -135,6 +149,7 @@ const CondorVoz = (() => {
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
         video: false,
       });
+      if (generation !== securityGeneration) { fluxo.getTracks().forEach(t=>t.stop()); fluxo=null; return; }
       const preferido = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
         .find((tipo) => MediaRecorder.isTypeSupported(tipo));
       gravador = new MediaRecorder(fluxo, preferido ? { mimeType: preferido } : undefined);
@@ -156,13 +171,26 @@ const CondorVoz = (() => {
       $('orbCore').classList.add('active');
       CondorPet.setState('listening');
     } catch (erro) {
+      stopForSecurity();
       $('voiceHint').textContent = 'PERMISSÃO DO MICROFONE NÃO CONCEDIDA';
       $('listenStatus').textContent = 'MICROFONE BLOQUEADO';
       $('listenStatus').style.color = 'var(--pink)';
     }
+    } catch (error) {
+      stopForSecurity(); $('voiceHint').textContent='VOZ INDISPONÍVEL · VERIFIQUE AS PERMISSÕES NO SISTEMA';
+    } finally { capturePending=false; }
+  }
+
+  async function toggleContinuous() {
+    if (continuous) { stopForSecurity(); $('voiceHint').textContent='CONVERSA CONTÍNUA ENCERRADA'; return; }
+    continuous=true;
+    $('continuousVoiceBtn').textContent='ENCERRAR VOZ';
+    $('continuousVoiceBtn').setAttribute('aria-pressed','true');
+    await iniciarGravacaoLocal(true);
   }
 
   async function enviarGravacaoLocal() {
+    const generation = securityGeneration;
     clearTimeout(limiteGravacao);
     pararMonitorSilencio();
     if (fluxo) fluxo.getTracks().forEach((trilha) => trilha.stop());
@@ -183,6 +211,7 @@ const CondorVoz = (() => {
         body: audio,
       });
       const dados = await resposta.json();
+      if (generation !== securityGeneration) return;
       if (!resposta.ok) throw new Error(dados.erro || 'não entendi a fala');
       CondorConversa.adicionarUsuario(dados.texto);
       $('voiceHint').textContent = 'CONDOR ESTÁ PROCESSANDO LOCALMENTE';
@@ -191,7 +220,7 @@ const CondorVoz = (() => {
       $('voiceStatus').textContent = '● VOZ LOCAL';
       $('voiceStatus').style.color = 'var(--cyan)';
       $('voiceHint').textContent = String(erro.message || erro).toUpperCase();
-      if (continuous) restartTimer = setTimeout(() => iniciarGravacaoLocal(true), 900);
+      stopForSecurity();
     } finally {
       partes = [];
       gravador = null;
@@ -213,7 +242,9 @@ const CondorVoz = (() => {
       let energy = 0; for (const value of samples) { const normalized = (value - 128) / 128; energy += normalized * normalized; }
       const rms = Math.sqrt(energy / samples.length); const now = performance.now();
       if (rms > .035) { heardSpeech = true; lastSpeech = now; }
-      if ((heardSpeech && now - lastSpeech > 1050) || (!heardSpeech && now - started > 8000)) gravador.stop();
+      if (!heardSpeech && now - started > 8000) {
+        stopForSecurity(); $('voiceHint').textContent='VOZ PAUSADA · NENHUMA FALA DETECTADA';
+      } else if (heardSpeech && now - lastSpeech > 1050) gravador.stop();
     }, 120);
     silenceMonitor = { timer, context };
   }
@@ -280,7 +311,9 @@ const CondorVoz = (() => {
   }
 
   function stopForSecurity() {
+    securityGeneration++; microphoneAuthorized=false; microphonePending=false;
     continuous = false; cancelRecording = true;
+    if ($('continuousVoiceBtn')) { $('continuousVoiceBtn').textContent='CONVERSA CONTÍNUA'; $('continuousVoiceBtn').setAttribute('aria-pressed','false'); }
     clearTimeout(restartTimer); clearTimeout(limiteGravacao); pararMonitorSilencio();
     if (gravador?.state === 'recording') gravador.stop();
     fluxo?.getTracks().forEach((track) => track.stop()); fluxo = null;

@@ -23,8 +23,25 @@ const CondorMemoria = (() => {
   let carregando = false;
   let orbitaAtual = null;
   let zoomOrbital = 1;
+  let archiveBefore = null;
 
   function init() {
+    $('conversationArchiveMore').addEventListener('click', async () => {
+      const button=$('conversationArchiveMore'); button.disabled=true;
+      try {
+        const response=await fetch('/api/conversa/arquivo'+(archiveBefore ? `?antes=${archiveBefore}` : ''),{cache:'no-store'});
+        const data=await response.json(); if(!response.ok) throw new Error(data.erro || 'Cofre indisponível');
+        for(const item of data.itens) {
+          const article=document.createElement('article'); article.className='memory-recent';
+          const heading=document.createElement('strong'); heading.textContent=`${item.papel==='user'?'VOCÊ':'CONDOR'} · ${new Date(item.ts*1000).toLocaleString('pt-BR')}`;
+          const body=document.createElement('p'); body.textContent=item.conteudo;body.style.whiteSpace='pre-wrap';
+          article.append(heading,body);$('conversationArchiveItems').append(article);
+        }
+        archiveBefore=data.proximo;button.hidden=!archiveBefore;button.textContent='CARREGAR MAIS ANTIGAS';
+        if(!data.itens.length) $('conversationArchiveItems').textContent='Nenhuma conversa armazenada.';
+      } catch(error) { CondorConversa.mostrarAviso(error.message,true); }
+      finally { button.disabled=false; }
+    });
     $('memorySearch')?.addEventListener('input', (event) => {
       buscaAtual = String(event.target.value || '').trim().toLocaleLowerCase('pt-BR');
       renderizar();

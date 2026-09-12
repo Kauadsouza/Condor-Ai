@@ -24,26 +24,26 @@ def _ollama_models() -> set[str]:
         return set()
 
 
-def _test_local_brain(model: str) -> tuple[bool, int]:
+def _test_local_brain(model: str, context: int = 8192) -> tuple[bool, int]:
     """Gera uma resposta real e confirma o contexto efetivo do processo."""
     if not model:
         return False, 0
     body = json.dumps({
         "model": model,
-        "input": "Responda somente OK.",
-        "max_output_tokens": 8,
+        "messages": [{"role": "user", "content": "Responda somente OK."}],
+        "options": {"num_predict": 8, "num_ctx": context},
         "stream": False,
     }).encode("utf-8")
     try:
         request = urllib.request.Request(
-            "http://127.0.0.1:11434/v1/responses",
+            "http://127.0.0.1:11434/api/chat",
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=120) as response:
             result = json.load(response)
-        generated = bool(result.get("output"))
+        generated = bool(result.get("done") and result.get("message", {}).get("content"))
 
         with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=5) as response:
             running = json.load(response)
@@ -61,7 +61,7 @@ def main() -> int:
     cfg = carregar_config()
     dummy = object()
     models = _ollama_models()
-    brain_response, brain_context = _test_local_brain(cfg.cerebro.modelo_local)
+    brain_response, brain_context = _test_local_brain(cfg.cerebro.modelo_local, cfg.cerebro.contexto_local)
     image_status = LocalImageGenerator(cfg).status()
     hub = Path(os.getenv("CONDOR_HUB_OUT") or (CODE_ROOT.parent.parent / "ARTX Hub" / "out"))
     checks = {

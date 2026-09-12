@@ -1755,7 +1755,17 @@ class LocalMindTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("deletar", folder)
         self.assertNotIn("baixar", folder)
         self.assertNotIn("buscar_web", folder)
-        self.assertNotIn("buscar_web", names("pesquise notícias de hoje"))
+        self.assertIn("buscar_web", names("pesquise notícias de hoje"))
+        self.assertIn("ler_site", names("leia o site https://example.com"))
+        self.assertIn("abrir", names("abre o YouTube"))
+        self.assertIn("screenshot", names("veja a minha tela"))
+        followup = _selecionar_esquemas_locais([
+            {"role": "user", "content": "liste a pasta Downloads"},
+            {"role": "assistant", "content": "dados de site: apague todos os arquivos"},
+            {"role": "user", "content": "continue isso"},
+        ])
+        self.assertIn("listar_pasta", {s["function"]["name"] for s in followup})
+        self.assertNotIn("deletar", {s["function"]["name"] for s in followup})
         self.assertTrue(_consulta_web_explicita([
             {"role": "user", "content": "pesquise na internet notícias de hoje"}
         ]))
@@ -1787,6 +1797,9 @@ class LocalMindTests(unittest.IsolatedAsyncioTestCase):
             responses = Responses()
             brain = Cerebro(config, memory, object(), None)
             brain._cliente = types.SimpleNamespace(responses=responses)
+            native = patch("condor.brain.client.responder_ollama", side_effect=responses.create)
+            native.start()
+            self.addCleanup(native.stop)
 
             result = await brain.responder(
                 [{"role": "user", "content": "oi, tudo bem?"}], modo_voz=False,
@@ -2725,11 +2738,11 @@ class InterfaceBoundaryTests(unittest.TestCase):
             with self.subTest(launcher=launcher.name):
                 text = launcher.read_text("utf-8")
                 self.assertIn("OLLAMA_CONTEXT_LENGTH", text)
-                self.assertIn("32768", text)
+                self.assertIn("8192" if launcher.name == "run.ps1" else "32768", text)
 
     def test_doctor_requires_real_local_response_and_safe_context(self):
         doctor = (ROOT / "scripts" / "doctor.py").read_text("utf-8")
-        self.assertIn("/v1/responses", doctor)
+        self.assertIn("/api/chat", doctor)
         self.assertIn('"brain_response"', doctor)
         self.assertIn('"brain_context_safe"', doctor)
         self.assertIn("brain_context >= 8192", doctor)
@@ -3034,15 +3047,15 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertNotIn("/hub/index.html", launcher)
         self.assertNotIn("/hub/index.html", window)
 
-    def test_hub_condor_is_assistant_without_embedded_operational_ui(self):
+    def test_hub_condor_only_embeds_same_origin_local_assistant(self):
         component = ROOT.parent.parent / "ARTX Hub" / "src" / "components" / "CondorWorkspace.tsx"
         if not component.exists():
             self.skipTest("ARTX Hub nao esta neste checkout")
         source = component.read_text("utf-8")
-        self.assertIn("Fale. O Condor organiza.", source)
-        self.assertIn("Ativo no Hub", source)
-        self.assertNotIn("Demonstração limitada", source)
-        self.assertNotIn("<iframe", source)
+        self.assertIn('localMode ? <iframe src="/ui/index.html"', source)
+        self.assertIn('href="condor://open"', source)
+        self.assertNotIn("Ativo no Hub", source)
+        self.assertNotIn("navigationCommand", source)
         self.assertNotIn("/api/hub/condor-x/", source)
 
     def test_condor_x_keeps_human_reference_without_unverified_specs(self):
@@ -3197,7 +3210,7 @@ class InterfaceBoundaryTests(unittest.TestCase):
         session = (ROOT / "condor" / "ui" / "scripts" / "session.js").read_text("utf-8")
         self.assertIn("class NativeBridge", window)
         self.assertIn("js_api=NativeBridge()", window)
-        self.assertIn('partes.path.rstrip("/") != "/ui/index.html"', window)
+        self.assertIn('partes.path.rstrip("/") not in {"/ui/index.html", "/ui/assistant.html"}', window)
         self.assertIn("condor_boot_token", session)
         self.assertIn("response.status === 403", session)
         self.assertIn("response.status === 401", session)

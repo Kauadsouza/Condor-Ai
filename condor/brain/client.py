@@ -28,7 +28,7 @@ from condor.brain import tools as ferramentas
 from condor.brain.anthropic import AnthropicAPIError, AnthropicMessagesClient
 from condor.brain.offline import responder_offline
 from condor.brain.persona import montar_prompt
-from condor.memory.extractor import extrair_fatos_locais
+from condor.brain.ollama import responder_ollama
 from condor.media import LocalImageGenerator
 from condor.knowledge import EngineeringKnowledgeBase
 from condor.vision.local import VisaoLocal
@@ -87,9 +87,10 @@ def _selecionar_esquemas_locais(historico: list[dict]) -> list[dict]:
         if re.search(r"\b(?:baixar|baixe|download)\b", texto):
             nomes.add("baixar")
 
-    if contem("janela", "aplicativo", "programa", "navegador", "chrome", "edge"):
+    if contem("janela", "aplicativo", "programa", "navegador", "chrome", "edge",
+              "youtube", "spotify", "calculadora", "notepad", "bloco de notas"):
         nomes.add("listar_janelas")
-        if contem("abrir", "iniciar"):
+        if re.search(r"\b(?:abrir|abra|abre|iniciar|inicie)\b", texto):
             nomes.add("abrir")
         if contem("fechar", "encerre"):
             nomes.add("fechar_app")
@@ -104,6 +105,19 @@ def _selecionar_esquemas_locais(historico: list[dict]) -> list[dict]:
         nomes.add("digitar")
     if contem("atalho de teclado", "pressione as teclas"):
         nomes.add("atalho")
+    if re.search(r"\b(?:abrir|abra|abre|iniciar|inicie)\b", texto):
+        nomes.add("abrir")
+    if contem("pesquis", "busque na web", "procure na internet", "noticia", "preco",
+              "atualmente", "hoje", "https://", "http://", "leia o site"):
+        nomes.update({"buscar_web", "ler_site"})
+    if contem("o que voce ve", "minha tela", "na minha tela", "veja a tela"):
+        nomes.add("screenshot")
+    # Follow-ups such as "agora abra ele" need the previous user intent.
+    # Never inspect tool/page text to decide what authority to offer.
+    if re.search(r"\b(?:isso|isto|ele|ela|esse|essa|continue|continuar)\b", texto):
+        previous = [m for m in historico[:-1] if m.get("role") == "user"][-1:]
+        if previous:
+            nomes.update(s["function"]["name"] for s in _selecionar_esquemas_locais(previous))
     if contem("clipboard", "area de transferencia", "área de transferência"):
         nomes.add("ler_clipboard")
         if contem("copie", "copiar", "escreva"):
@@ -647,7 +661,15 @@ class Cerebro:
                         "safety_identifier": safety_id,
                         "include": ["web_search_call.action.sources"],
                     })
-                response = await self.cliente.responses.create(**request)
+                if self.provedor == "local":
+                    response = await responder_ollama(
+                        endpoint=cfg.endpoint_local, model=self.modelo_ativo,
+                        instructions=sistema, items=input_items, tools=response_tools,
+                        max_tokens=min(cfg.max_tokens, 320) if modo_voz else cfg.max_tokens,
+                        context=cfg.contexto_local, temperature=cfg.temperatura, on_token=on_token,
+                    )
+                else:
+                    response = await self.cliente.responses.create(**request)
             except Exception as exc:
                 self.ultimo_erro = str(exc)
                 self.mark_connection_test(
@@ -661,10 +683,8 @@ class Cerebro:
                                 and isinstance(mensagem.get("content"), str)):
                             pedido = mensagem["content"]
                             break
-                    fatos = extrair_fatos_locais(pedido)
                     fallback = await responder_offline(
                         pedido, self._memoria, self._guarda,
-                        aprendizado={"saved": fatos} if fatos else None,
                     )
                     if on_token and fallback:
                         await on_token(fallback)
@@ -694,7 +714,7 @@ class Cerebro:
             calls = [item for item in response.output if item.type == "function_call"]
             if not calls:
                 resposta_final = (response.output_text or "").strip()
-                if on_token and resposta_final:
+                if on_token and resposta_final and self.provedor != "local":
                     await on_token(resposta_final)
                 historico.append({"role": "assistant", "content": resposta_final})
                 break
@@ -933,6 +953,15 @@ class Cerebro:
                     "\nRetorne somente um objeto JSON valido. "
                     "Nao use bloco Markdown, comentario ou texto antes/depois do JSON."
                 )
+            if self.provedor == "local":
+                resposta = await responder_ollama(
+                    endpoint=self._cfg.cerebro.endpoint_local, model=modelo,
+                    instructions=sistema, items=[{"role": "user", "content": usuario}],
+                    tools=[], max_tokens=max_tokens, context=self._cfg.cerebro.contexto_local,
+                    temperature=self._cfg.cerebro.temperatura, json_mode=json_mode,
+                )
+                self._contabilizar(modelo, resposta.usage)
+                return resposta.output_text
             request = {
                 "model": modelo,
                 "instructions": sistema,

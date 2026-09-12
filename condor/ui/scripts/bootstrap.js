@@ -19,6 +19,12 @@ window.addEventListener('DOMContentLoaded', async () => {
   CondorCoreUI.init();
   CondorErros.init();
   CondorWS.conectar();
+  // Descarta tambem dados de memoria/projetos exibidos por outras abas.
+  CondorWS.ao('seguranca.bloqueado', () => {
+    CondorVoz.stopForSecurity();
+    document.getElementById('frame').hidden = true;
+    location.reload();
+  });
 
   const agora = new Date();
   document.getElementById('sessionLabel').textContent =

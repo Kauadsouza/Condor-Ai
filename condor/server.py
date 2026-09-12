@@ -19,7 +19,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from condor.actions.guard import Guarda
@@ -500,6 +500,39 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 "memoria": memoria.estatisticas(),
                  "custo": memoria.custo_hoje()}
 
+    @app.get("/api/assistant/status")
+    async def api_assistant_status():
+        return {
+            **sessao.snapshot(),
+            "unlocked": vault.unlocked and guarda.owner_session_active,
+            "stopped": guarda.stopped,
+            "integrity_ok": integrity.verify()[0] if vault.unlocked else None,
+            "connector": provider.connector_state,
+            "keep_window_open": not config.sessao.fechar_janela_ao_dormir,
+            "hub_available": HUB_OUT.exists(),
+            "voice": {"stt": ouvidos.pronto, "tts": voz.pronto,
+                      "wake_word": escuta.ativa, "wake_reason": escuta.motivo_inativa},
+            "iphone": {"control": False, "integration": "shortcuts_setup_required"},
+        }
+
+    @app.patch("/api/assistant/preferences")
+    async def api_assistant_preferences(payload: dict):
+        if not vault.unlocked or not guarda.owner_session_active:
+            return JSONResponse({"erro": "desbloqueie o Condor"}, status_code=423)
+        if type(payload.get("keep_window_open")) is not bool:
+            return JSONResponse({"erro": "keep_window_open deve ser booleano"}, status_code=400)
+        config.sessao.fechar_janela_ao_dormir = not payload["keep_window_open"]
+        salvar_config(config)
+        return {"ok": True}
+
+    @app.post("/api/assistant/conversations")
+    async def api_assistant_new_conversation():
+        if not vault.unlocked or not guarda.owner_session_active:
+            return JSONResponse({"erro": "desbloqueie o Condor"}, status_code=423)
+        await sessao.nova_conversa(preservar_historico=True)
+        await conexoes.transmitir({"tipo": "conversa.historico", "mensagens": []})
+        return {"ok": True, "history_preserved": True}
+
     @app.get("/api/seguranca/estado")
     async def api_security_state():
         audit_ok, audit_count = guarda.verificar_auditoria()
@@ -716,6 +749,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         face_guard.on_vault_lock()
         memoria.lock()
         vault.lock()
+        await conexoes.transmitir({"tipo": "seguranca.bloqueado"})
         return {"ok": True}
 
     @app.post("/api/seguranca/trocar-frase")
@@ -744,6 +778,8 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     @app.post("/api/seguranca/segredos")
     async def api_security_secrets(payload: dict):
+        if sessao._ocupado.locked():
+            return JSONResponse({"erro": "aguarde a resposta atual antes de trocar o modelo"}, status_code=409)
         if not vault.unlocked:
             return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
         if not guarda.owner_session_active:
@@ -866,6 +902,13 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         count = integrity.refresh()
         guarda.auditar("security", "integrity_refresh", f"{count} arquivos", True, True)
         return {"ok": True, "files": count}
+
+    @app.get("/api/conversa/arquivo")
+    async def api_arquivo_conversas(antes: int | None = None):
+        if response := _memoria_pronta():
+            return response
+        itens = memoria.arquivo_conversas(antes)
+        return {"itens": itens, "proximo": itens[-1]["id"] if len(itens) == 50 else None}
 
     @app.delete("/api/conversa/historico")
     async def api_limpar_historico():
@@ -2174,8 +2217,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         return {"ok": memoria.hub_update_mission(item_id[:80], estado, progresso)}
 
     @app.post("/api/voice/transcribe")
-    async def api_voice_transcribe(request: Request):
+    async def api_voice_transcribe(request: Request, dispatch: bool = True):
         """Push-to-talk local; áudio bruto nunca sai do loopback deste PC."""
+        if not vault.unlocked or not guarda.owner_session_active or guarda.stopped:
+            return JSONResponse({"erro": "desbloqueie o Condor antes de usar voz"}, status_code=423)
         if not memoria.permission_allowed("microphone"):
             request_item = memoria.request_permission(
                 "microphone",
@@ -2193,12 +2238,37 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if not audio or len(audio) > 20 * 1024 * 1024:
             return JSONResponse({"erro": "audio ausente ou grande demais"}, status_code=400)
         texto = await ouvidos.transcrever(audio)
+        if not vault.unlocked or not guarda.owner_session_active or guarda.stopped:
+            return JSONResponse({"erro": "sessao bloqueada durante a transcricao"}, status_code=423)
         if not texto:
             return JSONResponse({"erro": "nao entendi a fala"}, status_code=422)
-        tarefa = asyncio.create_task(sessao.processar(texto, por_voz=True), name="condor-voz-local")
-        _EM_VOO.add(tarefa)
-        tarefa.add_done_callback(_EM_VOO.discard)
+        if dispatch:
+            async def processar_voz():
+                try:
+                    await sessao.processar(texto, por_voz=True)
+                except Exception as exc:
+                    log.error("Falha no turno de voz: %s", type(exc).__name__)
+                    await sessao._mudar_estado("ouvindo" if sessao.acordado else "dormindo")
+                    await conexoes.transmitir({"tipo": "erro", "mensagem": "Nao consegui concluir a resposta de voz. Tente novamente."})
+            tarefa = asyncio.create_task(processar_voz(), name="condor-voz-local")
+            _EM_VOO.add(tarefa)
+            tarefa.add_done_callback(_EM_VOO.discard)
         return {"ok": True, "texto": texto, "local": True}
+
+    @app.post("/api/voice/synthesize")
+    async def api_voice_synthesize(payload: dict):
+        # Playback belongs to the requesting UI, so a selected headset works
+        # without playing a second copy through the Windows default speaker.
+        if not vault.unlocked or not guarda.owner_session_active or guarda.stopped:
+            return JSONResponse({"erro": "desbloqueie o Condor antes de usar voz"}, status_code=423)
+        try:
+            texto = _texto(payload, "texto", 8000)
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        audio = await voz.sintetizar(texto)
+        if not audio:
+            return JSONResponse({"erro": "voz local indisponivel; confira o modelo Piper"}, status_code=503)
+        return Response(audio, media_type="audio/wav")
 
     @app.get("/api/acoes")
     async def api_acoes(limite: int = 40):
@@ -2306,6 +2376,13 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                     msg = json.loads(bruto)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("tipo") in {"texto", "acordar"} and (
+                    not vault.unlocked or not guarda.owner_session_active or face_guard.access_blocked
+                ):
+                    await socket.send_text(json.dumps({"tipo": "erro", "mensagem": "Desbloqueie o Condor para conversar."}))
+                    continue
                 if msg.get("tipo") == "senha" and not local_security.rate_allowed("ws-password", 10, 60):
                     await socket.send_text(json.dumps({
                         "tipo": "erro", "mensagem": "Muitas tentativas de aprovação. Aguarde."
@@ -2386,7 +2463,20 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
         if texto:
             # Solto numa tarefa pra não travar o WebSocket enquanto ele pensa —
             # é o que mantém a interface respondendo durante a resposta.
-            tarefa = asyncio.create_task(sessao.processar_texto(texto))
+            async def processar_com_recuperacao():
+                try:
+                    if msg.get("modo_voz") is True:
+                        await sessao.processar(texto, por_voz=True, reproduzir_voz=False)
+                    else:
+                        await sessao.processar_texto(texto)
+                except Exception as exc:
+                    log.error("Falha no turno: %s", type(exc).__name__)
+                    await sessao._mudar_estado("ouvindo" if sessao.acordado else "dormindo")
+                    try:
+                        await socket.send_text(json.dumps({"tipo": "erro", "mensagem": "Não consegui concluir esta resposta. Tente novamente."}))
+                    except Exception:
+                        pass
+            tarefa = asyncio.create_task(processar_com_recuperacao())
             _EM_VOO.add(tarefa)
             tarefa.add_done_callback(_EM_VOO.discard)
 

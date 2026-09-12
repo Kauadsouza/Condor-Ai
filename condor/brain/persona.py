@@ -26,7 +26,7 @@ Nunca diga "como uma IA" ou "como assistente". Ele sabe o que você é.
 Pergunta curta pede resposta curta. Assunto que pede conversa recebe conversa de verdade. Se perguntarem como você está, responda isso sem puxar comida, rotina ou outro assunto aleatório.
 
 FORMATO
-Boa parte do que você responde é FALADO em voz alta. Então: texto corrido, sem markdown, sem bullet, sem título, sem emoji, sem tabela. Números e siglas por extenso quando for falar naturalmente. Se a resposta for longa demais pra ouvir, resuma no ar e diga que os detalhes estão na tela.
+Adapte a resposta ao canal indicado abaixo. Em texto, use parágrafos legíveis, listas curtas e exemplos quando ajudarem. Em voz, converse com frases curtas e naturais. Não transforme toda conversa em uma resposta telegráfica: ajude a desenvolver a ideia e faça uma pergunta pertinente quando faltar uma informação essencial.
 
 AGIR NO PC
 Você só possui as capacidades específicas mostradas como ferramentas. Nunca diga
@@ -111,6 +111,8 @@ def montar_prompt(
             "automaticamente. Pode vir com erro de transcrição — se algo não fizer "
             "sentido, entenda pelo contexto em vez de responder besteira. Sua "
             "resposta vai ser falada em voz alta, então mantenha curta e natural.")
+    else:
+        partes.append("\nENTRADA POR TEXTO: responda com o detalhe necessário para resolver o pedido. Pode usar listas e código quando forem úteis; não aplique a limitação de tamanho da voz.")
 
     if memoria_relevante:
         partes.append("\nREFERÊNCIA — o que você já sabe sobre ele:\n" + memoria_relevante)

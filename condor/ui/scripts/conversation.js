@@ -15,10 +15,17 @@ const CondorConversa = (() => {
   let historicoCarregado = false;
   let avisoTimer = null;
   let turnoAtivo = null;
+  let conectado = false;
   const fila = [];
   const LIMITE_FILA = 20;
 
   function init() {
+    CondorWS.ao('ws.ligado', () => { conectado=true; });
+    CondorWS.ao('ws.caiu', () => {
+      conectado=false; fila.length=0; turnoAtivo=null; fecharBolha(); mostrarDigitando(false); atualizarFila();
+      mostrarAviso('CONEXÃO INTERROMPIDA · A FILA NÃO SERÁ REENVIADA', true);
+      CondorVoz.stopForSecurity();
+    });
     const campo = $('textInput');
     const botao = $('sendBtn');
     const limpar = $('clearChatBtn');
@@ -28,6 +35,7 @@ const CondorConversa = (() => {
     const enviar = () => {
       const texto = campo.value.trim();
       if (!texto) return;
+      if (!conectado) { mostrarAviso('AGUARDE A CONEXÃO · SEU TEXTO FOI PRESERVADO',true); return; }
       campo.value = '';
       solicitarEnvio(texto);
     };
@@ -82,6 +90,7 @@ const CondorConversa = (() => {
   // ── Fila de turnos ───────────────────────────────────────────────────
 
   function solicitarEnvio(texto) {
+    if (!conectado) { mostrarAviso('SEM CONEXÃO COM O NÚCLEO',true); return; }
     const item = { texto: String(texto || '').trim(), tipo: 'texto' };
     if (!item.texto) return;
     if (turnoAtivo) {

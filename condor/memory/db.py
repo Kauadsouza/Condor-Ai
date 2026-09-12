@@ -1313,9 +1313,28 @@ class Memoria:
     def historico(self, limite: int = 20) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT papel, conteudo FROM conversas ORDER BY ts DESC LIMIT ?",
+                """SELECT papel, conteudo FROM conversas
+                   WHERE ts >= COALESCE((SELECT CAST(valor AS REAL) FROM memory_meta
+                     WHERE chave='active_conversation_since'), 0)
+                   ORDER BY ts DESC LIMIT ?""",
                 (limite,)).fetchall()
             return [{"role": r["papel"], "content": r["conteudo"]} for r in reversed(rows)]
+
+    def arquivar_conversa(self) -> None:
+        """Starts an empty chat while preserving encrypted past messages."""
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO memory_meta(chave,valor) VALUES('active_conversation_since',?)
+                   ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor""", (str(time.time()),))
+
+    def arquivo_conversas(self, antes: int | None = None, limite: int = 50) -> list[dict]:
+        """Read encrypted conversation history, including earlier archived chats."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id,papel,conteudo,ts FROM conversas WHERE (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?",
+                (antes, antes, max(1, min(limite, 100))),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     # ── Condor AI Cloud ──────────────────────────────────────────────────
 

@@ -758,6 +758,7 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
       <!-- Campo de texto -->
       <div class="chat-queue-status" id="chatQueueStatus" role="status" aria-live="polite" hidden></div>
       <div class="chat-compose" id="chatCompose">
+        <button class="chat-send-btn" id="continuousVoiceBtn" type="button" aria-pressed="false" title="Conversa por voz até encerrar ou pressionar Esc. Requer permissão de microfone no Sistema.">CONVERSA CONTÍNUA</button>
         <input id="textInput" type="text" placeholder="converse, peça uma imagem ou descreva o que quer analisar..." />
         <button class="chat-send-btn" id="sendBtn" type="button">ENVIAR</button>
       </div>
@@ -803,6 +804,7 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
       </form>
       <form class="permission-auth-form" id="systemPermissionForm" hidden><strong id="systemPermissionName">PERMISSÃO</strong><label>PALAVRA DE ACESSO<input id="systemPermissionPassphrase" type="password" autocomplete="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" required></label><button type="submit" class="core-action" id="systemPermissionSubmit">ATIVAR</button><span class="system-form-message" id="systemPermissionMessage"></span></form>
       <div class="connector-health-grid" id="systemConnectorHealth"></div>
+      <article class="core-card full"><small>ASSISTENTE LOCAL · DISPONIBILIDADE E INTEGRIDADE</small><p id="residentState" role="status">Verificando o núcleo...</p><label><input type="checkbox" id="residentKeepOpen"> Manter a janela aberta durante a inatividade</label><form class="permission-auth-form" id="residentIntegrityForm" hidden><strong>VALIDAR ATUALIZAÇÃO INSTALADA</strong><label>PALAVRA DE ACESSO<input type="password" id="residentIntegrityPassword" autocomplete="off" required maxlength="512"></label><button class="core-action" type="submit">VALIDAR</button><p>Confirme apenas atualizações instaladas por você ou a seu pedido.</p></form><p id="residentResult" role="status"></p></article>
       <div class="system-tile-grid" id="systemStatus"></div>
       <article class="core-card full face-guard-card" id="systemFaceGuardCard" hidden><div class="face-guard-eye">◉</div><div class="face-guard-copy"><small>TRAVA DE PRESENÇA LOCAL</small><strong id="systemFaceGuardState">AÇÃO NECESSÁRIA</strong><span id="systemFaceGuardDetail">Nenhuma fotografia é armazenada.</span></div><div class="face-guard-actions"><button type="button" id="systemFaceEnroll">CADASTRAR ROSTO</button><button type="button" id="systemFaceDisable" hidden>DESATIVAR</button></div></article>
       <div class="system-visual-grid"><article class="core-card" id="systemPermissionCard" hidden><small>SOLICITAÇÕES DE PERMISSÃO</small><div class="permission-grid" id="systemPermissions"></div></article><article class="core-card" id="systemContextCard" hidden><small>CONTEXTO ATIVO</small><div class="context-matrix" id="systemContext"></div></article></div>
@@ -1046,6 +1048,7 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
         </section>
         <div class="memory-legend"><span><i class="category"></i>ÁREA</span><span><i class="fact"></i>MEMÓRIA</span><span><i class="association"></i>CONEXÃO ENTRE MEMÓRIAS</span></div>
         <section class="memory-orbit-stage" id="memoryChainBoard" aria-label="Mapa orbital da memória" aria-live="polite"></section>
+        <details class="memory-inspector-card" id="conversationArchive"><summary>HISTÓRICO DE CONVERSAS NO COFRE</summary><p>Mensagens recentes e arquivadas, da mais nova para a mais antiga. A limpeza definitiva do chat remove estas mensagens.</p><div id="conversationArchiveItems" aria-live="polite"></div><button type="button" class="core-action" id="conversationArchiveMore">CARREGAR HISTÓRICO</button></details>
       </main>
       <aside class="memory-inspector">
         <section class="memory-inspector-card memory-selected-card">
@@ -1170,5 +1173,6 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
 <script src="scripts/errors.js"></script>
 <script src="scripts/mobile-access.js"></script>
 <script src="scripts/bootstrap.js"></script>
+<script src="scripts/resident.js"></script>
 </body>
 </html>

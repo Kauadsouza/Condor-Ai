@@ -60,6 +60,9 @@ async def principal() -> None:
 
 
 def main() -> None:
+    from condor.instance import acquire
+    if not acquire("condor-server"):
+        return
     preparar_log("-v" in sys.argv)
     try:
         asyncio.run(principal())

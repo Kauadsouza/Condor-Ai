@@ -1,5 +1,6 @@
 # Condor - faixas travadas por versao principal para reduzir risco de supply chain.
 openai>=2.50,<3
+httpx>=0.28,<1
 cryptography>=50,<51
 
 fastapi>=0.136,<1
