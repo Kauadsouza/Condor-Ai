@@ -64,6 +64,14 @@ class LocalStreamTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AssistantAPITests(unittest.TestCase):
+    def test_questions_never_turn_into_personal_memory(self):
+        from condor.memory.extractor import extrair_fatos_locais
+        for question in ['Qual horário de estudo eu prefiro?', 'Onde eu moro', 'Responda em uma frase: qual horário de estudo eu prefiro? Consulte a memória disponível.']:
+            self.assertEqual(extrair_fatos_locais(question), [], question)
+        facts=extrair_fatos_locais('Eu moro em Oxford. Qual cidade eu prefiro?')
+        self.assertEqual(len(facts),1)
+        self.assertEqual(facts[0]['chave'],'cidade_atual')
+
     def test_voice_and_preferences_require_local_session_and_unlocked_owner(self):
         from fastapi.testclient import TestClient
         from condor.server import montar

@@ -221,10 +221,22 @@ def _instrucao_insegura_para_memoria(texto: str) -> bool:
     ))
 
 
+def _afirmacoes_para_memoria(texto: str) -> str:
+    # Questions retrieve knowledge; they do not assert their own premises.
+    partes = re.split(r"(?<=[.!?])\s+|\n", str(texto or ""))
+    return "\n".join(parte for parte in partes
+        if "?" not in parte and (parte.strip().upper() == "COMO QUERO SER AJUDADO" or not re.match(
+            r"\s*(?:(?:condor|chat)[, ]+)?(?:qual|quais|onde|quando|como|quanto|quantos|quantas|sera\s+que|será\s+que)\b",
+            parte, re.I)))
+
+
 def extrair_fatos_locais(fala_dono: str) -> list[dict]:
     """Extrai afirmações pessoais claras sem modelo, rede ou token de API."""
     texto = str(fala_dono or "").strip()
     if len(texto) < 4 or contem_segredo(texto):
+        return []
+    texto = _afirmacoes_para_memoria(texto)
+    if not texto.strip():
         return []
 
     fatos: list[dict] = []
@@ -572,6 +584,9 @@ class Extrator:
                 or contem_segredo(fala_condor)
                 or not bool(getattr(self._memoria, "unlocked", True))):
             return   # "sim", "ok", "valeu" — não tem o que aprender
+        fala_dono = _afirmacoes_para_memoria(fala_dono)
+        if len(fala_dono.strip()) < 8:
+            return
 
         ja_sei = self._memoria.fatos_recentes(limite=25)
         conhecido = "\n".join(f"- [{f['categoria']}] {f['chave']}: {f['valor']}"
@@ -580,7 +595,7 @@ class Extrator:
         entrada = (f"JÁ SEI:\n{conhecido}\n\n"
                    f"CONVERSA DE AGORA:\n"
                    f"Dono: {fala_dono[:2500]}\n"
-                   f"Assistente: {fala_condor[:1500]}")
+                   "Extraia apenas afirmacoes explicitas do dono. Perguntas e pedidos nao confirmam fatos.")
 
         bruto = await self._cerebro.completar(
             INSTRUCAO, entrada,
