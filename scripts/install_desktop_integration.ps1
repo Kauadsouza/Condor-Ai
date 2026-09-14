@@ -3,6 +3,8 @@ $ErrorActionPreference = 'Stop'
 $CondorRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $CondorLauncher = Join-Path $CondorRoot 'Condor.exe'
 $CondorRunner = Join-Path $PSScriptRoot 'run.ps1'
+$CondorBackground = Join-Path $CondorRoot 'condor_background.pyw'
+$CondorPythonw = Join-Path $CondorRoot '.venv\Scripts\pythonw.exe'
 $CondorProtocol = 'HKCU:\Software\Classes\condor'
 $CondorTask = 'Condor Local Assistant'
 $CondorLegacyStartup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Condor Local.lnk'
@@ -17,7 +19,7 @@ if ($Remove) {
     Write-Output 'Inicializacao automatica e protocolo removidos. O cofre foi preservado.'
     return
 }
-foreach ($CondorRequired in @($CondorLauncher, $CondorRunner, (Join-Path $CondorRoot '.venv\Scripts\python.exe'))) {
+foreach ($CondorRequired in @($CondorLauncher, $CondorRunner, $CondorBackground, $CondorPythonw, (Join-Path $CondorRoot '.venv\Scripts\python.exe'))) {
     if (-not (Test-Path -LiteralPath $CondorRequired)) { throw "Componente ausente: $CondorRequired" }
 }
 # No URL is forwarded to the application: the protocol can only open Condor.
@@ -26,8 +28,8 @@ Set-Item -LiteralPath $CondorProtocol -Value 'URL:Condor Local Assistant'
 New-ItemProperty -LiteralPath $CondorProtocol -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null
 Set-Item -LiteralPath "$CondorProtocol\shell\open\command" -Value ('"' + $CondorLauncher + '"')
 $CondorUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$CondorArguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $CondorRunner + '"'
-$CondorAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $CondorArguments -WorkingDirectory $CondorRoot
+$CondorArguments = '"' + $CondorBackground + '"'
+$CondorAction = New-ScheduledTaskAction -Execute $CondorPythonw -Argument $CondorArguments -WorkingDirectory $CondorRoot
 $CondorTrigger = New-ScheduledTaskTrigger -AtLogOn -User $CondorUser
 $CondorPrincipal = New-ScheduledTaskPrincipal -UserId $CondorUser -LogonType Interactive -RunLevel Limited
 $CondorSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew

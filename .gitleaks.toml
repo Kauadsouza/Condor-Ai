@@ -1,0 +1,13 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact synthetic credentials used by CI and security regression tests"
+regexTarget = "secret"
+regexes = [
+  '''^test-server-key$''',
+  '''^sb_publishable_1234567890$''',
+  '''^sk-segredo123456789$''',
+  '''^MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=$''',
+  '''^0123456789abcdef0123456789abcdef$''',
+]
