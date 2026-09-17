@@ -1,45 +1,75 @@
 # Condor AI
 
-Condor is a local-first personal AI system designed to run on its owner's computer with one persistent identity, encrypted memory and explicit control over every sensitive capability.
+**English** · [Português](README.pt-BR.md) · [Español](README.es.md)
 
-It is not a wrapper around a single model. Local models, OpenAI and Claude can act as interchangeable cognitive engines, while Condor keeps the same identity, memory policy, permissions and user interface.
+A personal AI system that runs **on its owner's computer**, with one persistent identity, encrypted memory and explicit control over every sensitive capability.
 
-## Design goals
+It is not a wrapper around one model. Local models, OpenAI and Claude are interchangeable engines; what persists is the identity, the memory policy, the permissions and the interface.
 
-- **One mind:** PC, mobile viewer and the optional cloud companion are interfaces to the same canonical Condor identity.
-- **Local ownership:** private state lives under the owner's control and is not committed with the source code.
-- **Fail-closed automation:** computer, file and physical-device actions are gated by policy and explicit approval.
-- **Model independence:** the deterministic core remains available without a paid API.
+---
+
+## Why it exists
+
+A hosted AI assistant has a structural problem: its memory belongs to someone else. You talk for months, and that history — who you are, what you already explained, what you decided — lives on a server that can change its rules, its price or its owner.
+
+Condor inverts that. The memory sits encrypted on the owner's disk; the model is the replaceable part.
+
+## Design principles
+
+- **One mind:** PC, mobile viewer and the optional cloud companion are interfaces to the same canonical identity.
+- **Local ownership:** private state stays under the owner's control and is never committed with the source.
+- **Automation that fails closed:** computer, file and physical-device actions pass through policy and explicit approval.
+- **Model independence:** the deterministic core keeps working without a paid API.
 - **Inspectable security:** encryption, integrity checks, audit chaining and recovery paths are documented and tested.
 
-## Current capabilities
+## Capabilities
 
-- FastAPI core bound to `127.0.0.1` with a self-contained desktop interface.
-- AES-256-GCM encrypted vault and memory snapshot.
+- A FastAPI core bound to `127.0.0.1`, with its own desktop interface.
+- Vault and memory snapshot encrypted with **AES-256-GCM**, key derived with **scrypt**.
 - Persistent facts, conversations, tasks, project state and versioned drafts.
-- Stable `condor-core-identity-v1` identity above the model router.
-- Selectable Local, OpenAI and Claude connectors with secret redaction.
+- A stable `condor-core-identity-v1` identity above the model router.
+- Selectable Local, OpenAI and Claude connectors, with secret redaction.
 - Local speech, optional wake word, authentication-only computer vision and private image generation.
-- Permission-scoped tools for approved files, applications, research and development workflows.
-- Separate read-only mobile viewer on the private network; it exposes no command, memory or vault routes.
-- ARTX Hub integration for project organisation without sharing PC permissions or private memory.
-- Condor X experimental project workspace for 3D design and bounded engineering simulations.
-- Optional `cloud/` PWA foundation for encrypted chat, notes and memory access while the PC is offline.
+- Permission-scoped tools for files, applications, research and development work.
+- A **read-only** mobile viewer on the private network — no command, memory or vault routes.
+- ARTX Hub integration for organisation, without sharing PC permissions or private memory.
+- Condor X: an experimental space for 3D design and bounded engineering simulation.
+- An optional PWA foundation (`cloud/`) for encrypted chat, notes and memory while the PC is off.
+
+## Backup: the one irreplaceable part
+
+The code comes back from a `git clone`. The **memory, identity and vault do not** — they exist only in `~/.condor`, on this machine.
+
+So the backup is automated rather than a good intention:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_backup_task.ps1
+```
+
+It asks for a destination folder, asks for the passphrase **once**, and schedules a daily run plus one five minutes after each logon — for the days the PC was off at the appointed hour.
+
+The passphrase is protected by Windows DPAPI, readable only by this account on this machine. **The backup file itself stays portable:** it opens with the passphrase on any computer — which is exactly the point if this machine dies. The fourteen most recent are kept.
+
+Testing the restore is part of the procedure, because a backup nobody has restored is a hope, not a backup:
+
+```powershell
+powershell -File scripts\restore_condor_data.ps1 -BackupFile "<file.enc>" -CondorHome "$env:TEMP\restore-test"
+```
 
 ## Security boundary
 
-The full Condor core must remain loopback-only. Never expose port `7777` to the internet. The mobile viewer uses a separate process and port, is restricted to private networks, requires pairing and returns sanitised read-only data.
+The full core must stay loopback-only. **Never expose port `7777` to the internet.** The mobile viewer runs as a separate process on a separate port, is restricted to private networks, requires pairing and returns sanitised read-only data.
 
-Secrets, biometric templates, memory, configuration, logs and user files live outside the repository in `~/.condor` by default. The repository can restore the application, but it cannot restore that private state. Never upload or recreate an existing private Condor home during source publication.
+Secrets, biometric templates, memory, configuration, logs and user files live outside the repository, in `~/.condor` by default. The repository restores the application, but it cannot restore that private state. Never publish or recreate an existing `~/.condor` when publishing the source.
 
-Read the detailed [security model](SECURITY.md), [architecture](ARCHITECTURE.md) and [operations guide](OPERATIONS.md).
+Read the [security model](SECURITY.md), the [architecture](ARCHITECTURE.md) and the [operations guide](OPERATIONS.md).
 
 ## Architecture at a glance
 
 ```text
 Desktop UI / voice / local projects
                 |
-         Local FastAPI core
+          Local FastAPI core
                 |
    identity + policy + encrypted memory
         /           |             \
@@ -59,7 +89,7 @@ Requires Python 3.11 or newer.
 powershell -ExecutionPolicy Bypass -File .\scripts\setup_new_windows_pc.ps1
 ```
 
-For a manual installation:
+Manual installation:
 
 ```powershell
 .\scripts\install.ps1
@@ -67,7 +97,7 @@ For a manual installation:
 .\scripts\run.ps1
 ```
 
-The initial model downloads can be large. After installation, configured local models can run without an external AI account.
+The initial model downloads can be large. After that, configured local models run without an external AI account.
 
 ## Verification
 
@@ -76,7 +106,7 @@ The initial model downloads can be large. After installation, configured local m
 .\.venv\Scripts\python.exe scripts\doctor.py
 ```
 
-The automated suite exercises policy, vault encryption, memory, identity, provider routing, interface boundaries, device safety and Condor X simulation rules without requiring paid APIs.
+The suite covers policy, vault encryption, memory, identity, provider routing, interface boundaries, device safety and the Condor X simulation rules — **without requiring a paid API**. With 114 tests, it is the best-covered repository of the set.
 
 The cloud companion is verified separately:
 
@@ -94,17 +124,17 @@ npm.cmd run build
 condor/        Core, memory, security, devices, UI and project engines
 cloud/         Optional encrypted PWA companion foundation
 deploy/        Private-network deployment examples
-scripts/       Installation, diagnostics and local runtime helpers
+scripts/       Installation, diagnostics, backup and local runtime
 testes/        Security and behaviour regression suite
 windows/       Native Windows launcher identity
 ```
 
-## Honest status
+## Status, without makeup
 
-Condor is an active personal R&D system, not a finished general-purpose consumer assistant. Local PC operation and tested safety boundaries are implemented. The cloud companion is a foundation that still requires its own infrastructure, real authentication and end-to-end deployment validation. Condor X engineering tools are prototypes and simulations; they do not claim validated physical performance.
+Condor is an active personal R&D system, not a finished consumer assistant. Local PC operation and tested safety boundaries are implemented. The cloud companion is a foundation that still needs its own infrastructure, real authentication and end-to-end validation. The Condor X tools are prototypes and simulations — they claim no validated physical performance.
 
 ## Licence
 
-Proprietary source-available portfolio project. No permission to copy, redistribute or commercialise the code is granted by its public visibility.
+A source-available, proprietary portfolio project. Public visibility grants no permission to copy, redistribute or commercialise.
 
 Built and maintained by [Kauã Diniz Souza](https://github.com/Kauadsouza).
