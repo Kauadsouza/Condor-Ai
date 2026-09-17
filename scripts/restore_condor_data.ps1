@@ -10,7 +10,11 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$BackupFile,
-    [string]$CondorHome = $(if ($env:CONDOR_HOME) { $env:CONDOR_HOME } else { Join-Path $HOME ".condor" })
+    [string]$CondorHome = $(if ($env:CONDOR_HOME) { $env:CONDOR_HOME } else { Join-Path $HOME ".condor" }),
+    # Mesma frase protegida pelo Windows que a tarefa agendada usa. Serve para
+    # testar a restauracao sem digitar nada — e um backup que ninguem testou
+    # restaurar e so uma esperanca.
+    [string]$PassphraseFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,8 +23,15 @@ if (-not (Test-Path -LiteralPath $BackupFile)) {
     throw "Arquivo de backup nao encontrado: $BackupFile"
 }
 
-Write-Host "Digite a frase secreta usada para criptografar este backup:"
-$SecurePassword = Read-Host -AsSecureString
+if ($PassphraseFile) {
+    if (-not (Test-Path -LiteralPath $PassphraseFile)) { throw "Arquivo de frase nao encontrado: $PassphraseFile" }
+    $FraseGuardada = (Get-Content -LiteralPath $PassphraseFile -Raw).Trim()
+    if (-not $FraseGuardada) { throw "Arquivo de frase vazio: $PassphraseFile" }
+    $SecurePassword = ConvertTo-SecureString $FraseGuardada
+} else {
+    Write-Host "Digite a frase secreta usada para criptografar este backup:"
+    $SecurePassword = Read-Host -AsSecureString
+}
 $Bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
 try {
     $Password = [Runtime.InteropServices.Marshal]::PtrToStringAuto($Bstr)

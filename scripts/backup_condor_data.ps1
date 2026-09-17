@@ -11,7 +11,12 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Destination,
-    [string]$CondorHome = $(if ($env:CONDOR_HOME) { $env:CONDOR_HOME } else { Join-Path $HOME ".condor" })
+    [string]$CondorHome = $(if ($env:CONDOR_HOME) { $env:CONDOR_HOME } else { Join-Path $HOME ".condor" }),
+    # Arquivo com a frase protegida pelo Windows (DPAPI), usado pela tarefa
+    # agendada — que nao tem ninguem para digitar nada. Veja install_backup_task.ps1.
+    [string]$PassphraseFile,
+    # Quantos backups manter na pasta de destino. 0 mantem todos.
+    [int]$Keep = 14
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,8 +61,21 @@ try {
     }
     $EncryptedPath = Join-Path $Destination "condor-backup-$Timestamp.enc"
 
-    Write-Host "Digite uma frase secreta para criptografar este backup (guarde-a fora deste PC):"
-    $SecurePassword = Read-Host -AsSecureString
+    if ($PassphraseFile) {
+        # A frase fica protegida pelo DPAPI: so este usuario do Windows, nesta
+        # maquina, consegue ler o arquivo. O backup gerado continua portatil —
+        # ele e aberto com a frase, em qualquer computador.
+        if (-not (Test-Path -LiteralPath $PassphraseFile)) {
+            throw "Arquivo de frase nao encontrado em '$PassphraseFile'. Rode install_backup_task.ps1 de novo."
+        }
+        # Trim: o arquivo termina com quebra de linha e o ConvertTo-SecureString recusa.
+        $FraseGuardada = (Get-Content -LiteralPath $PassphraseFile -Raw).Trim()
+        if (-not $FraseGuardada) { throw "Arquivo de frase vazio em '$PassphraseFile'." }
+        $SecurePassword = ConvertTo-SecureString $FraseGuardada
+    } else {
+        Write-Host "Digite uma frase secreta para criptografar este backup (guarde-a fora deste PC):"
+        $SecurePassword = Read-Host -AsSecureString
+    }
     $Bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword)
     try {
         $Password = [Runtime.InteropServices.Marshal]::PtrToStringAuto($Bstr)
@@ -96,6 +114,17 @@ try {
     Write-Host "Backup criptografado criado em: $EncryptedPath"
     Write-Host "Guarde a frase secreta em um cofre de senhas separado deste PC."
     Write-Host "Sem ela, o backup nao pode ser restaurado por ninguem, incluindo voce."
+
+    # Sem limpeza, a pasta cresce para sempre e um dia enche o disco — que e
+    # justamente quando o backup para de rodar, sem ninguem perceber.
+    if ($Keep -gt 0) {
+        $Antigos = Get-ChildItem -LiteralPath $Destination -Filter "condor-backup-*.enc" -File |
+            Sort-Object LastWriteTime -Descending | Select-Object -Skip $Keep
+        foreach ($Velho in $Antigos) {
+            Remove-Item -LiteralPath $Velho.FullName -Force -ErrorAction SilentlyContinue
+        }
+        if ($Antigos) { Write-Host "Removidos $($Antigos.Count) backups antigos, mantendo os $Keep mais recentes." }
+    }
 }
 finally {
     Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
