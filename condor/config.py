@@ -35,6 +35,8 @@ class CerebroConfig(BaseModel):
     modelo: str = "gpt-5.6-terra"
     modelo_rapido: str = "gpt-5.6-luna"          # extrair memória, classificar
     modelo_embedding: str = "text-embedding-3-small"
+    # Vetores da memória, sempre locais via Ollama. Vazio desliga.
+    modelo_embedding_local: str = "embeddinggemma"
     provedor_preferido: str = "auto"
     modelo_claude: str = "claude-sonnet-5"
     endpoint_local: str = "http://127.0.0.1:11434/v1"

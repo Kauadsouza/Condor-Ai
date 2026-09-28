@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import unicodedata
 
 log = logging.getLogger("condor.extrator")
@@ -27,6 +28,11 @@ GUARDE (fato durável sobre a pessoa):
 - preferências fortes: gosta/odeia, ferramenta que usa, jeito que prefere trabalhar
 - rotina: horários, hábitos, compromissos que se repetem
 - decisões e combinados: "vamos fazer X assim", "sempre me chame de Y"
+- como ele quer que o assistente fale, responda ou trabalhe com ele ("prefiro
+  respostas curtas", "me explica com exemplo"): isso É preferência durável,
+  mesmo escrito em forma de pedido
+- pessoas da vida dele (família, namorada, amigos, chefe, clientes) e datas
+  importantes delas
 - configuração do próprio PC dela que valha lembrar (caminho de pasta, programa que usa)
 
 NÃO GUARDE:
@@ -54,7 +60,13 @@ Responda só um JSON assim:
   "relacoes": [{"de": "Nome A", "para": "Nome B", "tipo": "trabalha_em|usa|mora_em|conhece"}]
 }
 
-Se não houver nada que valha guardar — o caso mais comum — devolva listas vazias.
+EXEMPLOS:
+Dono: "Prefiro que você me responda curto e direto."
+→ {"fatos": [{"categoria": "preferencia", "chave": "estilo_de_resposta", "valor": "O dono prefere respostas curtas e diretas.", "confianca": 0.9}], "entidades": [], "relacoes": []}
+Dono: "abre o spotify e toca algo animado"
+→ {"fatos": [], "entidades": [], "relacoes": []}
+
+Se não houver nada que valha guardar, devolva listas vazias.
 Prefira guardar pouco e certo a guardar muito e errado.
 A chave deve ser estável: o mesmo assunto tem que gerar a mesma chave sempre,
 pra atualizar o fato em vez de duplicar."""
@@ -101,10 +113,6 @@ def sanitizar_para_memoria(texto: str) -> str:
     """Nunca persiste o valor de uma credencial, nem no histórico cifrado."""
     return CONTEUDO_SENSIVEL_OMITIDO if contem_segredo(texto) else str(texto or "")
 
-
-def _parece_segredo(texto: str) -> bool:
-    """Compatibilidade interna com o filtro antigo."""
-    return contem_segredo(texto)
 
 
 _PROXIMA_AFIRMACAO = (
@@ -426,6 +434,12 @@ def parece_candidato_memoria(texto: str) -> bool:
         "sempre ", "nunca ", "prefiro ", "gosto ", "nao gosto ",
         "decidi ", "decidimos ", "vamos usar ", "vamos fazer ", "combinado ",
         "me chame ", "quero ser ", "meu foco ", "minha prioridade ",
+        # Primeira pessoa sem pronome, o jeito mais comum de falar de si.
+        "sou ", "moro ", "trabalho ", "estudo ", "tenho ", "estou ", "comecei ",
+        "parei de ", "odeio ", "adoro ", "amo ", "costumo ", "acordo ", "durmo ",
+        "minha empresa", "meu chefe", "meu cliente", "minha familia", "minha mae",
+        "meu pai", "minha namorada", "meu namorado", "minha esposa", "meu filho",
+        "a partir de agora", "de agora em diante", "toda vez que", "lembra ",
     )
     return len(bruto) >= 20 and any(sinal in normalizado for sinal in sinais)
 
@@ -445,34 +459,70 @@ def _parse_json_payload(bruto: str) -> dict | None:
         return None
     return dados if isinstance(dados, dict) else None
 
+# Acima disso o texto e o mesmo fato dito com outras palavras (calibrado com
+# embeddinggemma: parafrase ~0.95, "pizza" x "sushi" ~0.74, cidades ~0.89).
+LIMIAR_MESMO_FATO = 0.92
+
+
+def _resumo_itens(itens: list[dict]) -> list[dict]:
+    """O que a interface mostra no aviso "Condor lembrou": sem ids nem vetores."""
+    return [
+        {
+            "id": int(item.get("id") or 0),
+            "categoria": str(item.get("categoria") or ""),
+            "valor": str(item.get("valor") or "")[:220],
+            "status": str(item.get("status") or "novo"),
+        }
+        for item in itens[:6]
+    ]
+
 
 class Extrator:
+    """Aprende com toda troca, com qualquer cérebro, sem perder nada.
+
+    - Cada turno vai para uma fila dentro do banco cifrado: se o cérebro estiver
+      fora do ar, a troca espera e é analisada quando ele voltar, mesmo depois
+      de reiniciar o PC.
+    - Fatos novos são comparados por sentido com o que já existe (embeddings
+      locais): o mesmo fato dito de outro jeito atualiza o antigo em vez de
+      duplicar.
+    - Só o que realmente mudou é contado e anunciado para a interface.
+    """
+
     def __init__(self, memoria, cerebro, config, events=None) -> None:
         self._memoria = memoria
         self._cerebro = cerebro
         self._cfg = config
         self._events = events
-        self._fila: asyncio.Queue[tuple[str, str, str]] = asyncio.Queue(maxsize=48)
-        self._pendentes: set[str] = set()
+        self._sinal = asyncio.Event()
         self._tarefa: asyncio.Task | None = None
+        self._processando = False
 
     def iniciar(self) -> None:
         if self._tarefa is None or self._tarefa.done():
             self._tarefa = asyncio.create_task(self._trabalhar())
+            self._sinal.set()   # retoma o que ficou pendente da última execução
 
     def enfileirar(self, fala_dono: str, fala_condor: str) -> None:
         """Chamado no fim de cada turno. Não bloqueia nada."""
         if (contem_segredo(fala_dono) or contem_segredo(fala_condor)
-                or not parece_candidato_memoria(fala_dono)):
+                or not parece_candidato_memoria(fala_dono)
+                or not bool(getattr(self._memoria, "unlocked", True))):
             return
         assinatura = hashlib.sha256(fala_dono.strip().encode("utf-8")).hexdigest()
-        if assinatura in self._pendentes:
-            return
         try:
-            self._fila.put_nowait((fala_dono, fala_condor, assinatura))
-            self._pendentes.add(assinatura)
-        except asyncio.QueueFull:
-            log.warning("Fila de memoria cheia; aprendizado secundario adiado.")
+            self._memoria.enfileirar_aprendizado(fala_dono, fala_condor or "", assinatura)
+        except Exception as exc:
+            log.warning("Não consegui enfileirar o aprendizado: %s", exc)
+            return
+        self._sinal.set()
+
+    @property
+    def pendentes(self) -> int:
+        try:
+            return int(self._memoria.total_aprendizados_pendentes())
+        except Exception:
+            return 0
 
     async def aprender_local(self, fala_dono: str) -> dict:
         """Salva fatos inequívocos antes da resposta, sem modelo nem token."""
@@ -511,6 +561,7 @@ class Extrator:
                 continue
             salvos.append(fato)
 
+        confirmados: list[dict] = []
         if salvos:
             confirmados = self._memoria.salvar_fatos_lote(salvos, "conversa_local")
             confirmados_por_chave = {
@@ -523,6 +574,7 @@ class Extrator:
 
         if salvos:
             log.info("Memoria local atualizada: %d fato(s).", len(salvos))
+            self._sinal.set()   # o trabalhador calcula os vetores em segundo plano
             if self._events is not None:
                 await self._events.publish(
                     "MEMORY_LEARNED",
@@ -532,6 +584,7 @@ class Extrator:
                         "stats": self._memoria.estatisticas(),
                     },
                     source="memory_extractor",
+                    transient={"items": _resumo_itens(confirmados)},
                 )
         gravados = salvos + iguais
         chaves_gravadas = {
@@ -553,75 +606,178 @@ class Extrator:
         }
 
     async def encerrar(self, timeout: float = 5.0) -> None:
-        """Drena o aprendizado pendente antes de o cofre ser fechado."""
+        """Tenta drenar a fila antes de o cofre fechar; o resto fica salvo nela."""
         tarefa = self._tarefa
         if tarefa is None:
             return
-        try:
-            await asyncio.wait_for(self._fila.join(), timeout=max(0.1, timeout))
-        except asyncio.TimeoutError:
-            log.warning("Aprendizado pendente excedeu %.1fs no encerramento.", timeout)
+        limite = time.monotonic() + max(0.1, timeout)
+        self._sinal.set()
+        while time.monotonic() < limite:
+            if not self._processando and (not self._pronto_para_aprender() or self.pendentes == 0):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            log.warning("Aprendizado pendente excedeu %.1fs no encerramento; segue na fila.", timeout)
         tarefa.cancel()
         await asyncio.gather(tarefa, return_exceptions=True)
         self._tarefa = None
 
+    def _pronto_para_aprender(self) -> bool:
+        return (bool(getattr(self._memoria, "unlocked", True))
+                and bool(getattr(self._cerebro, "pronto", True)))
+
     async def _trabalhar(self) -> None:
         while True:
             try:
-                dono, condor, assinatura = await self._fila.get()
                 try:
-                    await self._processar(dono, condor)
+                    # Acorda a cada troca nova; e a cada minuto tenta de novo o
+                    # que ficou esperando o cérebro ou o Ollama voltar.
+                    await asyncio.wait_for(self._sinal.wait(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    pass
+                self._sinal.clear()
+                if not bool(getattr(self._memoria, "unlocked", True)):
+                    continue
+                self._processando = True
+                try:
+                    if self._pronto_para_aprender():
+                        await self._drenar_fila()
+                    await self._completar_vetores()
                 finally:
-                    self._pendentes.discard(assinatura)
-                    self._fila.task_done()
+                    self._processando = False
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 log.error("Extrator falhou: %s", exc)
 
-    async def _processar(self, fala_dono: str, fala_condor: str) -> None:
+    async def _drenar_fila(self) -> None:
+        for _ in range(50):
+            lote = self._memoria.aprendizados_pendentes(limite=4)
+            if not lote:
+                return
+            for item in lote:
+                if not self._pronto_para_aprender():
+                    return
+                try:
+                    ok = await self._processar(item["fala_dono"], item["fala_condor"])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning("Aprendizado adiado: %s", exc)
+                    ok = None
+                if ok:
+                    self._memoria.concluir_aprendizado(item["id"])
+                elif ok is None:
+                    return   # cérebro não respondeu: espera, sem gastar tentativa
+                else:
+                    self._memoria.falhar_aprendizado(item["id"])
+                    return   # resposta ruim: conta tentativa e tenta no próximo ciclo
+
+    async def _vetores(self, textos: list[str]) -> tuple[list[list[float] | None], str]:
+        """Vetores em lote pelo Ollama local; cai para um por um no cérebro ativo."""
+        if not textos:
+            return [], ""
+        modelo = str(getattr(self._cerebro, "modelo_embedding_ativo", "") or "")
+        local = str(getattr(getattr(self._cfg, "cerebro", None), "modelo_embedding_local", "") or "")
+        em_lote = getattr(self._cerebro, "embeddings_locais", None)
+        if callable(em_lote):
+            vetores = await em_lote(textos)
+            if vetores:
+                return list(vetores), modelo
+            if local:
+                # Ollama fora do ar: fica sem vetor agora e ganha depois pelo
+                # _completar_vetores. Texto da memória nunca vai para a nuvem
+                # em segundo plano.
+                return [None] * len(textos), ""
+        saida = []
+        for texto in textos:
+            saida.append(await self._cerebro.embedding(texto))
+        usado = str(getattr(self._cerebro, "ultimo_modelo_embedding", "") or modelo)
+        return saida, usado
+
+    async def _completar_vetores(self) -> None:
+        """Dá significado aos fatos que chegaram sem vetor (regex, ferramenta, nuvem)."""
+        modelo = str(getattr(self._cerebro, "modelo_embedding_ativo", "") or "")
+        if not modelo or not callable(getattr(self._memoria, "fatos_sem_embedding", None)):
+            return
+        faltando = self._memoria.fatos_sem_embedding(modelo, limite=24)
+        if not faltando:
+            return
+        vetores, modelo_usado = await self._vetores([f["valor"] for f in faltando])
+        if modelo_usado != modelo:
+            return
+        pares = [
+            (fato["id"], fato["valor"], vetor)
+            for fato, vetor in zip(faltando, vetores) if vetor
+        ]
+        gravados = self._memoria.definir_embeddings(pares, modelo)
+        if gravados:
+            log.info("Memoria: %d fato(s) ganharam busca por significado.", gravados)
+
+    def _contexto_conhecido(self, fala_dono: str) -> str:
+        """Mostra ao modelo os fatos parecidos (para reusar a chave) e os recentes."""
+        vistos: set[int] = set()
+        linhas: list[str] = []
+        try:
+            relacionados = self._memoria.buscar_fatos(fala_dono, limite=12)
+        except Exception:
+            relacionados = []
+        for fato in relacionados + self._memoria.fatos_recentes(limite=15):
+            if fato["id"] in vistos:
+                continue
+            vistos.add(fato["id"])
+            linhas.append(f"- [{fato['categoria']}] {fato['chave']}: {fato['valor']}")
+        return "\n".join(linhas[:25]) or "(nada ainda)"
+
+    async def _processar(self, fala_dono: str, fala_condor: str) -> bool | None:
+        """True: analisada (mesmo sem nada a guardar). False: resposta inválida
+        (conta tentativa). None: o cérebro não respondeu (fica na fila)."""
         if (len(fala_dono.strip()) < 8 or contem_segredo(fala_dono)
                 or contem_segredo(fala_condor)
                 or not bool(getattr(self._memoria, "unlocked", True))):
-            return   # "sim", "ok", "valeu" — não tem o que aprender
+            return True   # "sim", "ok", "valeu" — não tem o que aprender
         fala_dono = _afirmacoes_para_memoria(fala_dono)
         if len(fala_dono.strip()) < 8:
-            return
+            return True
 
-        ja_sei = self._memoria.fatos_recentes(limite=25)
-        conhecido = "\n".join(f"- [{f['categoria']}] {f['chave']}: {f['valor']}"
-                              for f in ja_sei) or "(nada ainda)"
-
-        entrada = (f"JÁ SEI:\n{conhecido}\n\n"
+        contexto = ""
+        if fala_condor.strip():
+            # Só para desambiguar ("sim, isso mesmo"); nunca vira fato por si.
+            contexto = f"(Resposta do assistente, só contexto: {fala_condor.strip()[:400]})\n"
+        entrada = (f"JÁ SEI (reuse a MESMA chave para corrigir ou completar um destes):\n"
+                   f"{self._contexto_conhecido(fala_dono)}\n\n"
                    f"CONVERSA DE AGORA:\n"
-                   f"Dono: {fala_dono[:2500]}\n"
-                   "Extraia apenas afirmacoes explicitas do dono. Perguntas e pedidos nao confirmam fatos.")
+                   f"Dono: {fala_dono[:2500]}\n{contexto}"
+                   "Extraia apenas afirmacoes explicitas do dono. Perguntas e comandos pontuais "
+                   "nao confirmam fatos; preferencias sobre como o assistente deve agir, sim.")
 
         bruto = await self._cerebro.completar(
             INSTRUCAO, entrada,
             modelo=self._cfg.cerebro.modelo_rapido,
-            json_mode=True, max_tokens=900)
+            json_mode=True, max_tokens=900, temperatura=0.1)
 
         if not bruto:
-            return
+            return None
         dados = _parse_json_payload(bruto)
         if dados is None:
-            log.debug("Extrator devolveu JSON inválido.")
-            return
+            log.info("Extrator devolveu JSON inválido; a troca volta para a fila.")
+            return False
 
         await self._salvar(dados)
+        return True
 
     async def _salvar(self, dados: dict) -> None:
-        novos = 0
         entidades = 0
         relacoes = 0
 
-        fatos_lote: list[dict] = []
+        candidatos: list[dict] = []
         for fato in (dados.get("fatos") or [])[:8]:
+            if not isinstance(fato, dict):
+                continue
             categoria = str(fato.get("categoria", "pessoal")).lower()
             chave = normalizar_chave(str(fato.get("chave", "")))
             valor = str(fato.get("valor", "")).strip()[:500]
-            if not chave or len(valor) < 4 or _parece_segredo(valor):
+            if not chave or len(valor) < 4 or contem_segredo(valor):
                 continue
             if categoria not in CATEGORIAS_VALIDAS:
                 categoria = "pessoal"
@@ -629,21 +785,36 @@ class Extrator:
                 confianca = float(fato.get("confianca", 0.8))
             except (TypeError, ValueError):
                 confianca = 0.8
-
-            embedding = await self._cerebro.embedding(valor)
-            fatos_lote.append({
+            candidatos.append({
                 "categoria": categoria,
                 "chave": chave,
                 "valor": valor,
                 "confianca": max(0.1, min(1.0, confianca)),
                 "origem": "conversa",
-                "embedding": embedding,
             })
 
-        if fatos_lote:
-            novos = len(self._memoria.salvar_fatos_lote(fatos_lote, "conversa"))
+        vetores, modelo = await self._vetores([c["valor"] for c in candidatos])
+        fatos_lote: list[dict] = []
+        for candidato, vetor in zip(candidatos, vetores):
+            if vetor:
+                candidato["embedding"] = vetor
+                candidato["embedding_modelo"] = modelo
+                # O mesmo fato com outra chave: atualiza o existente, não duplica.
+                parecidos = self._memoria.fatos_parecidos(
+                    vetor, modelo, limiar=LIMIAR_MESMO_FATO, limite=1,
+                ) if callable(getattr(self._memoria, "fatos_parecidos", None)) else []
+                if parecidos:
+                    _, existente = parecidos[0]
+                    candidato["categoria"] = existente["categoria"]
+                    candidato["chave"] = existente["chave"]
+            fatos_lote.append(candidato)
+
+        confirmados = self._memoria.salvar_fatos_lote(fatos_lote, "conversa") if fatos_lote else []
+        mudancas = [item for item in confirmados if item.get("status", "novo") != "igual"]
 
         for ent in (dados.get("entidades") or [])[:6]:
+            if not isinstance(ent, dict):
+                continue
             nome = str(ent.get("nome", "")).strip()[:80]
             tipo = str(ent.get("tipo", "")).lower()
             resumo = str(ent.get("resumo", ""))[:200]
@@ -657,25 +828,28 @@ class Extrator:
             entidades += 1
 
         for rel in (dados.get("relacoes") or [])[:6]:
+            if not isinstance(rel, dict):
+                continue
             de, para = str(rel.get("de", "")).strip(), str(rel.get("para", "")).strip()
             tipo = str(rel.get("tipo", "ligado_a"))[:40]
             if de and para and not any(contem_segredo(item) for item in (de, para, tipo)):
                 self._memoria.salvar_relacao(de, para, tipo)
                 relacoes += 1
 
-        if novos or entidades or relacoes:
+        if mudancas or entidades or relacoes:
             log.info(
                 "Memoria atualizada: %d fato(s), %d entidade(s), %d relacao(oes).",
-                novos, entidades, relacoes,
+                len(mudancas), entidades, relacoes,
             )
             if self._events is not None:
                 await self._events.publish(
                     "MEMORY_LEARNED",
                     {
-                        "facts": novos,
+                        "facts": len(mudancas),
                         "entities": entidades,
                         "relations": relacoes,
                         "stats": self._memoria.estatisticas(),
                     },
                     source="memory_extractor",
+                    transient={"items": _resumo_itens(mudancas)},
                 )

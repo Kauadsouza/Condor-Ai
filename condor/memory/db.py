@@ -104,6 +104,49 @@ CREATE TABLE IF NOT EXISTS conversas (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_ts ON conversas(ts DESC);
 
+-- Exemplos para treinar o modelo local com o jeito do dono. Cada resposta
+-- real do cérebro vira um exemplo; o dono avalia (👍/👎) e pode corrigir.
+CREATE TABLE IF NOT EXISTS treino_exemplos (
+    id        TEXT PRIMARY KEY,
+    pedido    TEXT NOT NULL,
+    resposta  TEXT NOT NULL,
+    correcao  TEXT NOT NULL DEFAULT '',
+    contexto  TEXT NOT NULL DEFAULT '',
+    anteriores TEXT NOT NULL DEFAULT '[]',
+    provedor  TEXT NOT NULL DEFAULT '',
+    modelo    TEXT NOT NULL DEFAULT '',
+    por_voz   INTEGER NOT NULL DEFAULT 0,
+    nota      INTEGER NOT NULL DEFAULT 0,
+    criado    REAL NOT NULL,
+    avaliado  REAL
+);
+CREATE INDEX IF NOT EXISTS idx_treino_criado ON treino_exemplos(criado DESC);
+
+-- Galeria: metadados aqui, pixels cifrados em ~/.condor/memory/gallery.
+CREATE TABLE IF NOT EXISTS imagens (
+    id           TEXT PRIMARY KEY,
+    pedido       TEXT NOT NULL,
+    prompt_final TEXT NOT NULL DEFAULT '',
+    modelo       TEXT NOT NULL DEFAULT '',
+    seed         INTEGER NOT NULL DEFAULT -1,
+    largura      INTEGER NOT NULL DEFAULT 0,
+    altura       INTEGER NOT NULL DEFAULT 0,
+    origem       TEXT NOT NULL DEFAULT 'chat',
+    criado       REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_imagens_criado ON imagens(criado DESC);
+
+-- Trocas ainda nao analisadas pelo extrator. Ficam no snapshot cifrado para
+-- sobreviver a reinicio e a cerebro fora do ar: nada dito se perde.
+CREATE TABLE IF NOT EXISTS memoria_pendente (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fala_dono   TEXT NOT NULL,
+    fala_condor TEXT NOT NULL DEFAULT '',
+    assinatura  TEXT NOT NULL UNIQUE,
+    tentativas  INTEGER NOT NULL DEFAULT 0,
+    criado      REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS cloud_notes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id   TEXT UNIQUE,
@@ -154,50 +197,6 @@ CREATE TABLE IF NOT EXISTS uso_api (
     ts        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_uso_ts ON uso_api(ts DESC);
-
-CREATE TABLE IF NOT EXISTS hub_projects (
-    id       TEXT PRIMARY KEY,
-    nome     TEXT NOT NULL,
-    tipo     TEXT NOT NULL,
-    status   TEXT NOT NULL,
-    progresso INTEGER NOT NULL DEFAULT 0,
-    resumo   TEXT NOT NULL DEFAULT '',
-    rota     TEXT NOT NULL DEFAULT '',
-    tom      TEXT NOT NULL DEFAULT 'cyan',
-    atualizado REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS hub_tasks (
-    id       TEXT PRIMARY KEY,
-    titulo   TEXT NOT NULL,
-    projeto  TEXT NOT NULL DEFAULT 'condor',
-    status   TEXT NOT NULL DEFAULT 'pendente',
-    prioridade TEXT NOT NULL DEFAULT 'media',
-    criado   REAL NOT NULL,
-    atualizado REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_hub_tasks_updated ON hub_tasks(atualizado DESC);
-
-CREATE TABLE IF NOT EXISTS hub_notes (
-    id       TEXT PRIMARY KEY,
-    titulo   TEXT NOT NULL,
-    conteudo TEXT NOT NULL,
-    projeto  TEXT NOT NULL DEFAULT 'condor',
-    criado   REAL NOT NULL,
-    atualizado REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_hub_notes_updated ON hub_notes(atualizado DESC);
-
-CREATE TABLE IF NOT EXISTS condor_x_parts (
-    id       TEXT PRIMARY KEY,
-    nome     TEXT NOT NULL,
-    zona     TEXT NOT NULL,
-    status   TEXT NOT NULL,
-    progresso INTEGER NOT NULL DEFAULT 0,
-    risco    TEXT NOT NULL DEFAULT 'baixo',
-    resumo   TEXT NOT NULL DEFAULT '',
-    atualizado REAL NOT NULL
-);
 
 CREATE TABLE IF NOT EXISTS condor_x_region_items (
     id       TEXT PRIMARY KEY,
@@ -536,54 +535,7 @@ CREATE TABLE IF NOT EXISTS security_alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_security_alerts_time ON security_alerts(created DESC);
 
-CREATE TABLE IF NOT EXISTS creator_items (
-    id       TEXT PRIMARY KEY,
-    titulo   TEXT NOT NULL,
-    etapa    TEXT NOT NULL,
-    status   TEXT NOT NULL DEFAULT 'ideia',
-    notas    TEXT NOT NULL DEFAULT '',
-    criado   REAL NOT NULL,
-    atualizado REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_creator_updated ON creator_items(atualizado DESC);
-
-CREATE TABLE IF NOT EXISTS hub_missions (
-    id       TEXT PRIMARY KEY,
-    titulo   TEXT NOT NULL,
-    estado   TEXT NOT NULL DEFAULT 'planejada',
-    progresso INTEGER NOT NULL DEFAULT 0,
-    detalhe  TEXT NOT NULL DEFAULT '',
-    criado   REAL NOT NULL,
-    atualizado REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_missions_updated ON hub_missions(atualizado DESC);
 """
-
-DEFAULT_PROJECTS = (
-    ("condor", "Condor AI", "IA local", "ativo", 82,
-     "Nucleo privado, memoria cifrada e automacao supervisionada.", "/ui/index.html", "cyan"),
-    ("condor-x", "Condor X", "Digital twin", "prototipo", 28,
-     "Exoesqueleto conceitual modular, inerte e orientado por simulacao.", "", "amber"),
-    ("kauaartx", "KauaArtx", "Canal", "foco", 42,
-     "Operacao criativa do canal, do roteiro a publicacao.", "", "violet"),
-    ("university", "University Path", "Oxford", "ativo", 64,
-     "Documentos, prazos e preparacao universitaria.", "", "blue"),
-    ("site", "Site", "Sistema independente", "independente", 100,
-     "Marca pessoal publicada e mantida fora do nucleo do Condor.", "", "mint"),
-    ("videos", "Videos", "Sistema independente", "independente", 100,
-     "Pipeline de midia preservado como aplicacao independente.", "", "mint"),
-    ("sat", "SAT", "Sistema independente", "independente", 100,
-     "Sistema SAT preservado com codigo e dados proprios.", "", "mint"),
-)
-
-DEFAULT_CONDOR_X_PARTS = (
-    ("helmet", "Capacete", "cabeca", "conceito", 20, "baixo", "HUD, audio e ventilacao; sem vedacao pressurizada."),
-    ("chest", "Nucleo peitoral", "torso", "simulacao", 36, "baixo", "Computacao, telemetria e bateria de bancada protegida."),
-    ("left-arm", "Braco esquerdo", "membro", "conceito", 18, "baixo", "Sensores e controle gestual, sem propulsao ou arma."),
-    ("right-arm", "Braco direito", "membro", "conceito", 18, "baixo", "Sensores e controle gestual, sem propulsao ou arma."),
-    ("legs", "Pernas", "mobilidade", "conceito", 12, "medio", "Estudo ergonomico passivo; nenhum atuador de alta forca."),
-    ("power", "Energia", "infraestrutura", "bloqueado", 8, "alto", "Somente fonte certificada e teste de bancada com protecao."),
-)
 
 DEFAULT_PERMISSIONS = (
     ("microphone", 0, "local"),
@@ -664,7 +616,7 @@ class Memoria:
         self._database.row_factory = sqlite3.Row
 
     @contextmanager
-    def _conn(self):
+    def _conn(self, persistir: bool = True):
         """Abre o banco em RAM. So regrava o snapshot cifrado se algo mudou.
 
         Antes toda saida deste bloco chamava ``_persist()`` — inclusive consulta
@@ -674,6 +626,8 @@ class Memoria:
 
         ``total_changes`` decide sozinho, em vez de cada metodo se declarar
         leitura ou escrita: assim um metodo novo nao pode esquecer de persistir.
+        ``persistir=False`` serve so para contadores descartaveis (acessos do
+        recall): a mudanca fica na RAM e segue junto na proxima gravacao real.
         """
         with self._lock:
             marca = self._database.total_changes
@@ -681,7 +635,8 @@ class Memoria:
                 yield self._database
                 if self._database.total_changes != marca:
                     self._database.commit()
-                    self._persist()
+                    if persistir:
+                        self._persist()
             except Exception:
                 self._database.rollback()
                 raise
@@ -775,6 +730,17 @@ class Memoria:
                 conn.execute(
                     "INSERT INTO memory_meta(chave,valor) VALUES('permission_decisions_v1','done')"
                 )
+            fato_columns = {
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(fatos)")
+            }
+            if "embedding_modelo" not in fato_columns:
+                # Vetores de modelos diferentes nao sao comparaveis. Os antigos
+                # (OpenAI) ficam marcados e o extrator os refaz localmente.
+                conn.execute("ALTER TABLE fatos ADD COLUMN embedding_modelo TEXT NOT NULL DEFAULT ''")
+                conn.execute(
+                    "UPDATE fatos SET embedding_modelo='text-embedding-3-small' "
+                    "WHERE embedding IS NOT NULL"
+                )
             try:
                 conn.executescript(FTS)
                 self._fts = True
@@ -794,18 +760,6 @@ class Memoria:
                 log.warning("FTS5 indisponível (%s) — busca textual usará LIKE.", exc)
             if self.unlocked:
                 agora = time.time()
-                conn.executemany(
-                    """INSERT OR IGNORE INTO hub_projects
-                       (id,nome,tipo,status,progresso,resumo,rota,tom,atualizado)
-                       VALUES(?,?,?,?,?,?,?,?,?)""",
-                    [(*item, agora) for item in DEFAULT_PROJECTS],
-                )
-                conn.executemany(
-                    """INSERT OR IGNORE INTO condor_x_parts
-                       (id,nome,zona,status,progresso,risco,resumo,atualizado)
-                       VALUES(?,?,?,?,?,?,?,?)""",
-                    [(*item, agora) for item in DEFAULT_CONDOR_X_PARTS],
-                )
                 conn.execute(
                     """INSERT OR IGNORE INTO projects
                        (id,name,description,status,created,updated)
@@ -869,27 +823,40 @@ class Memoria:
 
     # ── Fatos ──────────────────────────────────────────────────────────────
 
+    _UPSERT_FATO = """INSERT INTO fatos(categoria, chave, valor, confianca, origem,
+                                   embedding, embedding_modelo, criado, atualizado)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(categoria, chave) DO UPDATE SET
+                       valor=excluded.valor,
+                       confianca=excluded.confianca,
+                       origem=excluded.origem,
+                       -- Texto novo sem vetor novo: o vetor antigo descreveria
+                       -- outra coisa. Zera e deixa o extrator recalcular.
+                       embedding=CASE
+                           WHEN excluded.embedding IS NOT NULL THEN excluded.embedding
+                           WHEN excluded.valor = fatos.valor THEN fatos.embedding
+                           ELSE NULL END,
+                       embedding_modelo=CASE
+                           WHEN excluded.embedding IS NOT NULL THEN excluded.embedding_modelo
+                           WHEN excluded.valor = fatos.valor THEN fatos.embedding_modelo
+                           ELSE '' END,
+                       atualizado=excluded.atualizado"""
+
     def salvar_fato(self, categoria: str, chave: str, valor: str,
                     confianca: float = 0.8, origem: str = "conversa",
-                    embedding: list[float] | None = None) -> int:
+                    embedding: list[float] | None = None,
+                    embedding_modelo: str = "") -> int:
         """Grava (ou atualiza) um fato. Chave repetida na mesma categoria
         sobrescreve — é assim que ele corrige o que aprendeu errado."""
         agora = time.time()
         blob = _empacotar(embedding) if embedding else None
         with self._conn() as conn:
-            cur = conn.execute(
-                """INSERT INTO fatos(categoria, chave, valor, confianca, origem,
-                                     embedding, criado, atualizado)
-                   VALUES(?,?,?,?,?,?,?,?)
-                   ON CONFLICT(categoria, chave) DO UPDATE SET
-                       valor=excluded.valor,
-                       confianca=excluded.confianca,
-                       embedding=COALESCE(excluded.embedding, fatos.embedding),
-                       atualizado=excluded.atualizado""",
-                (categoria, chave, valor, confianca, origem, blob, agora, agora),
+            conn.execute(
+                self._UPSERT_FATO,
+                (categoria, chave, valor, confianca, origem, blob,
+                 embedding_modelo if blob else "", agora, agora),
             )
-            if cur.lastrowid:
-                return cur.lastrowid
+            # lastrowid nao e confiavel depois de ON CONFLICT DO UPDATE.
             row = conn.execute("SELECT id FROM fatos WHERE categoria=? AND chave=?",
                                (categoria, chave)).fetchone()
             return row["id"] if row else 0
@@ -901,6 +868,9 @@ class Memoria:
         Fazer um ``salvar_fato`` por item tornava perfis longos proporcionalmente
         lentos. Este metodo preserva o mesmo upsert por ``(categoria, chave)``,
         mas confirma todos os itens dentro de uma transacao so.
+
+        Cada item confirmado volta com ``status``: ``novo``, ``atualizado`` ou
+        ``igual`` — so os dois primeiros sao aprendizado de verdade.
         """
         if not fatos:
             return []
@@ -920,17 +890,30 @@ class Memoria:
                 fato_origem = str(fato.get("origem") or origem)[:80]
                 embedding = fato.get("embedding")
                 blob = _empacotar(embedding) if isinstance(embedding, list) and embedding else None
+                modelo = str(fato.get("embedding_modelo") or "")[:80] if blob else ""
+                anterior = conn.execute(
+                    "SELECT valor FROM fatos WHERE categoria=? AND chave=?",
+                    (categoria, chave),
+                ).fetchone()
+                if anterior is None:
+                    status = "novo"
+                elif anterior["valor"] != valor:
+                    status = "atualizado"
+                else:
+                    status = "igual"
+                if status == "igual" and blob is None:
+                    # Nada a gravar: nao reescreve o snapshot nem finge novidade.
+                    row = conn.execute(
+                        "SELECT id,categoria,chave,valor,confianca,origem,atualizado "
+                        "FROM fatos WHERE categoria=? AND chave=?",
+                        (categoria, chave),
+                    ).fetchone()
+                    if row:
+                        confirmados.append({**dict(row), "status": status})
+                    continue
                 conn.execute(
-                    """INSERT INTO fatos(categoria, chave, valor, confianca, origem,
-                                         embedding, criado, atualizado)
-                       VALUES(?,?,?,?,?,?,?,?)
-                       ON CONFLICT(categoria, chave) DO UPDATE SET
-                           valor=excluded.valor,
-                           confianca=excluded.confianca,
-                           origem=excluded.origem,
-                           embedding=COALESCE(excluded.embedding, fatos.embedding),
-                           atualizado=excluded.atualizado""",
-                    (categoria, chave, valor, confianca, fato_origem, blob, agora, agora),
+                    self._UPSERT_FATO,
+                    (categoria, chave, valor, confianca, fato_origem, blob, modelo, agora, agora),
                 )
                 row = conn.execute(
                     "SELECT id,categoria,chave,valor,confianca,origem,atualizado "
@@ -938,7 +921,7 @@ class Memoria:
                     (categoria, chave),
                 ).fetchone()
                 if row:
-                    confirmados.append(dict(row))
+                    confirmados.append({**dict(row), "status": status})
         return confirmados
 
     def esquecer_fato(self, fato_id: int) -> bool:
@@ -957,7 +940,8 @@ class Memoria:
             return dict(row) if row else None
 
     def buscar_fatos(self, consulta: str, limite: int = 8,
-                     embedding: list[float] | None = None) -> list[dict]:
+                     embedding: list[float] | None = None,
+                     embedding_modelo: str = "") -> list[dict]:
         """Busca híbrida: texto exato (FTS5) + significado (embedding).
         Junta os dois, tira duplicado e devolve ordenado por relevância."""
         achados: dict[int, dict] = {}
@@ -986,16 +970,23 @@ class Memoria:
                                ORDER BY score LIMIT ?""",
                             (termos, limite * 2),
                         ).fetchall()
-                        for r in rows:
+                        # bm25 ja vem ordenado: o melhor casamento textual vale
+                        # 1.0 e os seguintes decaem, em vez de empatar todos.
+                        for posicao, r in enumerate(rows):
                             d = dict(r)
-                            d["relevancia"] = 1.0
+                            d["relevancia"] = 1.0 / (1.0 + 0.25 * posicao)
                             achados[d["id"]] = d
                     except sqlite3.OperationalError:
                         pass
             elif consulta.strip():
+                termos = [
+                    termo for termo in re.findall(r"[\wÀ-ÿ]{3,}", consulta.casefold())
+                ][:6] or [consulta.strip()]
+                filtro = " OR ".join("valor LIKE ? OR chave LIKE ?" for _ in termos)
+                parametros = [p for termo in termos for p in (f"%{termo}%", f"%{termo}%")]
                 rows = conn.execute(
-                    "SELECT * FROM fatos WHERE valor LIKE ? OR chave LIKE ? LIMIT ?",
-                    (f"%{consulta}%", f"%{consulta}%", limite * 2),
+                    f"SELECT * FROM fatos WHERE {filtro} LIMIT ?",
+                    (*parametros, limite * 2),
                 ).fetchall()
                 for r in rows:
                     d = dict(r)
@@ -1004,16 +995,8 @@ class Memoria:
 
             # 2. Semântica
             if embedding:
-                rows = conn.execute(
-                    "SELECT * FROM fatos WHERE embedding IS NOT NULL"
-                ).fetchall()
-                pontuados = []
-                for r in rows:
-                    sim = _similaridade(embedding, _desempacotar(r["embedding"]))
-                    if sim > 0.30:
-                        pontuados.append((sim, dict(r)))
-                pontuados.sort(key=lambda x: x[0], reverse=True)
-                for sim, d in pontuados[:limite * 2]:
+                for sim, d in self._mais_parecidos(conn, embedding, embedding_modelo,
+                                                   0.30, limite * 2):
                     if d["id"] in achados:
                         achados[d["id"]]["relevancia"] += sim
                     else:
@@ -1022,12 +1005,263 @@ class Memoria:
 
         ordenados = sorted(achados.values(), key=lambda d: -d["relevancia"])[:limite]
         if ordenados:
-            with self._conn() as conn:
+            # Contador de uso nao justifica recifrar o banco inteiro a cada turno.
+            with self._conn(persistir=False) as conn:
                 conn.executemany("UPDATE fatos SET acessos=acessos+1 WHERE id=?",
                                  [(d["id"],) for d in ordenados])
         for d in ordenados:
             d.pop("embedding", None)
         return ordenados
+
+    @staticmethod
+    def _mais_parecidos(conn, embedding: list[float], modelo: str,
+                        limiar: float, limite: int) -> list[tuple[float, dict]]:
+        if modelo:
+            rows = conn.execute(
+                "SELECT * FROM fatos WHERE embedding IS NOT NULL AND embedding_modelo=?",
+                (modelo,),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM fatos WHERE embedding IS NOT NULL").fetchall()
+        pontuados = []
+        for r in rows:
+            sim = _similaridade(embedding, _desempacotar(r["embedding"]))
+            if sim > limiar:
+                d = dict(r)
+                d.pop("embedding", None)
+                pontuados.append((sim, d))
+        pontuados.sort(key=lambda x: x[0], reverse=True)
+        return pontuados[:limite]
+
+    def fatos_parecidos(self, embedding: list[float], embedding_modelo: str,
+                        limiar: float = 0.80, limite: int = 3) -> list[tuple[float, dict]]:
+        """Deduplicação por sentido: o mesmo fato dito com outras palavras."""
+        if not embedding:
+            return []
+        with self._conn() as conn:
+            return self._mais_parecidos(conn, embedding, embedding_modelo, limiar, limite)
+
+    def fatos_sem_embedding(self, embedding_modelo: str, limite: int = 16) -> list[dict]:
+        """Fatos salvos sem vetor (regex, ferramenta, nuvem) ou com vetor de outro modelo."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id,categoria,chave,valor FROM fatos "
+                "WHERE embedding IS NULL OR embedding_modelo!=? "
+                "ORDER BY atualizado DESC LIMIT ?",
+                (embedding_modelo, limite),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def definir_embeddings(self, vetores: list[tuple[int, str, list[float]]],
+                           embedding_modelo: str) -> int:
+        """Grava vetores calculados depois, só se o texto não mudou nesse meio tempo."""
+        if not vetores:
+            return 0
+        with self._conn() as conn:
+            total = 0
+            for fato_id, valor, vetor in vetores:
+                cur = conn.execute(
+                    "UPDATE fatos SET embedding=?, embedding_modelo=? WHERE id=? AND valor=?",
+                    (_empacotar(vetor), embedding_modelo, fato_id, valor),
+                )
+                total += cur.rowcount
+            return total
+
+    # ── Treino do modelo local ─────────────────────────────────────────────
+
+    # Resposta de API (OpenAI/Claude) é de um modelo mais forte: serve de
+    # "professor" mesmo sem avaliação. Resposta neutra do próprio modelo local
+    # só ensinaria o que ele já faz, então precisa de 👍 ou correção.
+    _TREINO_UTIL = (
+        "(nota = 1 OR correcao != '' OR (nota = 0 AND provedor IN ('openai','claude')))"
+    )
+
+    def registrar_exemplo(self, pedido: str, resposta: str, *, contexto: str = "",
+                          anteriores: list[dict] | None = None, provedor: str = "",
+                          modelo: str = "", por_voz: bool = False) -> str:
+        exemplo_id = f"ex_{uuid.uuid4().hex[:20]}"
+        limpos = [
+            {"role": m["role"], "content": str(m["content"])[:2000]}
+            for m in (anteriores or [])[-6:]
+            if m.get("role") in {"user", "assistant"} and isinstance(m.get("content"), str)
+        ]
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO treino_exemplos(id,pedido,resposta,contexto,anteriores,provedor,"
+                "modelo,por_voz,criado) VALUES(?,?,?,?,?,?,?,?,?)",
+                (exemplo_id, pedido[:4000], resposta[:6000], contexto[:6000],
+                 json.dumps(limpos, ensure_ascii=False), provedor[:20], modelo[:120],
+                 1 if por_voz else 0, time.time()),
+            )
+            # Teto: os 5000 mais recentes; avaliados e corrigidos ficam sempre.
+            conn.execute(
+                "DELETE FROM treino_exemplos WHERE nota=0 AND correcao='' AND id NOT IN "
+                "(SELECT id FROM treino_exemplos ORDER BY criado DESC LIMIT 5000)"
+            )
+        return exemplo_id
+
+    def avaliar_exemplo(self, exemplo_id: str, nota: int, correcao: str = "") -> bool:
+        if nota not in {-1, 0, 1}:
+            raise ValueError("nota deve ser -1, 0 ou 1")
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE treino_exemplos SET nota=?, correcao=?, avaliado=? WHERE id=?",
+                (nota, correcao.strip()[:6000], time.time(), exemplo_id),
+            )
+            return cur.rowcount > 0
+
+    def resumo_treino(self) -> dict:
+        with self._conn() as conn:
+            def n(where: str = "1=1") -> int:
+                return int(conn.execute(f"SELECT COUNT(*) FROM treino_exemplos WHERE {where}").fetchone()[0])
+            return {
+                "total": n(),
+                "positivos": n("nota = 1"),
+                "negativos": n("nota = -1"),
+                "corrigidos": n("correcao != ''"),
+                "professor_api": n("nota = 0 AND provedor IN ('openai','claude')"),
+                "prontos": n(self._TREINO_UTIL),
+            }
+
+    def exemplos_para_treino(self, limite: int = 5000) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM treino_exemplos WHERE {self._TREINO_UTIL} "
+                "ORDER BY criado LIMIT ?",
+                (limite,),
+            ).fetchall()
+        exemplos = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["anteriores"] = json.loads(item.get("anteriores") or "[]")
+            except (TypeError, ValueError):
+                item["anteriores"] = []
+            exemplos.append(item)
+        return exemplos
+
+    # ── Galeria de imagens ─────────────────────────────────────────────────
+
+    def _pasta_galeria(self) -> Path:
+        pasta = self._path.parent / "gallery"
+        pasta.mkdir(parents=True, exist_ok=True)
+        return pasta
+
+    def _arquivo_imagem(self, imagem_id: str) -> Path:
+        if not re.fullmatch(r"img_[a-f0-9]{20}", str(imagem_id or "")):
+            raise ValueError("imagem invalida")
+        return self._pasta_galeria() / f"{imagem_id}.enc"
+
+    def salvar_imagem(self, png: bytes, meta: dict) -> dict:
+        """Guarda a imagem cifrada com a mesma chave da memória (AES-256-GCM)."""
+        if self._key is None:
+            raise RuntimeError("cofre da memoria bloqueado")
+        imagem_id = f"img_{os.urandom(10).hex()}"
+        nonce = os.urandom(12)
+        cifrado = AESGCM(self._key).encrypt(nonce, png, f"condor-image:1:{imagem_id}".encode())
+        arquivo = self._arquivo_imagem(imagem_id)
+        fd, temporario = tempfile.mkstemp(prefix=".img-", dir=str(arquivo.parent))
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(nonce + cifrado)
+        os.replace(temporario, arquivo)
+        item = {
+            "id": imagem_id,
+            "pedido": str(meta.get("pedido") or "")[:4000],
+            "prompt_final": str(meta.get("prompt_final") or "")[:4000],
+            "modelo": str(meta.get("modelo") or "")[:120],
+            "seed": int(meta.get("seed") if meta.get("seed") is not None else -1),
+            "largura": int(meta.get("largura") or 0),
+            "altura": int(meta.get("altura") or 0),
+            "origem": str(meta.get("origem") or "chat")[:40],
+            "criado": time.time(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO imagens(id,pedido,prompt_final,modelo,seed,largura,altura,origem,criado) "
+                "VALUES(:id,:pedido,:prompt_final,:modelo,:seed,:largura,:altura,:origem,:criado)",
+                item,
+            )
+        return item
+
+    def imagens(self, limite: int = 60, antes: float | None = None) -> list[dict]:
+        with self._conn() as conn:
+            if antes:
+                rows = conn.execute(
+                    "SELECT * FROM imagens WHERE criado<? ORDER BY criado DESC LIMIT ?",
+                    (antes, limite),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM imagens ORDER BY criado DESC LIMIT ?", (limite,)
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def ler_imagem(self, imagem_id: str) -> bytes | None:
+        if self._key is None:
+            raise RuntimeError("cofre da memoria bloqueado")
+        arquivo = self._arquivo_imagem(imagem_id)
+        with self._conn() as conn:
+            if conn.execute("SELECT 1 FROM imagens WHERE id=?", (imagem_id,)).fetchone() is None:
+                return None
+        dados = arquivo.read_bytes()
+        try:
+            return AESGCM(self._key).decrypt(
+                dados[:12], dados[12:], f"condor-image:1:{imagem_id}".encode()
+            )
+        except (InvalidTag, ValueError) as exc:
+            raise RuntimeError("imagem cifrada invalida ou adulterada") from exc
+
+    def apagar_imagem(self, imagem_id: str) -> bool:
+        arquivo = self._arquivo_imagem(imagem_id)
+        with self._conn() as conn:
+            removida = conn.execute("DELETE FROM imagens WHERE id=?", (imagem_id,)).rowcount > 0
+        if removida:
+            arquivo.unlink(missing_ok=True)
+        return removida
+
+    # ── Fila de aprendizado ────────────────────────────────────────────────
+
+    def enfileirar_aprendizado(self, fala_dono: str, fala_condor: str, assinatura: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO memoria_pendente"
+                "(fala_dono, fala_condor, assinatura, criado) VALUES(?,?,?,?)",
+                (fala_dono[:4000], fala_condor[:1500], assinatura, time.time()),
+            )
+            # Nunca deixa a fila crescer sem limite se o cérebro ficar dias fora.
+            conn.execute(
+                "DELETE FROM memoria_pendente WHERE id NOT IN "
+                "(SELECT id FROM memoria_pendente ORDER BY id DESC LIMIT 200)"
+            )
+            return cur.rowcount > 0
+
+    def aprendizados_pendentes(self, limite: int = 4) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, fala_dono, fala_condor, tentativas FROM memoria_pendente "
+                "ORDER BY id LIMIT ?",
+                (limite,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def total_aprendizados_pendentes(self) -> int:
+        with self._conn() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM memoria_pendente").fetchone()[0])
+
+    def concluir_aprendizado(self, pendente_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM memoria_pendente WHERE id=?", (pendente_id,))
+
+    def falhar_aprendizado(self, pendente_id: int, maximo: int = 3) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE memoria_pendente SET tentativas=tentativas+1 WHERE id=?",
+                (pendente_id,),
+            )
+            conn.execute(
+                "DELETE FROM memoria_pendente WHERE id=? AND tentativas>=?",
+                (pendente_id, maximo),
+            )
 
     def fatos_recentes(self, limite: int = 20, categoria: str | None = None) -> list[dict]:
         with self._conn() as conn:
@@ -1052,6 +1286,15 @@ class Memoria:
             return [dict(r) for r in rows]
 
     # ── Entidades e relações ───────────────────────────────────────────────
+
+    def vocabulario(self, limite: int = 24) -> list[str]:
+        """Nomes próprios da vida do dono, para o Whisper escrevê-los certo."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT nome FROM entidades ORDER BY mencoes DESC, atualizado DESC LIMIT ?",
+                (limite,),
+            ).fetchall()
+            return [str(r["nome"]) for r in rows if str(r["nome"]).strip()]
 
     def salvar_entidade(self, nome: str, tipo: str, cluster: str = "GERAL",
                         resumo: str = "") -> int:
@@ -1320,6 +1563,12 @@ class Memoria:
                 (limite,)).fetchall()
             return [{"role": r["papel"], "content": r["conteudo"]} for r in reversed(rows)]
 
+    def ultimo_turno_em(self) -> float:
+        """Quando foi a última mensagem da conversa (0 se não houver)."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT MAX(ts) FROM conversas").fetchone()
+            return float(row[0] or 0.0)
+
     def arquivar_conversa(self) -> None:
         """Starts an empty chat while preserving encrypted past messages."""
         with self._conn() as conn:
@@ -1413,23 +1662,6 @@ class Memoria:
                 ).fetchall()
             ]
 
-    def criar_cloud_note(self, titulo: str, conteudo: str, origem: str = "local") -> dict:
-        title = str(titulo or "").strip()[:160]
-        body = str(conteudo or "").strip()[:16000]
-        if not title or not body:
-            raise ValueError("titulo e conteudo da nota sao obrigatorios")
-        agora = time.time()
-        with self._conn() as conn:
-            cursor = conn.execute(
-                """INSERT INTO cloud_notes(titulo,conteudo,origem,criado,atualizado)
-                   VALUES(?,?,?,?,?)""",
-                (title, body, origem[:80] or "local", agora, agora),
-            )
-            note_id = int(cursor.lastrowid or 0)
-            row = conn.execute(
-                "SELECT * FROM cloud_notes WHERE id=?", (note_id,)
-            ).fetchone()
-        return dict(row)
 
     def importar_cloud_event(self, event: dict) -> bool:
         """Aplica evento remoto uma unica vez e devolve se houve importacao."""
@@ -1581,6 +1813,8 @@ class Memoria:
                 "conexoes": n("SELECT COUNT(*) FROM relacoes"),
                 "turnos": n("SELECT COUNT(*) FROM conversas"),
                 "acoes": n("SELECT COUNT(*) FROM acoes"),
+                # Trocas esperando o extrator: a interface mostra "aprendendo".
+                "aprendendo": n("SELECT COUNT(*) FROM memoria_pendente"),
             }
 
     def fluxo_recente(self, limite: int = 10) -> list[dict]:
@@ -1591,14 +1825,6 @@ class Memoria:
                 "ORDER BY atualizado DESC LIMIT ?", (limite,)).fetchall()
             return [{"categoria": r["categoria"], "texto": r["valor"][:90],
                      "ts": r["atualizado"]} for r in rows]
-
-    def projetos(self, limite: int = 4) -> list[dict]:
-        """Entidades do tipo projeto — os cards que orbitam na tela Projetos."""
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT nome, resumo, cluster FROM entidades WHERE tipo='projeto' "
-                "ORDER BY mencoes DESC, atualizado DESC LIMIT ?", (limite,)).fetchall()
-            return [dict(r) for r in rows]
 
     # ── Cérebro temporal e operacional ───────────────────────────────────
 
@@ -1837,95 +2063,11 @@ class Memoria:
             ).fetchall()
         return [self._json_field(row, "capabilities_json", []) for row in rows]
 
-    # ── ARTX Hub local ────────────────────────────────────────────────────
+    # ── Identificadores ───────────────────────────────────────────────────
 
     @staticmethod
     def _id(prefixo: str) -> str:
         return f"{prefixo}_{uuid.uuid4().hex[:16]}"
-
-    def hub_snapshot(self) -> dict:
-        """Estado operacional do Hub; quando bloqueado, nunca expõe dados privados."""
-        if not self.unlocked:
-            return {
-                "locked": True,
-                "projects": [],
-                "tasks": [],
-                "notes": [],
-                "parts": [],
-                "creator": [],
-                "missions": [],
-            }
-        with self._conn() as conn:
-            def rows(query: str, params: tuple = ()) -> list[dict]:
-                return [dict(row) for row in conn.execute(query, params).fetchall()]
-
-            return {
-                "locked": False,
-                "projects": rows("SELECT * FROM hub_projects ORDER BY atualizado DESC"),
-                "tasks": rows("SELECT * FROM hub_tasks ORDER BY atualizado DESC LIMIT 100"),
-                "notes": rows("SELECT * FROM hub_notes ORDER BY atualizado DESC LIMIT 100"),
-                "parts": rows("SELECT * FROM condor_x_parts ORDER BY rowid"),
-                "creator": rows("SELECT * FROM creator_items ORDER BY atualizado DESC LIMIT 100"),
-                "missions": rows("SELECT * FROM hub_missions ORDER BY atualizado DESC LIMIT 100"),
-            }
-
-    def hub_create_task(self, titulo: str, projeto: str, prioridade: str) -> dict:
-        agora = time.time()
-        item_id = self._id("task")
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO hub_tasks
-                   (id,titulo,projeto,status,prioridade,criado,atualizado)
-                   VALUES(?,?,?,'pendente',?,?,?)""",
-                (item_id, titulo, projeto, prioridade, agora, agora),
-            )
-            row = conn.execute("SELECT * FROM hub_tasks WHERE id=?", (item_id,)).fetchone()
-            return dict(row)
-
-    def hub_update_task(self, item_id: str, status: str) -> bool:
-        with self._conn() as conn:
-            result = conn.execute(
-                "UPDATE hub_tasks SET status=?, atualizado=? WHERE id=?",
-                (status, time.time(), item_id),
-            )
-            return result.rowcount > 0
-
-    def hub_delete_task(self, item_id: str) -> bool:
-        with self._conn() as conn:
-            return conn.execute("DELETE FROM hub_tasks WHERE id=?", (item_id,)).rowcount > 0
-
-    def hub_create_note(self, titulo: str, conteudo: str, projeto: str) -> dict:
-        agora = time.time()
-        item_id = self._id("note")
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO hub_notes
-                   (id,titulo,conteudo,projeto,criado,atualizado) VALUES(?,?,?,?,?,?)""",
-                (item_id, titulo, conteudo, projeto, agora, agora),
-            )
-            row = conn.execute("SELECT * FROM hub_notes WHERE id=?", (item_id,)).fetchone()
-            return dict(row)
-
-    def hub_update_note(self, item_id: str, titulo: str, conteudo: str) -> bool:
-        with self._conn() as conn:
-            result = conn.execute(
-                "UPDATE hub_notes SET titulo=?, conteudo=?, atualizado=? WHERE id=?",
-                (titulo, conteudo, time.time(), item_id),
-            )
-            return result.rowcount > 0
-
-    def hub_delete_note(self, item_id: str) -> bool:
-        with self._conn() as conn:
-            return conn.execute("DELETE FROM hub_notes WHERE id=?", (item_id,)).rowcount > 0
-
-    def hub_update_part(self, item_id: str, status: str, progresso: int) -> bool:
-        with self._conn() as conn:
-            result = conn.execute(
-                """UPDATE condor_x_parts SET status=?, progresso=?, atualizado=?
-                   WHERE id=?""",
-                (status, progresso, time.time(), item_id),
-            )
-            return result.rowcount > 0
 
     def condor_x_region_items(self, regiao: str | None = None) -> list[dict]:
         with self._conn() as conn:
@@ -2711,44 +2853,3 @@ class Memoria:
                 ).fetchall()
             ]
 
-    def hub_create_creator_item(self, titulo: str, etapa: str, notas: str) -> dict:
-        agora = time.time()
-        item_id = self._id("creator")
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO creator_items
-                   (id,titulo,etapa,status,notas,criado,atualizado)
-                   VALUES(?,?,?,'ideia',?,?,?)""",
-                (item_id, titulo, etapa, notas, agora, agora),
-            )
-            row = conn.execute("SELECT * FROM creator_items WHERE id=?", (item_id,)).fetchone()
-            return dict(row)
-
-    def hub_update_creator_item(self, item_id: str, status: str) -> bool:
-        with self._conn() as conn:
-            result = conn.execute(
-                "UPDATE creator_items SET status=?, atualizado=? WHERE id=?",
-                (status, time.time(), item_id),
-            )
-            return result.rowcount > 0
-
-    def hub_create_mission(self, titulo: str, detalhe: str) -> dict:
-        agora = time.time()
-        item_id = self._id("mission")
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO hub_missions
-                   (id,titulo,estado,progresso,detalhe,criado,atualizado)
-                   VALUES(?,?,'planejada',0,?,?,?)""",
-                (item_id, titulo, detalhe, agora, agora),
-            )
-            row = conn.execute("SELECT * FROM hub_missions WHERE id=?", (item_id,)).fetchone()
-            return dict(row)
-
-    def hub_update_mission(self, item_id: str, estado: str, progresso: int) -> bool:
-        with self._conn() as conn:
-            result = conn.execute(
-                """UPDATE hub_missions SET estado=?, progresso=?, atualizado=? WHERE id=?""",
-                (estado, progresso, time.time(), item_id),
-            )
-            return result.rowcount > 0

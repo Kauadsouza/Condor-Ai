@@ -21,6 +21,10 @@ const CondorMemoria = (() => {
   let buscaAtual = '';
   let fatoSelecionado = null;
   let carregando = false;
+  let refazer = false;
+  let refazerDestacando = false;
+  let desatualizado = false;
+  const aprendidosRecentes = new Map();
   let orbitaAtual = null;
   let zoomOrbital = 1;
   let archiveBefore = null;
@@ -49,9 +53,19 @@ const CondorMemoria = (() => {
     $('memoryRefresh')?.addEventListener('click', () => atualizar(true));
     window.addEventListener('resize', () => requestAnimationFrame(desenharLigacoes));
     window.addEventListener('condor-security-ready', () => atualizar(true));
-    CondorWS.ao('memoria.stats', () => atualizar());
+    // Fora da aba Memória não refaz o mapa inteiro a cada turno: só marca
+    // e recarrega quando ela for aberta. O aviso aparece em qualquer tela.
+    CondorWS.ao('memoria.stats', () => atualizarSeVisivel(false));
     CondorWS.ao('core.event', (mensagem) => {
-      if (mensagem.event?.type === 'MEMORY_LEARNED') atualizar(true);
+      const evento = mensagem.event || {};
+      const tipo = evento.type;
+      if (!String(tipo || '').startsWith('MEMORY_')) return;
+      const dados = evento.payload || {};
+      if (tipo === 'MEMORY_LEARNED' || tipo === 'MEMORY_FACT_SAVED') avisarAprendizado(dados.items || []);
+      if (tipo === 'MEMORY_PROFILE_IMPORTED' && dados.facts) {
+        avisarAprendizado([{ categoria: 'pessoal', valor: `${dados.facts} fatos do seu perfil importados`, status: 'novo' }]);
+      }
+      atualizarSeVisivel(true);
     });
     setInterval(() => {
       if (CondorRouter.atual() === 'memoria') atualizar();
@@ -59,9 +73,71 @@ const CondorMemoria = (() => {
     atualizar();
   }
 
+  function atualizarSeVisivel(destacar) {
+    if (CondorRouter.atual() === 'memoria') atualizar(destacar);
+    else desatualizado = true;
+  }
+
+  function avisarAprendizado(itens) {
+    const validos = (itens || []).filter(item => item && item.valor);
+    if (!validos.length) return;
+    const agora = Date.now();
+    validos.forEach(item => { if (item.id) aprendidosRecentes.set(Number(item.id), agora); });
+    let pilha = $('memoryLearnedStack');
+    if (!pilha) {
+      pilha = document.createElement('div');
+      pilha.id = 'memoryLearnedStack'; pilha.className = 'memory-learned-stack';
+      pilha.setAttribute('role', 'status'); pilha.setAttribute('aria-live', 'polite');
+      document.body.append(pilha);
+    }
+    const aviso = document.createElement('article');
+    aviso.className = 'memory-learned-toast';
+    const atualizou = validos.every(item => item.status === 'atualizado');
+    aviso.innerHTML = `<header><i></i>${atualizou ? 'CONDOR ATUALIZOU A MEMÓRIA' : 'CONDOR LEMBROU'}</header>` +
+      validos.slice(0, 3).map(item => {
+        const categoria = String(item.categoria || 'geral');
+        return `<p style="--memory-color:${CORES[categoria] || CORES.geral}"><b>${escapar(NOMES_CATEGORIA[categoria] || categoria.toUpperCase())}</b>${escapar(item.valor)}</p>`;
+      }).join('') + (validos.length > 3 ? `<p>+${validos.length - 3} outras</p>` : '');
+    aviso.addEventListener('click', () => { CondorRouter.ir('memoria'); aviso.remove(); });
+    pilha.append(aviso);
+    while (pilha.children.length > 3) pilha.firstElementChild.remove();
+    requestAnimationFrame(() => aviso.classList.add('show'));
+    setTimeout(() => { aviso.classList.remove('show'); setTimeout(() => aviso.remove(), 300); }, 6500);
+  }
+
+  function marcarAprendidos() {
+    const limite = Date.now() - 90000;
+    for (const [id, quando] of aprendidosRecentes) if (quando < limite) aprendidosRecentes.delete(id);
+    document.querySelectorAll('.memory-fact-node').forEach((bloco) => {
+      bloco.classList.toggle('learned', aprendidosRecentes.has(Number(bloco.dataset.factId)));
+    });
+  }
+
+  async function esquecer(fato, botao) {
+    if (botao.dataset.confirmar !== '1') {
+      botao.dataset.confirmar = '1'; botao.classList.add('confirm'); botao.textContent = 'CONFIRMAR: ESQUECER';
+      setTimeout(() => { if (botao.isConnected) { botao.dataset.confirmar = ''; botao.classList.remove('confirm'); botao.textContent = 'ESQUECER'; } }, 4000);
+      return;
+    }
+    botao.disabled = true;
+    try {
+      const resposta = await fetch(`/api/memoria/fatos/${Number(fato.id)}`, { method: 'DELETE' });
+      const dados = await resposta.json().catch(() => ({}));
+      if (!resposta.ok || !dados.ok) throw new Error(dados.erro || 'não consegui esquecer');
+      fatoSelecionado = null;
+      await atualizar();
+    } catch (erro) { CondorConversa.mostrarAviso(erro.message.toUpperCase(), true); botao.disabled = false; }
+  }
+
   async function atualizar(destacar = false) {
-    if (carregando) return;
+    if (carregando) {
+      // Não descarta: um aprendizado que chega no meio de uma leitura
+      // precisa aparecer assim que ela termina, não 30 s depois.
+      refazer = true; refazerDestacando = refazerDestacando || destacar;
+      return;
+    }
     carregando = true;
+    desatualizado = false;
     const botao = $('memoryRefresh');
     if (botao) { botao.disabled = true; botao.textContent = 'ANALISANDO...'; }
     if (!mapaAtual && $('memoryChainBoard')) {
@@ -87,6 +163,11 @@ const CondorMemoria = (() => {
     } finally {
       carregando = false;
       if (botao) { botao.disabled = false; botao.textContent = 'ATUALIZAR'; }
+      if (refazer) {
+        const destacarDeNovo = refazerDestacando;
+        refazer = false; refazerDestacando = false;
+        atualizar(destacarDeNovo);
+      }
     }
   }
 
@@ -97,6 +178,7 @@ const CondorMemoria = (() => {
     pintarEntidades();
     pintarRelacoesConfirmadas();
     pintarCadeias();
+    marcarAprendidos();
     if (fatoSelecionado && fatosVisiveis().some(f => Number(f.id) === Number(fatoSelecionado))) {
       selecionarFato(fatoSelecionado, false);
     } else {
@@ -144,7 +226,9 @@ const CondorMemoria = (() => {
     texto('statConfirmedEdges', inteligencia.relacoes_confirmadas || 0);
     texto('statSemantic', `${inteligencia.cobertura_semantica || 0}/${inteligencia.fatos || 0}`);
     const conectados = Math.max(0, (inteligencia.fatos || 0) - (inteligencia.isoladas || 0));
-    texto('memoryAnalysisState', `${conectados} FATOS EM CADEIAS · ${inteligencia.isoladas || 0} ISOLADOS`);
+    const aprendendo = Number(inteligencia.aprendendo || 0);
+    texto('memoryAnalysisState', `${conectados} FATOS EM CADEIAS · ${inteligencia.isoladas || 0} ISOLADOS` +
+      (aprendendo ? ` · ANALISANDO ${aprendendo} CONVERSA${aprendendo === 1 ? '' : 'S'}` : ''));
     texto('memoryLastUpdate', inteligencia.atualizado
       ? new Date(inteligencia.atualizado * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
       : 'SEM FATOS');
@@ -344,7 +428,9 @@ const CondorMemoria = (() => {
     const lista = relacionados.length ? `<div class="memory-related-list">${relacionados.map(({ ligacao, fato: outro }) => `
       <button type="button" data-related-id="${Number(outro.id)}"><b>${escapar(ligacao.rotulo.toUpperCase())} · ${Math.round(ligacao.pontuacao * 100)}%</b>${escapar(outro.valor)}${ligacao.evidencia?.length ? `<br><small>EVIDÊNCIA: ${escapar(ligacao.evidencia.join(', '))}</small>` : ''}</button>`).join('')}</div>` : '<p style="margin-top:10px">Este fato ainda não tem uma associação justificável.</p>';
     $('memorySelected').innerHTML = `<h3>${escapar(fato.valor)}</h3>
-      <div class="memory-selected-meta"><span>CHAVE<b>${escapar(fato.chave)}</b></span><span>CATEGORIA<b>${escapar(fato.categoria)}</b></span><span>ORIGEM<b>${escapar(fato.origem || 'local')}</b></span><span>ACESSOS<b>${Number(fato.acessos || 0)}</b></span></div>${lista}`;
+      <div class="memory-selected-meta"><span>CHAVE<b>${escapar(fato.chave)}</b></span><span>CATEGORIA<b>${escapar(fato.categoria)}</b></span><span>ORIGEM<b>${escapar(fato.origem || 'local')}</b></span><span>ACESSOS<b>${Number(fato.acessos || 0)}</b></span></div>${lista}
+      <div class="memory-selected-actions"><button type="button" data-forget>ESQUECER</button></div>`;
+    $('memorySelected').querySelector('[data-forget]')?.addEventListener('click', (evento) => esquecer(fato, evento.currentTarget));
     $('memorySelected').querySelectorAll('[data-related-id]').forEach((botao) => {
       botao.addEventListener('click', () => selecionarFato(Number(botao.dataset.relatedId)));
     });

@@ -59,8 +59,10 @@ class Recall:
         if self._cerebro is not None and len(texto) > 12:
             embedding = await self._cerebro.embedding(texto)
 
-        relevantes = self._memoria.buscar_fatos(texto, limite=max_fatos,
-                                                embedding=embedding)
+        relevantes = self._memoria.buscar_fatos(
+            texto, limite=max_fatos, embedding=embedding,
+            embedding_modelo=str(getattr(self._cerebro, "ultimo_modelo_embedding", "") or ""),
+        )
         vistos: set[int] = set()
         fatos_unicos: list[dict] = []
         for fato in essenciais + relevantes:
@@ -88,7 +90,10 @@ class Recall:
         if self._cerebro is not None:
             embedding = await self._cerebro.embedding(consulta)
 
-        fatos = self._memoria.buscar_fatos(consulta, limite=10, embedding=embedding)
+        fatos = self._memoria.buscar_fatos(
+            consulta, limite=10, embedding=embedding,
+            embedding_modelo=str(getattr(self._cerebro, "ultimo_modelo_embedding", "") or ""),
+        )
         if fatos:
             return {
                 "ok": True,

@@ -53,7 +53,11 @@ class EventBus:
         source: str = "core",
         project_id: str | None = None,
         correlation_id: str | None = None,
+        transient: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """``transient`` vai só para quem está ouvindo agora (a janela) e nunca
+        é gravado: texto de memória ou pedido de imagem não fica em histórico
+        que o "Esquecer" do dono não alcançaria."""
         name = event_type.upper().strip()
         if not _EVENT_NAME.fullmatch(name):
             raise ValueError("tipo de evento inválido")
@@ -71,9 +75,12 @@ class EventBus:
             if self._memory is not None and getattr(self._memory, "unlocked", False):
                 self._memory.registrar_evento(event)
         handlers = [*self._handlers.get(name, ()), *self._handlers.get("*", ())]
+        entregue = (
+            {**event, "payload": {**event["payload"], **transient}} if transient else event
+        )
         for handler in handlers:
             try:
-                result = handler(event)
+                result = handler(entregue)
                 if inspect.isawaitable(result):
                     await result
             except Exception:
@@ -81,5 +88,3 @@ class EventBus:
                 continue
         return event
 
-    def recent(self, limit: int = 50) -> list[dict[str, Any]]:
-        return list(self._history)[: max(1, min(limit, 250))]

@@ -35,6 +35,31 @@ def chat_messages(instructions: str, items: list[dict]) -> list[dict]:
     return messages
 
 
+def _loopback(endpoint: str) -> str:
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("Ollama precisa permanecer no loopback")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+async def embeddings_ollama(*, endpoint: str, model: str, textos: list[str]) -> list[list[float]]:
+    """Vetores normalizados (cosseno = produto escalar) pelo /api/embed local."""
+    url = f"{_loopback(endpoint)}/api/embed"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=3), trust_env=False) as client:
+        # num_gpu=0: o modelo de memória roda na CPU. Na GPU de 4 GB ele tomava
+        # ~700 MB do modelo de conversa, que ia parar em parte na CPU (lento).
+        response = await client.post(url, json={
+            "model": model, "input": textos, "keep_alive": "30m", "options": {"num_gpu": 0},
+        })
+        response.raise_for_status()
+        vetores = response.json().get("embeddings") or []
+    normalizados = []
+    for vetor in vetores:
+        norma = sum(x * x for x in vetor) ** 0.5 or 1.0
+        normalizados.append([x / norma for x in vetor])
+    return normalizados
+
+
 async def responder_ollama(*, endpoint, model, instructions, items, tools,
                            max_tokens, context, temperature, on_token=None, json_mode=False):
     parsed = urlsplit(endpoint)
