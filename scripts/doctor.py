@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -19,7 +20,9 @@ def _ollama_models() -> set[str]:
     try:
         with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=3) as response:
             data = json.load(response)
-        return {str(model.get("name", "")) for model in data.get("models", [])}
+        nomes = {str(model.get("name", "")) for model in data.get("models", [])}
+        # "embeddinggemma" e "embeddinggemma:latest" são o mesmo modelo.
+        return nomes | {nome.removesuffix(":latest") for nome in nomes}
     except Exception:
         return set()
 
@@ -63,7 +66,6 @@ def main() -> int:
     models = _ollama_models()
     brain_response, brain_context = _test_local_brain(cfg.cerebro.modelo_local, cfg.cerebro.contexto_local)
     image_status = LocalImageGenerator(cfg).status()
-    hub = Path(os.getenv("CONDOR_HUB_OUT") or (CODE_ROOT.parent.parent / "ARTX Hub" / "out"))
     checks = {
         "platform": platform.platform(),
         "loopback_only": cfg.servidor.host in {"127.0.0.1", "localhost", "::1"},
@@ -73,7 +75,6 @@ def main() -> int:
             and (CODE_ROOT / "condor" / "mobile" / "index.html").is_file()
         ),
         "state_root": str(state_root()),
-        "hub_static_build": (hub / "index.html").is_file(),
         "ollama_online": bool(models),
         "brain_model": cfg.cerebro.modelo_local in models,
         "brain_response": brain_response,
@@ -86,15 +87,21 @@ def main() -> int:
         ),
         "stt_model": Ouvidos(cfg, dummy).pronto,
         "tts_model": Voz(cfg, dummy).pronto,
+        "memory_embedding": cfg.cerebro.modelo_embedding_local in models,
+        "wake_word": bool(list((state_root() / "models" / "wake").glob("vosk-model*"))
+                          or list((state_root() / "wake").glob("condor*.ppn"))),
         "vault_configured": (state_root() / "security" / "vault.json").is_file(),
     }
     for key, value in checks.items():
         print(f"{key:20} {'OK' if value is True else 'PENDENTE' if value is False else value}")
-    # O ARTX Hub e um projeto separado e opcional. Uma copia limpa apenas deste
-    # repositorio precisa conseguir instalar, diagnosticar e executar o Condor.
-    required = ("loopback_only", "mobile_view_safe", "ollama_online", "brain_model",
-                "brain_response", "brain_context_safe", "vision_model", "image_local", "stt_model",
-                "tts_model")
+    # Uma copia limpa deste repositorio precisa conseguir instalar,
+    # diagnosticar e executar o Condor sem nenhum outro projeto.
+    required = ["loopback_only", "mobile_view_safe", "ollama_online", "brain_model",
+                "brain_response", "brain_context_safe", "vision_model", "stt_model",
+                "tts_model", "memory_embedding", "wake_word"]
+    # Criação de imagem é opcional na instalação (~7 GB): --sem-imagem.
+    if "--sem-imagem" not in sys.argv:
+        required.append("image_local")
     return 0 if all(checks[item] is True for item in required) else 1
 
 

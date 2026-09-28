@@ -30,6 +30,10 @@ if ((Test-Path -LiteralPath $OllamaExe) -and -not (Test-CondorLocalPort)) {
     $env:OLLAMA_NO_CLOUD = "1"
     $env:OLLAMA_NOHISTORY = "1"
     $env:OLLAMA_CONTEXT_LENGTH = "8192"
+    # Cache de contexto em 8 bits: metade da memoria de video, mais do modelo
+    # cabe na GPU de 4 GB e a resposta sai mais rapido.
+    $env:OLLAMA_FLASH_ATTENTION = "1"
+    $env:OLLAMA_KV_CACHE_TYPE = "q8_0"
     $LocalAiProcess = Start-Process -FilePath $OllamaExe -ArgumentList "serve" `
         -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru
     for ($Attempt = 0; $Attempt -lt 80 -and -not (Test-CondorLocalPort); $Attempt++) {
@@ -49,6 +53,12 @@ try {
 } finally {
     if ($LocalAiProcess -and -not $LocalAiProcess.HasExited) {
         Stop-Process -Id $LocalAiProcess.Id
+        # Parar o Ollama à força deixa o executor do modelo vivo, segurando a
+        # memória da placa de vídeo. Encerra só os desta instalação.
+        $Runtime = Join-Path $ProjectRoot "runtime\ollama"
+        Get-Process llama-server -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and $_.Path.StartsWith($Runtime, [StringComparison]::OrdinalIgnoreCase) } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
     }
 }
 exit $CondorExitCode

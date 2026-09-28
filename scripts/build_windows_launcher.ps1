@@ -12,7 +12,7 @@ foreach ($Required in @($Source, $Icon, $Compiler)) {
 }
 
 & $Compiler /nologo /target:winexe /optimize+ /platform:anycpu `
-    /reference:System.Windows.Forms.dll /win32icon:"$Icon" /out:"$Output" "$Source"
+    /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /win32icon:"$Icon" /out:"$Output" "$Source"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Output)) {
     throw "Nao foi possivel construir o inicializador nativo do Condor."
 }

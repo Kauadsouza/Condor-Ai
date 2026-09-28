@@ -1,7 +1,7 @@
 """Abre o Condor como aplicativo local em Windows ou Linux.
 
 Este é o ponto de entrada visual. Ele garante que o núcleo local esteja ativo
-e abre somente /ui/index.html em uma janela própria, nunca o ARTX Hub.
+e abre /ui/index.html em uma janela própria.
 """
 
 from __future__ import annotations
@@ -78,7 +78,9 @@ def main() -> None:
 
     if not _ready(app_url):
         _start_core()
-        for _ in range(120):
+        # Primeira abertura carrega o modelo local; o Condor.exe mostra a tela
+        # de carregamento enquanto isso.
+        for _ in range(600):
             if _ready(app_url):
                 break
             time.sleep(0.2)
