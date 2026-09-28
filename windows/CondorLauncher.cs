@@ -87,6 +87,25 @@ namespace Condor.Windows
         private readonly DateTime inicio = DateTime.Now;
         private readonly string root;
         private DateTime? prontoEm;
+        private DateTime atualizandoAte = DateTime.MinValue;
+        private double tempoAtualizando;
+
+        // O atualizador (condor/atualizador.py) escreve aqui o que está fazendo.
+        private string LerAtualizacao()
+        {
+            try
+            {
+                string arquivo = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".condor", "runtime", "atualizacao.txt");
+                string texto = File.Exists(arquivo) ? File.ReadAllText(arquivo).Trim() : "";
+                if (texto.Length > 0) tempoAtualizando += relogio.Interval / 1000.0;
+                return texto;
+            }
+            catch
+            {
+                return "";
+            }
+        }
 
         internal Carregando(string root)
         {
@@ -132,11 +151,21 @@ namespace Condor.Windows
                 Close();
                 return;
             }
+            string atualizando = LerAtualizacao();
             if (prontoEm == null)
             {
-                estado.Text = segundos < 15 ? "iniciando o núcleo local..." : "carregando o modelo de IA... (" + (int)segundos + " s)";
+                if (atualizando.Length > 0)
+                {
+                    estado.Text = atualizando;
+                    atualizandoAte = DateTime.Now.AddSeconds(30);
+                }
+                else
+                {
+                    estado.Text = segundos < 15 ? "iniciando o núcleo local..." : "carregando o modelo de IA... (" + (int)segundos + " s)";
+                }
             }
-            if (segundos > 150)
+            // Atualização (download + bibliotecas) pode levar alguns minutos.
+            if (segundos > 150 && DateTime.Now > atualizandoAte && segundos > 150 + tempoAtualizando)
             {
                 relogio.Stop();
                 Hide();

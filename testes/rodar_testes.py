@@ -6,6 +6,8 @@ import asyncio
 import atexit
 import io
 import json
+import urllib.error
+import zipfile
 import os
 import sys
 import tempfile
@@ -3755,6 +3757,88 @@ class DirectChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usuario, "oi")
         self.assertNotIn("Qual tema", sistema)          # a conversa antiga não entra
         self.assertNotIn("vídeo do canal", sistema + usuario)
+
+
+class AutoUpdateTests(unittest.TestCase):
+    """Ao abrir, o CONDOR instalado pega a versão mais nova do GitHub, com segurança."""
+
+    A = "a" * 40
+    B = "b" * 40
+
+    def _pacote(self, arquivos):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zip_:
+            for nome, conteudo in arquivos.items():
+                zip_.writestr(f"Kauadsouza-Condor-Ai-{self.B[:7]}/{nome}", conteudo)
+        return buffer.getvalue()
+
+    def _completo(self, extras=None):
+        arquivos = {f"condor/m{i}.py": "x = 1\n" for i in range(55)}
+        arquivos["condor/server.py"] = "servidor = 2\n"
+        arquivos.update(extras or {})
+        return arquivos
+
+    def test_only_moves_forward_and_never_replaces_unpushed_local_version(self):
+        from condor import atualizador
+
+        def github(respostas):
+            def pedir(url, _timeout):
+                for trecho, dados in respostas.items():
+                    if trecho in url:
+                        if isinstance(dados, Exception):
+                            raise dados
+                        return json.dumps(dados).encode()
+                raise AssertionError(url)
+            return pedir
+
+        self.assertEqual(atualizador.versao_remota_mais_nova(
+            self.A, github({"/commits/main": {"sha": self.B}, "/compare/": {"status": "ahead"}})), self.B)
+        self.assertIsNone(atualizador.versao_remota_mais_nova(
+            self.A, github({"/commits/main": {"sha": self.B}, "/compare/": {"status": "behind"}})))
+        self.assertIsNone(atualizador.versao_remota_mais_nova(
+            self.B, github({"/commits/main": {"sha": self.B}})))
+        desconhecida = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        self.assertIsNone(atualizador.versao_remota_mais_nova(
+            self.A, github({"/commits/main": {"sha": self.B}, "/compare/": desconhecida})))
+
+    def test_update_replaces_code_removes_dropped_files_and_keeps_private_folders(self):
+        from condor import atualizador
+        with tempfile.TemporaryDirectory() as tmp:
+            raiz = Path(tmp)
+            (raiz / ".condor-instalado").write_text("x")
+            (raiz / ".venv").mkdir()
+            (raiz / ".venv" / "lib.py").write_text("nao mexer")
+            (raiz / "condor").mkdir()
+            (raiz / "condor" / "server.py").write_text("servidor = 1\n")
+            (raiz / "condor" / "antigo.py").write_text("sai")
+            (raiz / ".condor-arquivos.json").write_text(json.dumps(["condor/server.py", "condor/antigo.py"]))
+            pacote = self._pacote(self._completo({
+                ".venv/lib.py": "invasao", "../fora.txt": "invasao", "runtime/x": "invasao",
+            }))
+            resultado = atualizador.aplicar_pacote(raiz, pacote, self.B)
+            self.assertEqual((raiz / "condor" / "server.py").read_text(), "servidor = 2\n")
+            self.assertFalse((raiz / "condor" / "antigo.py").exists())
+            self.assertEqual((raiz / ".venv" / "lib.py").read_text(), "nao mexer")
+            self.assertFalse((raiz.parent / "fora.txt").exists())
+            self.assertFalse((raiz / "runtime").exists())
+            self.assertEqual(atualizador.versao_instalada(raiz), self.B)
+            self.assertIn("condor/antigo.py", resultado["removidos"])
+
+    def test_incomplete_package_changes_nothing(self):
+        from condor import atualizador
+        with tempfile.TemporaryDirectory() as tmp:
+            raiz = Path(tmp)
+            (raiz / "condor").mkdir()
+            (raiz / "condor" / "server.py").write_text("servidor = 1\n")
+            with self.assertRaises(RuntimeError):
+                atualizador.aplicar_pacote(raiz, self._pacote({"condor/server.py": "quebrado"}), self.B)
+            self.assertEqual((raiz / "condor" / "server.py").read_text(), "servidor = 1\n")
+
+    def test_never_runs_in_a_development_checkout(self):
+        from condor import atualizador
+        with tempfile.TemporaryDirectory() as tmp, patch.object(atualizador, "_pedir") as rede:
+            self.assertFalse(atualizador.atualizar(Path(tmp)))
+            rede.assert_not_called()
 
 
 if __name__ == "__main__":

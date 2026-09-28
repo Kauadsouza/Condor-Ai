@@ -32,6 +32,8 @@ foreach ($Proibido in @(".env", "config.yaml", "vault.json")) {
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 Remove-Item -LiteralPath $Pacote, $Saida -ErrorAction SilentlyContinue
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$Commit = (git -C $Raiz rev-parse HEAD).Trim()
+if ($Commit -notmatch '^[0-9a-f]{40}$') { throw "Nao consegui ler o commit atual." }
 $Zip = [IO.Compression.ZipFile]::Open($Pacote, [IO.Compression.ZipArchiveMode]::Create)
 try {
     foreach ($Arquivo in $Arquivos) {
@@ -39,9 +41,20 @@ try {
             $Zip, (Join-Path $Raiz $Arquivo), $Arquivo.Replace("\", "/"),
             [IO.Compression.CompressionLevel]::Optimal) | Out-Null
     }
+    # Versao e lista de arquivos: o atualizador automatico compara com o
+    # GitHub e sabe o que apagar quando um arquivo deixa de existir.
+    $Escrever = {
+        param($Nome, $Texto)
+        $Entrada = $Zip.CreateEntry($Nome)
+        $Fluxo = New-Object IO.StreamWriter($Entrada.Open(), (New-Object Text.UTF8Encoding($false)))
+        try { $Fluxo.Write($Texto) } finally { $Fluxo.Dispose() }
+    }
+    & $Escrever ".condor-versao" $Commit
+    & $Escrever ".condor-arquivos.json" (ConvertTo-Json -Compress @($Arquivos | ForEach-Object { $_.Replace("\", "/") }))
 } finally {
     $Zip.Dispose()
 }
+Write-Host "Versao do pacote: $Commit"
 Write-Host ("Pacote: {0} arquivos, {1:N1} MB" -f $Arquivos.Count, ((Get-Item $Pacote).Length / 1MB))
 
 & $Compilador /nologo /target:winexe /optimize+ /platform:anycpu `

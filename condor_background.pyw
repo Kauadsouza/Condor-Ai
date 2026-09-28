@@ -10,6 +10,12 @@ ROOT = Path(__file__).parent.resolve()
 
 
 def main() -> int:
+    # Antes de subir o núcleo no login: pega a versão mais nova do GitHub.
+    try:
+        from condor.atualizador import atualizar
+        atualizar(ROOT)
+    except Exception:
+        pass
     # pythonw nao cria console; CREATE_NO_WINDOW estende isso ao PowerShell
     # e ao Python do servidor. Esperar preserva a supervisao do Agendador.
     startup = subprocess.STARTUPINFO()

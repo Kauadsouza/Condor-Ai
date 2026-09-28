@@ -77,6 +77,9 @@ def main() -> None:
     app_url = f"{base_url}/ui/index.html"
 
     if not _ready(app_url):
+        # Núcleo desligado: é a hora de pegar a versão mais nova do GitHub.
+        from condor.atualizador import atualizar
+        atualizar(ROOT)
         _start_core()
         # Primeira abertura carrega o modelo local; o Condor.exe mostra a tela
         # de carregamento enquanto isso.
