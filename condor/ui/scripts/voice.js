@@ -32,7 +32,101 @@ const CondorVoz = (() => {
   let capturePending = false;
   let securityGeneration = 0;
 
+  // ── A voz do Condor tocada pela própria janela ──────────────────────────
+  // O servidor manda uma frase por vez enquanto ainda gera o resto. Tocar
+  // aqui (e não pelo Python) deixa o cancelamento de eco do microfone
+  // funcionar e permite interromper o Condor no meio da fala.
+  const Tocador = (() => {
+    let ctx = null;
+    let turno = null;
+    let turnoCancelado = null;
+    let fimPrevisto = 0;
+    let fontes = [];
+    let cadeia = Promise.resolve();
+    let anunciado = null;
+
+    function contexto() {
+      if (ctx) return ctx;
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      ctx = new Ctx();
+      ctx.addEventListener('statechange', () => anunciar());
+      return ctx;
+    }
+
+    // Só se declara tocador com o áudio liberado; antes disso o servidor
+    // continua falando pelas caixas do PC e nada se perde.
+    function anunciar(forcar = false) {
+      const pronto = !!ctx && ctx.state === 'running';
+      if (!forcar && pronto === anunciado) return;
+      anunciado = pronto;
+      CondorWS.enviar({ tipo: 'voz.player', ativo: pronto });
+    }
+
+    function liberar() {
+      const c = contexto();
+      if (!c) return;
+      if (c.state === 'running') anunciar();
+      else c.resume().then(() => anunciar()).catch(() => {});
+    }
+
+    function bytes(base64) {
+      const bruto = atob(base64);
+      const saida = new Uint8Array(bruto.length);
+      for (let i = 0; i < bruto.length; i += 1) saida[i] = bruto.charCodeAt(i);
+      return saida.buffer;
+    }
+
+    function receber(m) {
+      const c = contexto();
+      if (!c || !m.wav || m.turno === turnoCancelado) return;
+      if (m.turno !== turno) { pararFontes(); turno = m.turno; }
+      cadeia = cadeia.then(async () => {
+        const audio = await c.decodeAudioData(bytes(m.wav));
+        if (m.turno !== turno || m.turno === turnoCancelado) return;
+        const fonte = c.createBufferSource();
+        fonte.buffer = audio;
+        fonte.connect(c.destination);
+        const inicio = Math.max(c.currentTime + 0.03, fimPrevisto);
+        fonte.start(inicio);
+        fimPrevisto = inicio + audio.duration;
+        fontes.push(fonte);
+        fonte.addEventListener('ended', () => { fontes = fontes.filter(f => f !== fonte); });
+      }).catch((erro) => console.warn('[voz] não consegui tocar a frase', erro));
+    }
+
+    function pararFontes() {
+      fontes.forEach((fonte) => { try { fonte.stop(); } catch (_) { /* já parou */ } });
+      fontes = [];
+      fimPrevisto = 0;
+    }
+
+    function parar(avisarServidor) {
+      // Entre uma frase e outra "fontes" fica vazio, mas o servidor ainda está
+      // falando: o que importa é haver um turno de fala não cancelado.
+      const ativo = !!turno && turno !== turnoCancelado;
+      if (turno) turnoCancelado = turno;
+      pararFontes();
+      if (avisarServidor && ativo) CondorWS.enviar({ tipo: 'voz.parar' });
+      return ativo;
+    }
+
+    function cancelarTurno(m) {
+      turnoCancelado = m?.turno || turno;
+      pararFontes();
+    }
+
+    return { liberar, anunciar, receber, parar, cancelarTurno, tocando: () => fontes.length > 0 };
+  })();
+
   function init() {
+    CondorWS.ao('voz.audio', Tocador.receber);
+    CondorWS.ao('voz.parar', Tocador.cancelarTurno);
+    CondorWS.ao('ws.ligado', () => Tocador.anunciar(true));
+    // Navegadores só liberam áudio depois de um gesto do dono.
+    ['pointerdown', 'keydown'].forEach((tipo) => document.addEventListener(tipo, Tocador.liberar, { capture: true }));
+    Tocador.liberar();
+    pintarOrbe();
     CondorWS.ao('estado', aplicar);
     CondorWS.ao('tique', (m) => { restam = m.restam; pintarRelogio(); });
     CondorWS.ao('acordou', () => aplicar({ estado: 'ouvindo', acordado: true }));
@@ -57,7 +151,7 @@ const CondorVoz = (() => {
     CondorWS.ao('erro', stopForSecurity);
     window.addEventListener('pagehide', stopForSecurity);
     document.addEventListener('keydown', event => {
-      if (event.key === 'Escape') stopForSecurity();
+      if (event.key === 'Escape') { Tocador.parar(true); stopForSecurity(); }
     });
     window.addEventListener('condor-permission-resolved', (event) => {
       if (!microphonePending || event.detail?.capability !== 'microphone') return;
@@ -72,10 +166,33 @@ const CondorVoz = (() => {
     }, 1000);
   }
 
+  // Cor do botão de falar: verde quando dá para falar, verde forte gravando,
+  // violeta pensando, ciano falando. Dormindo também está pronto: basta clicar.
+  let estadoSessao = 'dormindo';
+  function pintarOrbe(forcado) {
+    const orbe = $('voiceOrb');
+    if (!orbe) return;
+    let voz = forcado;
+    if (!voz) {
+      if (gravador && gravador.state === 'recording') voz = 'gravando';
+      else if (estadoSessao === 'pensando') voz = 'pensando';
+      else if (estadoSessao === 'falando') voz = 'falando';
+      else if (estadoSessao === 'senha') voz = 'pensando';
+      else voz = 'pronto';
+    }
+    orbe.setAttribute('data-voz', voz);
+    orbe.setAttribute('title', {
+      pronto: 'Clique para falar', gravando: 'Gravando · clique para enviar',
+      pensando: 'Pensando...', falando: 'Falando · clique para interromper',
+    }[voz] || '');
+  }
+
   function aplicar(m) {
     const nome = m.estado || 'dormindo';
     const e = ESTADOS[nome] || ESTADOS.dormindo;
     if (nome !== 'ouvindo') clearTimeout(restartTimer);
+    estadoSessao = nome;
+    pintarOrbe();
 
     const status = $('voiceStatus');
     status.textContent = e.rotulo;
@@ -116,6 +233,8 @@ const CondorVoz = (() => {
   }
 
   async function alternarGravacaoLocal() {
+    // Clicar enquanto ele fala interrompe a fala e já abre o microfone.
+    Tocador.parar(true);
     if (gravador && gravador.state === 'recording') {
       gravador.stop();
       return;
@@ -169,6 +288,7 @@ const CondorVoz = (() => {
       $('voiceHint').textContent = 'FALE AGORA · CLIQUE DE NOVO PARA ENVIAR';
       if (continuous) $('voiceHint').textContent = 'CONVERSA CONTÍNUA · PODE FALAR';
       $('orbCore').classList.add('active');
+      pintarOrbe('gravando');
       CondorPet.setState('listening');
     } catch (erro) {
       stopForSecurity();
@@ -195,8 +315,9 @@ const CondorVoz = (() => {
     pararMonitorSilencio();
     if (fluxo) fluxo.getTracks().forEach((trilha) => trilha.stop());
     if (cancelRecording) {
-      partes = []; gravador = null; fluxo = null; cancelRecording = false; return;
+      partes = []; gravador = null; fluxo = null; cancelRecording = false; pintarOrbe(); return;
     }
+    pintarOrbe('pensando');
     $('voiceStatus').textContent = '● TRANSCREVENDO';
     $('voiceStatus').style.color = 'var(--violet)';
     $('voiceHint').textContent = 'FASTER WHISPER · PROCESSAMENTO LOCAL';
@@ -225,6 +346,7 @@ const CondorVoz = (() => {
       partes = [];
       gravador = null;
       fluxo = null;
+      pintarOrbe();
     }
   }
 
@@ -311,13 +433,18 @@ const CondorVoz = (() => {
   }
 
   function stopForSecurity() {
+    Tocador.parar(false);
     securityGeneration++; microphoneAuthorized=false; microphonePending=false;
     continuous = false; cancelRecording = true;
     if ($('continuousVoiceBtn')) { $('continuousVoiceBtn').textContent='CONVERSA CONTÍNUA'; $('continuousVoiceBtn').setAttribute('aria-pressed','false'); }
     clearTimeout(restartTimer); clearTimeout(limiteGravacao); pararMonitorSilencio();
     if (gravador?.state === 'recording') gravador.stop();
     fluxo?.getTracks().forEach((track) => track.stop()); fluxo = null;
+    setTimeout(() => pintarOrbe(), 0);
   }
 
-  return { init, pedirSenha, fecharSenha, stopForSecurity, toggleLocalVoice: alternarGravacaoLocal };
+  return {
+    init, pedirSenha, fecharSenha, stopForSecurity, toggleLocalVoice: alternarGravacaoLocal,
+    calar: () => Tocador.parar(true),
+  };
 })();

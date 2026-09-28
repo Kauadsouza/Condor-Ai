@@ -59,6 +59,9 @@ class Voz:
     def tocando(self) -> bool:
         return self._tocando
 
+    def marcar_tocando(self, valor: bool) -> None:
+        self._tocando = bool(valor)
+
     def _carregar(self):
         if self._voice is not None:
             return self._voice

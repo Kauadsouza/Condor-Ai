@@ -27,6 +27,7 @@ dependencies = [
   "pyserial>=3.5,<4",
   "defusedxml>=0.7,<1",
   "pvporcupine>=4.0,<5",
+  "vosk>=0.3.45,<0.4",
   "pvrecorder>=1.2,<2",
   "faster-whisper>=1.2,<2",
   "piper-tts>=1.7,<2",

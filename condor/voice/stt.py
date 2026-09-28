@@ -7,6 +7,7 @@ import io
 import logging
 import os
 import threading
+import time
 import wave
 from pathlib import Path
 
@@ -36,6 +37,7 @@ class Ouvidos:
         self._cerebro = cerebro
         self._model = None
         self._lock = threading.Lock()
+        self._vocabulario: tuple[float, str] = (0.0, "")
 
     @property
     def model_path(self) -> Path:
@@ -69,7 +71,35 @@ class Ouvidos:
         )
         return self._model
 
-    def _transcrever_local(self, audio: bytes) -> str:
+    def _prompt_inicial(self) -> str:
+        """Frase-guia do Whisper com os nomes que o Condor já aprendeu do dono.
+
+        Sem isso ele escreve "logo" no lugar de "Loog" e "Abius" no lugar de
+        "abre o". A frase natural ensina o jeito de falar; os nomes vêm da
+        memória (pessoas, empresas, projetos, ferramentas) e mudam com ela.
+        """
+        base = "Condor, abre o Spotify e me lembra da reunião. Kauã, Oxford, Linux, KauaArtx"
+        agora = time.monotonic()
+        quando, cache = self._vocabulario
+        if cache and agora - quando < 60:
+            return cache
+        memoria = getattr(self._cerebro, "memoria", None)
+        nomes: list[str] = []
+        try:
+            if memoria is not None and getattr(memoria, "unlocked", False):
+                nomes = [n for n in memoria.vocabulario(24) if n.casefold() not in base.casefold()]
+        except Exception:
+            nomes = []
+        prompt = base
+        for nome in nomes:
+            if len(prompt) + len(nome) + 2 > 380:
+                break
+            prompt += f", {nome}"
+        prompt += "."
+        self._vocabulario = (agora, prompt)
+        return prompt
+
+    def _transcrever_local(self, audio: bytes, prompt: str | None = None) -> str:
         with self._lock:
             model = self._carregar()
             segments, _info = model.transcribe(
@@ -80,7 +110,7 @@ class Ouvidos:
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 420},
                 condition_on_previous_text=False,
-                initial_prompt="Condor, Kauã, Oxford, computador, Linux, projeto e canal KauaArtx.",
+                initial_prompt=prompt or "Condor, Kauã, Oxford, computador, Linux, projeto e canal KauaArtx.",
             )
             return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
 
@@ -91,7 +121,7 @@ class Ouvidos:
         if segundos is not None and segundos < 0.35:
             return ""
         try:
-            texto = await asyncio.to_thread(self._transcrever_local, wav)
+            texto = await asyncio.to_thread(self._transcrever_local, wav, self._prompt_inicial())
         except Exception as exc:
             log.error("Transcrição local falhou: %s", exc)
             return ""
