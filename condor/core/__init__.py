@@ -5,7 +5,7 @@ dispositivos ou memória. Isso mantém o Condor como um único cérebro, em vez 
 uma coleção de funcionalidades independentes.
 """
 
-from .ai_gateway import AIGateway, MockAIProvider
+from .ai_gateway import AIGateway
 from .context import ContextEngine
 from .device_mesh import DeviceMesh
 from .events import EventBus
@@ -16,6 +16,6 @@ from .world import WorldStateLedger
 
 __all__ = [
     "AIGateway", "CondorOrchestrator", "ContextEngine", "DeviceMesh",
-    "DurableTaskEngine", "EventBus", "MockAIProvider", "ProjectEngine",
+    "DurableTaskEngine", "EventBus", "ProjectEngine",
     "WorldStateLedger",
 ]

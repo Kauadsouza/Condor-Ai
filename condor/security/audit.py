@@ -49,8 +49,6 @@ class IntegrityAudit:
         except OSError:
             return (-1, -1)
 
-    def ligar_identidade(self, identity) -> None:
-        self.identity = identity
 
     # ── Escrita ────────────────────────────────────────────────────────────
 
@@ -182,5 +180,3 @@ class IntegrityAudit:
         return self._last
 
 
-def hmac_compare(left: str, right: str) -> bool:
-    return hmac.compare_digest(left, right)

@@ -52,8 +52,6 @@ class ContextEngine:
         with self._lock:
             return asdict(self._state)
 
-    def clear_selection(self) -> dict[str, Any]:
-        return self.update(region_id=None, part_id=None, selected_object=None)
 
     def for_ai(self) -> dict[str, Any]:
         """Contrato estável enviado à IA; nunca inclui segredo ou biometria."""

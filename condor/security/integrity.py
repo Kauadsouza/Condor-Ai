@@ -52,7 +52,7 @@ class CodeIntegrity:
         package = self.root / "condor"
         if package.exists():
             candidates.extend(package.rglob("*"))
-        for name in ("condor_app.pyw", "condor_launcher.pyw", "condor_window.pyw", "pyproject.toml"):
+        for name in ("condor_app.pyw", "condor_window.pyw", "pyproject.toml"):
             candidate = self.root / name
             if candidate.exists():
                 candidates.append(candidate)
