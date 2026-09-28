@@ -51,6 +51,7 @@ TOOL_RISK: dict[str, RiskLevel] = {
     "condor_criar_experimento": RiskLevel.CONFIRM,
     "condor_atualizar_experimento": RiskLevel.CONFIRM,
     "condor_registrar_memoria": RiskLevel.REVIEW,
+    "condor_gerar_imagem": RiskLevel.REVIEW,
     "condor_buscar_dispositivos": RiskLevel.REVIEW,
     "condor_conectar_dispositivo": RiskLevel.CONFIRM,
     "condor_desconectar_dispositivo": RiskLevel.REVIEW,

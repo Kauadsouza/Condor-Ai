@@ -47,6 +47,7 @@ const CondorMedia = (() => {
         body: JSON.stringify({ prompt, size: '1024x1024', quality: 'high' }),
       });
       loading.remove();
+      if (result.image?.id) CondorGaleria.marcarMostrada(result.image.id);
       CondorConversa.adicionarMidia(
         `data:${result.mime_type};base64,${result.image_b64}`,
         `${prompt} · ${result.model}`,

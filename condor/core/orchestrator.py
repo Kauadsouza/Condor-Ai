@@ -30,6 +30,7 @@ class CondorOrchestrator:
         "condor_criar_experimento": "ai_laboratory",
         "condor_atualizar_experimento": "ai_laboratory",
         "condor_registrar_memoria": "ai_memory",
+        "condor_gerar_imagem": "ai_media",
         "condor_buscar_dispositivos": "ai_devices",
         "condor_conectar_dispositivo": "ai_devices",
         "condor_desconectar_dispositivo": "ai_devices",
@@ -41,6 +42,7 @@ class CondorOrchestrator:
         self.events = events
         self.projects = projects
         self.devices = devices
+        self._gerar_imagem: Callable[..., Awaitable[dict[str, Any]]] | None = None
         self._handlers: dict[str, Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]] = {
             "condor_estado": self._state,
             "condor_abrir_projeto": self._open_project,
@@ -52,6 +54,7 @@ class CondorOrchestrator:
             "condor_criar_experimento": self._create_experiment,
             "condor_atualizar_experimento": self._update_experiment,
             "condor_registrar_memoria": self._remember,
+            "condor_gerar_imagem": self._generate_image,
             "condor_buscar_dispositivos": self._scan_devices,
             "condor_conectar_dispositivo": self._connect_device,
             "condor_desconectar_dispositivo": self._disconnect_device,
@@ -224,6 +227,25 @@ class CondorOrchestrator:
         )
         return {"experiment": experiment}
 
+    def ligar_imagem(self, gerar: Callable[..., Awaitable[dict[str, Any]]]) -> None:
+        """O servidor injeta o gerador local que também guarda na galeria cifrada."""
+        self._gerar_imagem = gerar
+
+    async def _generate_image(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._gerar_imagem is None:
+            raise RuntimeError("gerador de imagem local indisponivel")
+        prompt = self._text(arguments, "description", 4000)
+        size = {
+            "square": "1024x1024", "portrait": "1024x1536", "landscape": "1536x1024",
+        }.get(str(arguments.get("format") or "square").lower(), "1024x1024")
+        result = await self._gerar_imagem(prompt, size=size, origem="cerebro")
+        item = result["image"]
+        # O bitmap nunca volta para o modelo: só o que ele precisa para responder.
+        return {
+            "image_id": item["id"], "shown_on_screen": True, "saved_to_gallery": True,
+            "model": item["modelo"], "width": item["largura"], "height": item["altura"],
+        }
+
     async def _remember(self, arguments: dict[str, Any]) -> dict[str, Any]:
         category = self._text(arguments, "category", 30).lower()
         if category not in self.MEMORY_CATEGORIES:
@@ -239,7 +261,10 @@ class CondorOrchestrator:
             category, key, value, max(0.1, min(1.0, confidence)), "condor-ai"
         )
         await self.events.publish(
-            "MEMORY_FACT_SAVED", {"fact_id": fact_id, "category": category, "key": key}, source="condor_orchestrator"
+            "MEMORY_FACT_SAVED",
+            {"fact_id": fact_id, "category": category, "key": key},
+            source="condor_orchestrator",
+            transient={"items": [{"id": fact_id, "categoria": category, "valor": value[:220], "status": "novo"}]},
         )
         return {"fact_id": fact_id, "category": category, "key": key, "encrypted": True}
 

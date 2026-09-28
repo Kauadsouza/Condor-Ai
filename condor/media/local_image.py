@@ -146,7 +146,8 @@ class LocalImageGenerator:
         text = str(value or "").strip()
         return text[-limit:]
 
-    async def generate(self, prompt: str, *, size: str = "1024x1024", quality: str = "medium") -> dict[str, str | int | bool]:
+    async def generate(self, prompt: str, *, size: str = "1024x1024", quality: str = "medium",
+                       seed: int | None = None) -> dict[str, str | int | bool]:
         clean_prompt = " ".join(str(prompt or "").split()).strip()
         if not clean_prompt:
             raise ValueError("descreva a imagem que o Condor deve criar")
@@ -177,6 +178,8 @@ class LocalImageGenerator:
             steps = max(4, min(int(steps), 40))
             cfg_scale = "7.0"
             sampler = ["--sampling-method", "dpm++2m", "--scheduler", "karras"]
+        # Seed explícita: fica gravada na galeria e permite refazer a mesma imagem.
+        seed = secrets.randbelow(2**31 - 1) if seed is None or int(seed) < 0 else int(seed)
         output_dir = state_path("runtime", "generated-images")
         output_dir.mkdir(parents=True, exist_ok=True)
         output = (output_dir / f"condor-{int(time.time())}-{secrets.token_hex(6)}.png").resolve()
@@ -186,7 +189,7 @@ class LocalImageGenerator:
             str(executable), "-m", str(model), "-p", clean_prompt,
             "-n", "low quality, blurry, distorted, watermark, unreadable text",
             "-o", str(output), "-W", str(width), "-H", str(height),
-            "--steps", str(steps), "--cfg-scale", cfg_scale, "--seed", "-1",
+            "--steps", str(steps), "--cfg-scale", cfg_scale, "--seed", str(seed),
             "--fa", "--vae-tiling", "--rng", "cpu",
         ]
         command.extend(sampler)
@@ -226,6 +229,7 @@ class LocalImageGenerator:
                 "provider": "local",
                 "width": width,
                 "height": height,
+                "seed": seed,
                 "private": True,
             }
         except subprocess.TimeoutExpired as exc:

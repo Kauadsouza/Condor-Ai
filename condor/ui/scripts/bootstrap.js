@@ -14,6 +14,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   CondorConversa.init();
   CondorVoz.init();
   CondorMemoria.init();
+  CondorGaleria.init();
   CondorCell.init();
   CondorProjetos.init();
   CondorCoreUI.init();
