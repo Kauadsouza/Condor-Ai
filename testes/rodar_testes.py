@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import io
 import json
 import os
 import sys
 import tempfile
 import time
+import wave
 import types
 import unittest
 from pathlib import Path
@@ -589,7 +591,7 @@ class FluidezTests(unittest.TestCase):
                 memoria.custo_hoje()
                 memoria.fatos_recentes(20)
                 memoria.acoes_recentes(20)
-                memoria.hub_snapshot()
+                memoria.fluxo_recente(10)
             self.assertEqual(alvo.stat().st_mtime_ns, antes,
                              "leitura nao pode reescrever o snapshot cifrado")
 
@@ -674,7 +676,7 @@ class SessionSecurityTests(unittest.TestCase):
     def test_same_origin_client_and_rate_controls(self):
         security = LocalSessionSecurity("127.0.0.1", 7777)
         self.assertTrue(security.client_allowed("desktop-ui"))
-        self.assertTrue(security.client_allowed("hub-local"))
+        self.assertFalse(security.client_allowed("hub-local"))   # o ARTX Hub saiu
         self.assertFalse(security.client_allowed("website"))
         self.assertTrue(security.request_allowed(
             "http://127.0.0.1:7777", None, "same-origin", "POST"
@@ -752,11 +754,8 @@ class SessionSecurityTests(unittest.TestCase):
                 from condor.server import montar
 
                 app, session = montar(Config())
-                opened = []
-                session.abrir_aplicativo = lambda: opened.append(True) or True
                 client = TestClient(app, base_url="http://127.0.0.1:7777")
                 self.assertEqual(client.get("/api/estado").status_code, 403)
-                self.assertEqual(client.post("/api/app/abrir").status_code, 403)
                 root = client.get("/", follow_redirects=False)
                 self.assertEqual(root.status_code, 307)
                 self.assertEqual(root.headers["location"], "/ui/index.html")
@@ -817,7 +816,7 @@ class SessionSecurityTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("HttpOnly", response.headers["set-cookie"])
                 self.assertIn("SameSite=strict", response.headers["set-cookie"])
-                # O Hub em /hub renova pelo cookie ja estabelecido, sem o arquivo.
+                # Sem o ARTX Hub, nenhum outro cliente local e aceito.
                 self.assertEqual(
                     client.post(
                         "/api/session", headers={
@@ -825,7 +824,7 @@ class SessionSecurityTests(unittest.TestCase):
                             "X-Condor-Client": "hub-local",
                         }
                     ).status_code,
-                    200,
+                    403,
                 )
                 client.headers.update({"Origin": "http://127.0.0.1:7777"})
                 self.assertEqual(
@@ -835,10 +834,9 @@ class SessionSecurityTests(unittest.TestCase):
                     ).status_code,
                     403,
                 )
-                app_open = client.post("/api/app/abrir")
-                self.assertEqual(app_open.status_code, 200, app_open.text)
-                self.assertEqual(app_open.json()["app"], "Condor AI")
-                self.assertEqual(opened, [True])
+                # O ARTX Hub foi removido: nem a rota nem a API existem mais.
+                self.assertEqual(client.get("/api/hub").status_code, 404)
+                self.assertEqual(client.get("/hub/index.html").status_code, 404)
                 state_headers = client.get("/api/estado").headers
                 self.assertIn("form-action 'self'", state_headers["content-security-policy"])
                 self.assertEqual(state_headers["cross-origin-opener-policy"], "same-origin")
@@ -986,44 +984,6 @@ class MemoryTests(unittest.TestCase):
             self.assertEqual(memory.historico(), [])
             self.assertEqual(memory.estatisticas()["turnos"], 0)
             self.assertIn("deve permanecer", memory.fatos_recentes()[0]["valor"])
-
-    def test_hub_data_is_seeded_crud_and_encrypted(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "hub-memory.enc"
-            key = os.urandom(32)
-            memory = Memoria(path)
-            memory.inicializar()
-            self.assertTrue(memory.hub_snapshot()["locked"])
-            memory.unlock(key)
-            snapshot = memory.hub_snapshot()
-            self.assertFalse(snapshot["locked"])
-            self.assertTrue(any(item["id"] == "condor-x" for item in snapshot["projects"]))
-            task = memory.hub_create_task("Validar o Hub", "condor", "alta")
-            self.assertTrue(memory.hub_update_task(task["id"], "concluida"))
-            note = memory.hub_create_note("Privada", "conteudo cifrado do Hub", "condor")
-            self.assertTrue(memory.hub_update_note(note["id"], "Atualizada", "conteudo atualizado do Hub"))
-            region_item = memory.condor_x_create_region_item(
-                "left-forearm", "componente", "Registro privado", "detalhe anatomico cifrado"
-            )
-            self.assertTrue(memory.condor_x_update_region_item(
-                region_item["id"], "Registro privado", "detalhe atualizado", "planejado"
-            ))
-            memory.lock()
-            self.assertNotIn("conteudo cifrado do Hub", path.read_text("utf-8"))
-            self.assertNotIn("conteudo atualizado do Hub", path.read_text("utf-8"))
-            self.assertNotIn("detalhe anatomico cifrado", path.read_text("utf-8"))
-            self.assertNotIn("detalhe atualizado", path.read_text("utf-8"))
-            reopened = Memoria(path)
-            reopened.inicializar()
-            reopened.unlock(key)
-            state = reopened.hub_snapshot()
-            self.assertEqual(state["tasks"][0]["status"], "concluida")
-            self.assertEqual(state["notes"][0]["id"], note["id"])
-            self.assertEqual(state["notes"][0]["conteudo"], "conteudo atualizado do Hub")
-            stored_region = reopened.condor_x_region_items("left-forearm")
-            self.assertEqual(stored_region[0]["id"], region_item["id"])
-            self.assertEqual(stored_region[0]["status"], "planejado")
-
 
 class FacePresenceGuardTests(unittest.TestCase):
     class Guard:
@@ -1748,8 +1708,10 @@ class LocalMindTests(unittest.IsolatedAsyncioTestCase):
             schemas = _selecionar_esquemas_locais([{"role": "user", "content": text}])
             return {item["function"]["name"] for item in schemas}
 
-        self.assertEqual(names("oi, tudo bem?"), {"buscar_memoria"})
-        self.assertEqual(names("qual o uso da RAM?"), {"buscar_memoria", "info_sistema"})
+        # Papo não carrega ferramenta nenhuma; memória só quando ele fala dela.
+        self.assertEqual(names("oi, tudo bem?"), set())
+        self.assertEqual(names("qual o uso da RAM?"), {"info_sistema"})
+        self.assertIn("buscar_memoria", names("o que você lembra do meu trabalho?"))
         folder = names("liste a pasta Downloads")
         self.assertIn("listar_pasta", folder)
         self.assertNotIn("deletar", folder)
@@ -1805,10 +1767,7 @@ class LocalMindTests(unittest.IsolatedAsyncioTestCase):
                 [{"role": "user", "content": "oi, tudo bem?"}], modo_voz=False,
             )
             self.assertEqual(result, "Oi pelo modelo local.")
-            self.assertEqual(
-                {tool["name"] for tool in responses.request["tools"]},
-                {"buscar_memoria"},
-            )
+            self.assertEqual({tool["name"] for tool in responses.request["tools"]}, set())
 
             responses.fail = True
             fallback = await brain.responder(
@@ -2792,7 +2751,7 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertIn("fila.push(item)", conversation)
         self.assertIn("despacharTurno(fila.shift())", conversation)
         self.assertIn("CondorWS.ao('resposta.fim'", conversation)
-        self.assertIn("finalizar(m.texto, m.fontes || []); concluirTurno()", conversation)
+        self.assertIn("finalizar(m.texto, m.fontes || [], m.treino_id || ''); concluirTurno()", conversation)
         self.assertIn("'COLOCAR NA FILA'", conversation)
         self.assertNotIn("campo.disabled", conversation)
         self.assertNotIn("botao.disabled", conversation)
@@ -3047,17 +3006,6 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertNotIn("/hub/index.html", launcher)
         self.assertNotIn("/hub/index.html", window)
 
-    def test_hub_condor_only_embeds_same_origin_local_assistant(self):
-        component = ROOT.parent.parent / "ARTX Hub" / "src" / "components" / "CondorWorkspace.tsx"
-        if not component.exists():
-            self.skipTest("ARTX Hub nao esta neste checkout")
-        source = component.read_text("utf-8")
-        self.assertIn('localMode ? <iframe src="/ui/index.html"', source)
-        self.assertIn('href="condor://open"', source)
-        self.assertNotIn("Ativo no Hub", source)
-        self.assertNotIn("navigationCommand", source)
-        self.assertNotIn("/api/hub/condor-x/", source)
-
     def test_condor_x_keeps_human_reference_without_unverified_specs(self):
         source = (ROOT / "condor" / "ui" / "scripts" / "condor-x.js").read_text("utf-8")
         modeler = (ROOT / "condor" / "ui" / "scripts" / "modeler-3d.js").read_text("utf-8")
@@ -3271,6 +3219,542 @@ class CondorCloudTests(unittest.TestCase):
         self.assertIn("nao e uma copia", identity)
         self.assertNotIn("service_role", schema.lower())
         self.assertIn("SOMENTE LEITURA", interface)
+
+
+class MemoryLearningTests(unittest.IsolatedAsyncioTestCase):
+    """Aprendizado que não se perde, não duplica e só anuncia o que mudou."""
+
+    class Events:
+        def __init__(self):
+            self.items = []
+
+        async def publish(self, name, payload, **kwargs):
+            self.items.append((name, payload, kwargs))
+
+    class VectorBrain:
+        """Vetores fixos por texto: permite testar a deduplicação por sentido."""
+        modelo_embedding_ativo = "teste-vetor"
+
+        def __init__(self, vetores=None, resposta=None, pronto=True):
+            self.vetores = vetores or {}
+            self.resposta = resposta
+            self.pronto = pronto
+            self.chamadas = 0
+
+        async def embeddings_locais(self, textos):
+            return [self.vetores.get(texto, [0.0, 0.0, 1.0]) for texto in textos]
+
+        async def embedding(self, texto):
+            return self.vetores.get(texto)
+
+        async def completar(self, *_args, **_kwargs):
+            self.chamadas += 1
+            return json.dumps(self.resposta or {"fatos": []}, ensure_ascii=False)
+
+    def _memoria(self, tmp):
+        memory = Memoria(Path(tmp) / "learn.enc")
+        memory.inicializar()
+        memory.unlock(os.urandom(32))
+        return memory
+
+    def test_batch_status_distinguishes_new_updated_and_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = self._memoria(tmp)
+            fato = {"categoria": "pessoal", "chave": "cidade", "valor": "O dono mora em São Paulo."}
+            self.assertEqual(memory.salvar_fatos_lote([fato])[0]["status"], "novo")
+            self.assertEqual(memory.salvar_fatos_lote([fato])[0]["status"], "igual")
+            mudou = {**fato, "valor": "O dono mora em Campinas."}
+            self.assertEqual(memory.salvar_fatos_lote([mudou])[0]["status"], "atualizado")
+
+    def test_changed_value_drops_stale_embedding_and_update_returns_same_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = self._memoria(tmp)
+            primeiro = memory.salvar_fato("pessoal", "cidade", "Mora em São Paulo.",
+                                          embedding=[1.0, 0.0], embedding_modelo="m")
+            memory.salvar_fato("pessoal", "outro", "Outro fato qualquer.")
+            segundo = memory.salvar_fato("pessoal", "cidade", "Mora em Campinas.")
+            self.assertEqual(primeiro, segundo)
+            faltando = memory.fatos_sem_embedding("m")
+            self.assertIn(primeiro, [item["id"] for item in faltando])
+
+    async def test_queue_survives_unready_brain_and_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "queue.enc"
+            key = os.urandom(32)
+            memory = Memoria(path)
+            memory.inicializar()
+            memory.unlock(key)
+            parado = self.VectorBrain(pronto=False)
+            extractor = Extrator(memory, parado, Config(), self.Events())
+            extractor.iniciar()
+            extractor.enfileirar("Eu trabalho na Loog com marketing digital.", "Anotado.")
+            await extractor.encerrar(timeout=0.5)
+            self.assertEqual(parado.chamadas, 0)
+            memory.lock()
+
+            reaberta = Memoria(path)
+            reaberta.unlock(key)
+            self.assertEqual(reaberta.estatisticas()["aprendendo"], 1)
+            pronto = self.VectorBrain(resposta={"fatos": [{
+                "categoria": "trabalho", "chave": "empresa",
+                "valor": "O dono trabalha na Loog com marketing digital.", "confianca": 0.9,
+            }]})
+            events = self.Events()
+            extractor = Extrator(reaberta, pronto, Config(), events)
+            extractor.iniciar()
+            await extractor.encerrar(timeout=3)
+            self.assertEqual(reaberta.estatisticas()["aprendendo"], 0)
+            self.assertEqual(reaberta.fato_por_chave("trabalho", "empresa")["valor"],
+                             "O dono trabalha na Loog com marketing digital.")
+            aprendidos = [kw for name, _payload, kw in events.items if name == "MEMORY_LEARNED"]
+            self.assertEqual(aprendidos[0]["transient"]["items"][0]["categoria"], "trabalho")
+
+    async def test_same_meaning_under_new_key_updates_existing_fact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = self._memoria(tmp)
+            antigo = "O dono trabalha na Loog como marketing."
+            novo = "O dono trabalha com marketing na empresa Loog."
+            memory.salvar_fato("trabalho", "empresa_atual", antigo,
+                               embedding=[1.0, 0.0, 0.0], embedding_modelo="teste-vetor")
+            brain = self.VectorBrain(vetores={novo: [0.99, 0.141, 0.0]})
+            extractor = Extrator(memory, brain, Config(), self.Events())
+            await extractor._salvar({"fatos": [{
+                "categoria": "trabalho", "chave": "emprego", "valor": novo,
+            }]})
+            self.assertEqual(memory.estatisticas()["fatos"], 1)
+            self.assertEqual(memory.fato_por_chave("trabalho", "empresa_atual")["valor"], novo)
+
+    async def test_unchanged_facts_are_not_announced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = self._memoria(tmp)
+            valor = "O dono prefere respostas curtas."
+            events = self.Events()
+            extractor = Extrator(memory, self.VectorBrain(), Config(), events)
+            dados = {"fatos": [{"categoria": "preferencia", "chave": "estilo", "valor": valor}]}
+            await extractor._salvar(dados)
+            await extractor._salvar(dados)
+            self.assertEqual(sum(1 for name, *_ in events.items if name == "MEMORY_LEARNED"), 1)
+
+    def test_first_person_statements_without_pronoun_are_candidates(self):
+        self.assertTrue(parece_candidato_memoria("Trabalho na Loog cuidando do marketing."))
+        self.assertTrue(parece_candidato_memoria("Moro em Campinas desde o ano passado."))
+        self.assertFalse(parece_candidato_memoria("abra o chrome"))
+
+    def test_recall_access_counter_does_not_rewrite_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = self._memoria(tmp)
+            memory.salvar_fato("projeto", "canal", "Projeto permanente no YouTube")
+            antes = memory._path.stat().st_mtime_ns
+            time.sleep(0.02)
+            self.assertTrue(memory.buscar_fatos("YouTube"))
+            self.assertEqual(antes, memory._path.stat().st_mtime_ns)
+
+
+class StreamingSpeechTests(unittest.IsolatedAsyncioTestCase):
+    """A voz começa na primeira frase pronta, pula código e cala quando mandado."""
+
+    class FakeVoz:
+        pronto = True
+
+        def __init__(self):
+            self.frases = []
+            self.calado = False
+            self.tocados = 0
+
+        async def sintetizar(self, texto):
+            self.frases.append(texto)
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as arquivo:
+                arquivo.setnchannels(1); arquivo.setsampwidth(2); arquivo.setframerate(8000)
+                arquivo.writeframes(bytes(2) * 80)   # 10 ms
+            return buffer.getvalue()
+
+        def _tocar_bloqueante(self, _audio):
+            self.tocados += 1
+            return True
+
+        def marcar_tocando(self, _valor):
+            pass
+
+        def calar(self):
+            self.calado = True
+
+    async def test_sentences_go_out_while_text_is_still_arriving(self):
+        from condor.voice.fala import FalaEmFluxo
+        voz = self.FakeVoz()
+        enviados = []
+
+        async def janela(msg):
+            enviados.append(msg)
+
+        fala = FalaEmFluxo(voz, janela)
+        for token in ["Claro, ", "Kauã. ", "Abri o Spotify ", "e deixei tocando ", "uma playlist animada ", "pra você agora. ", "Mais al", "guma coisa?"]:
+            fala.alimentar(token)
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
+        self.assertEqual(voz.frases[0], "Claro, Kauã.")
+        self.assertTrue(enviados, "a primeira frase deveria sair antes do fim do texto")
+        await fala.terminar()
+        self.assertEqual(voz.frases[-1], "Mais alguma coisa?")
+        self.assertEqual([m["seq"] for m in enviados], list(range(len(enviados))))
+        self.assertTrue(all(m["tipo"] == "voz.audio" and m["wav"] for m in enviados))
+
+    async def test_code_blocks_are_not_read_aloud(self):
+        from condor.voice.fala import FalaEmFluxo
+        voz = self.FakeVoz()
+        fala = FalaEmFluxo(voz, None)
+        fala.alimentar("Aqui está o script que você pediu.\n```python\nprint('oi')\n")
+        fala.alimentar("x = 1\n```\nÉ só rodar.")
+        await fala.terminar()
+        falado = " ".join(voz.frases)
+        self.assertNotIn("print", falado)
+        self.assertIn("O código está na tela.", falado)
+        self.assertIn("É só rodar.", falado)
+        self.assertEqual(voz.tocados, len(voz.frases))
+
+    async def test_cancel_stops_synthesis_and_silences(self):
+        from condor.voice.fala import FalaEmFluxo
+        voz = self.FakeVoz()
+        fala = FalaEmFluxo(voz, None)
+        fala.alimentar("Primeira frase bem clara aqui. ")
+        fala.cancelar()
+        fala.alimentar("Segunda frase que não deve sair. ")
+        await fala.terminar()
+        self.assertTrue(voz.calado)
+        self.assertNotIn("Segunda frase que não deve sair.", voz.frases)
+
+    async def test_full_answer_is_spoken_when_no_tokens_were_streamed(self):
+        from condor.voice.fala import FalaEmFluxo
+        voz = self.FakeVoz()
+        fala = FalaEmFluxo(voz, None)
+        await fala.terminar("Resposta que chegou inteira de uma vez.")
+        self.assertEqual(voz.frases, ["Resposta que chegou inteira de uma vez."])
+
+
+class ImageGalleryTests(unittest.IsolatedAsyncioTestCase):
+    """Imagens ficam cifradas, com seed, e o cérebro pode criá-las por ferramenta."""
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"condor-pixels" * 20
+
+    def _memoria(self, tmp):
+        memory = Memoria(Path(tmp) / "gallery.enc")
+        memory.inicializar()
+        memory.unlock(os.urandom(32))
+        return memory
+
+    def test_gallery_is_encrypted_listed_read_and_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = self._memoria(tmp)
+            item = memory.salvar_imagem(self.PNG, {
+                "pedido": "um condor", "prompt_final": "a condor", "modelo": "sdxl", "seed": 42,
+                "largura": 1024, "altura": 1024,
+            })
+            bruto = (Path(tmp) / "gallery" / f"{item['id']}.enc").read_bytes()
+            self.assertNotIn(b"condor-pixels", bruto)
+            self.assertEqual(memory.ler_imagem(item["id"]), self.PNG)
+            self.assertEqual(memory.imagens()[0]["seed"], 42)
+            with self.assertRaises(ValueError):
+                memory.ler_imagem("../vault")
+            self.assertTrue(memory.apagar_imagem(item["id"]))
+            self.assertFalse((Path(tmp) / "gallery" / f"{item['id']}.enc").exists())
+            self.assertIsNone(memory.ler_imagem(item["id"]))
+
+    async def test_brain_image_tool_respects_permission_and_never_returns_pixels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = self._memoria(tmp)
+            context = ContextEngine(); events = EventBus(memory)
+            orchestrator = CondorOrchestrator(
+                memory, context, events, ProjectEngine(memory, context, events),
+                DeviceBridge(memory, events, ActionSafetyLayer()),
+            )
+            pedidos = []
+
+            async def gerar(prompt, *, size, origem):
+                pedidos.append((prompt, size, origem))
+                item = memory.salvar_imagem(self.PNG, {"pedido": prompt, "modelo": "sdxl",
+                                                       "largura": 1024, "altura": 768})
+                return {"image_b64": "nao-deve-vazar", "image": item}
+
+            orchestrator.ligar_imagem(gerar)
+            negado = await orchestrator.execute("condor_gerar_imagem", {"description": "um condor"})
+            self.assertFalse(negado["ok"])
+            memory.set_permission_decision("ai_media", "always")
+            feito = await orchestrator.execute("condor_gerar_imagem", {
+                "description": "um condor sobre os Andes", "format": "landscape",
+            })
+            self.assertTrue(feito["ok"])
+            self.assertNotIn("nao-deve-vazar", feito["saida"])
+            self.assertEqual(pedidos[-1], ("um condor sobre os Andes", "1536x1024", "cerebro"))
+            self.assertIn("image_id", json.loads(feito["saida"]))
+
+    def test_local_model_gets_image_and_memory_tools_when_asked(self):
+        nomes = lambda texto: {s["function"]["name"] for s in _selecionar_esquemas_locais(
+            [{"role": "user", "content": texto}])}
+        self.assertIn("condor_gerar_imagem", nomes("Condor, cria uma imagem de um condor na neve"))
+        self.assertIn("condor_registrar_memoria", nomes("Anota aí que minha reunião é toda segunda"))
+        self.assertNotIn("condor_gerar_imagem", nomes("abre o spotify"))
+
+
+class ExternalFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """Colar a chave basta; se a API cair, o modelo local responde na hora."""
+
+    class Vault:
+        unlocked = True
+
+        def get(self, name, default=""):
+            return "sk-teste-condor-chave" if name == "OPENAI_API_KEY" else default
+
+    def test_auto_prefers_api_when_key_exists_and_local_without_key(self):
+        config = Config(cerebro={"modelo_local": "qwen3:4b-instruct", "provedor_preferido": "auto"})
+        self.assertEqual(Cerebro(config, None, None, None).provedor, "local")
+        config.ligar_cofre(self.Vault())
+        self.assertEqual(Cerebro(config, None, None, None).provedor, "openai")
+
+    async def test_failed_api_turn_is_answered_by_local_model(self):
+        config = Config(cerebro={"modelo_local": "qwen3:4b-instruct", "provedor_preferido": "openai"})
+        config.ligar_cofre(self.Vault())
+        brain = Cerebro(config, None, None, None)
+        usados, eventos = [], []
+
+        async def falso(_historico, *_args):
+            usados.append(brain.provedor)
+            if brain.provedor == "openai":
+                brain._falha_externa = True
+                brain.ultimo_erro = "insufficient_quota"
+                return "Sem crédito na API."
+            return "Resposta do modelo local."
+
+        async def on_evento(evento):
+            eventos.append(evento)
+
+        brain._responder_provedor = falso
+        resposta = await brain.responder([{"role": "user", "content": "oi"}], on_evento=on_evento)
+        self.assertEqual(resposta, "Resposta do modelo local.")
+        self.assertEqual(usados, ["openai", "local"])
+        self.assertEqual(eventos[0]["tipo"], "conector.reserva")
+        self.assertEqual(brain.provedor, "local")          # segue local por alguns minutos
+        brain._reserva_local_ate = 0.0
+        self.assertEqual(brain.provedor, "openai")          # e depois tenta a API de novo
+
+
+class WakeWordTests(unittest.IsolatedAsyncioTestCase):
+    """Sem chave, o Vosk só separa a frase; o Whisper confirma o nome."""
+
+    def test_name_must_open_the_sentence(self):
+        from condor.session import chamou_condor
+        self.assertTrue(chamou_condor("Condor, abre o Spotify."))
+        self.assertTrue(chamou_condor("E condor, que horas são?"))
+        self.assertFalse(chamou_condor("Estou com dor nas costas."))
+        self.assertFalse(chamou_condor("Ontem eu vi um documentário sobre o condor dos Andes"))
+
+    async def test_unconfirmed_wake_is_ignored_without_touching_the_screen(self):
+        from condor.session import Sessao
+
+        class Ouvidos:
+            async def transcrever(self, _wav):
+                return "Estou com dor nas costas."
+
+        class Escuta:
+            voltou = 0
+            def voltar_a_ouvir(self):
+                self.voltou += 1
+
+        sessao = Sessao.__new__(Sessao)
+        sessao.ouvidos = Ouvidos(); sessao.escuta = Escuta(); sessao.estado = "dormindo"
+        estados = []
+
+        async def mudar(novo):
+            estados.append(novo)
+
+        async def processar(*_a, **_k):
+            raise AssertionError("não deveria responder")
+
+        sessao._mudar_estado = mudar
+        sessao.processar = processar
+        await sessao._processar_voz(b"wav", confirmar_nome=True)
+        self.assertEqual(estados, [])
+        self.assertEqual(sessao.escuta.voltou, 1)
+
+
+class TrainingDatasetTests(unittest.TestCase):
+    """Só respostas reais e úteis viram treino; correção do dono vale mais."""
+
+    def _memoria(self, tmp):
+        memory = Memoria(Path(tmp) / "treino.enc")
+        memory.inicializar()
+        memory.unlock(os.urandom(32))
+        return memory
+
+    def test_only_rated_corrected_or_teacher_answers_are_exported(self):
+        from condor.treino import exportar
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = self._memoria(tmp)
+            neutro_local = memory.registrar_exemplo("oi", "Olá!", provedor="local")
+            bom = memory.registrar_exemplo("me explica LoRA", "LoRA treina só uma camada pequena.",
+                                           provedor="local")
+            ruim = memory.registrar_exemplo("resume meu dia", "Não sei.", provedor="local",
+                                            anteriores=[{"role": "user", "content": "bom dia"},
+                                                        {"role": "assistant", "content": "Bom dia, Kauã."}])
+            memory.registrar_exemplo("quem sou eu?", "Você é o Kauã.", provedor="openai")
+            self.assertTrue(memory.avaliar_exemplo(bom, 1))
+            self.assertTrue(memory.avaliar_exemplo(ruim, -1, "Hoje você tem a reunião da Loog às 15h."))
+            resumo = memory.resumo_treino()
+            self.assertEqual((resumo["total"], resumo["prontos"]), (4, 3))
+            with self.assertRaises(ValueError):
+                memory.avaliar_exemplo(neutro_local, 5)
+
+            saida = exportar(memory, "Kaua", Path(tmp) / "export")
+            linhas = [json.loads(l) for l in Path(saida["arquivo"]).read_text("utf-8").splitlines()]
+            # 3 do chat + os exemplos de estilo que entram em todo treino.
+            self.assertEqual(saida["exemplos"], 3 + saida["estilo_base"])
+            self.assertGreater(saida["estilo_base"], 50)
+            alvos = [l["messages"][-1]["content"] for l in linhas]
+            self.assertIn("Você trabalha na Loog, com marketing.", alvos)
+            self.assertIn("Hoje você tem a reunião da Loog às 15h.", alvos)
+            self.assertNotIn("Não sei.", alvos)
+            self.assertNotIn("Olá!", alvos)
+            com_historico = next(l for l in linhas if l["messages"][-1]["content"].startswith("Hoje"))
+            self.assertEqual([m["role"] for m in com_historico["messages"]],
+                             ["system", "user", "assistant", "user", "assistant"])
+            self.assertIn("CONDOR", com_historico["messages"][0]["content"])
+
+    def test_tool_turns_failures_and_secrets_never_become_examples(self):
+        from condor.session import Sessao
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = self._memoria(tmp)
+
+            class Brain:
+                provedor = "local"
+                modelo_ativo = "qwen3:4b-instruct"
+                ultimo_turno_valido = True
+
+            sessao = Sessao.__new__(Sessao)
+            sessao.memoria = memory
+            sessao.cerebro = Brain()
+            self.assertTrue(sessao._registrar_exemplo("oi", "Olá, Kauã.", "", [], False, 0))
+            self.assertEqual(sessao._registrar_exemplo("abre o spotify", "Abri.", "", [], False, 1), "")
+            self.assertEqual(sessao._registrar_exemplo("guarda", "minha senha: hunter2abc", "", [], False, 0), "")
+            sessao.cerebro.ultimo_turno_valido = False
+            self.assertEqual(sessao._registrar_exemplo("oi", "Erro no conector.", "", [], False, 0), "")
+            self.assertEqual(memory.resumo_treino()["total"], 1)
+
+
+class ReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
+    """Correções da revisão: privacidade de eventos, fila e volta ao local."""
+
+    async def test_transient_payload_reaches_window_but_is_never_stored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memoria(Path(tmp) / "ev.enc")
+            memory.inicializar(); memory.unlock(os.urandom(32))
+            bus = EventBus(memory)
+            vistos = []
+            bus.subscribe("*", lambda ev: vistos.append(ev))
+            await bus.publish("MEMORY_LEARNED", {"facts": 1}, transient={"items": [{"valor": "segredo pessoal"}]})
+            self.assertEqual(vistos[0]["payload"]["items"][0]["valor"], "segredo pessoal")
+            self.assertNotIn("segredo pessoal", json.dumps(memory.eventos_recentes(10), ensure_ascii=False))
+
+    async def test_no_answer_keeps_exchange_in_queue_without_spending_attempts(self):
+        class Mudo:
+            pronto = True
+            modelo_embedding_ativo = ""
+            async def completar(self, *_a, **_k):
+                return ""
+            async def embedding(self, _t):
+                return None
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memoria(Path(tmp) / "q.enc")
+            memory.inicializar(); memory.unlock(os.urandom(32))
+            extractor = Extrator(memory, Mudo(), Config(), None)
+            extractor.enfileirar("Eu trabalho na Loog com marketing digital.", "Ok.")
+            for _ in range(5):
+                await extractor._drenar_fila()
+            pendentes = memory.aprendizados_pendentes()
+            self.assertEqual(len(pendentes), 1)
+            self.assertEqual(pendentes[0]["tentativas"], 0)
+
+    async def test_api_failure_after_a_tool_ran_does_not_replay_locally(self):
+        class Vault:
+            unlocked = True
+            def get(self, name, default=""):
+                return "sk-teste-condor-chave" if name == "OPENAI_API_KEY" else default
+        config = Config(cerebro={"modelo_local": "qwen3:4b-instruct", "provedor_preferido": "openai"})
+        config.ligar_cofre(Vault())
+        brain = Cerebro(config, None, None, None)
+        chamadas = []
+
+        async def falso(_historico, *_args):
+            chamadas.append(brain.provedor)
+            brain._ferramentas_no_turno = 1       # já abriu um programa
+            brain._falha_externa = True
+            return "A API caiu no meio."
+
+        brain._responder_provedor = falso
+        resposta = await brain.responder([{"role": "user", "content": "abre o spotify"}])
+        self.assertEqual(chamadas, ["openai"])
+        self.assertEqual(resposta, "A API caiu no meio.")
+
+
+class DirectChatTests(unittest.IsolatedAsyncioTestCase):
+    """O dono pediu um CONDOR direto: papo curto, sem puxar memória, rápido."""
+
+    def test_small_talk_is_detected_but_real_requests_are_not(self):
+        from condor.brain.persona import conversa_leve
+        for texto in ("oi", "Oi!", "olá, tudo bem?", "Condor, bom dia", "valeu!", "kkkk", "tchau"):
+            self.assertTrue(conversa_leve(texto), texto)
+        for texto in ("oi, me ajuda com o vídeo", "abre o spotify", "quanto é 2+2", "tudo bem? me explica API"):
+            self.assertFalse(conversa_leve(texto), texto)
+
+    def test_small_talk_prompt_is_tiny_and_has_no_memory(self):
+        from condor.brain.persona import montar_prompt_leve
+        prompt = montar_prompt_leve("Kaua")
+        self.assertLess(len(prompt), 900)
+        self.assertNotIn("REFERÊNCIA", prompt)
+
+    def test_prompt_without_tools_drops_tool_rules_and_speaks_to_owner(self):
+        from condor.brain.persona import montar_prompt
+        com = montar_prompt("Kaua", "", False, mensagem_atual="o que é Python?")
+        sem = montar_prompt("Kaua", "- [trabalho] O dono trabalha na Loog.", False,
+                            mensagem_atual="o que é Python?", ferramentas=False)
+        self.assertIn("AGIR NO PC", com)
+        self.assertNotIn("AGIR NO PC", sem)
+        self.assertNotIn("ENGENHARIA E CONDOR X", sem)
+        self.assertIn("Você trabalha na Loog.", sem)
+        self.assertLess(len(sem), len(com) * 0.75)
+
+    def test_answers_lose_trailing_offers_emoji_and_cut_sentences(self):
+        from condor.brain.client import polir_resposta
+        self.assertEqual(polir_resposta("De nada! \U0001F604"), "De nada!")
+        self.assertEqual(
+            polir_resposta("Claro. Uma API liga dois programas.\n\nSe quiser, posso mostrar um exemplo."),
+            "Uma API liga dois programas.",
+        )
+        self.assertEqual(polir_resposta("Uma API liga programas. Ela usa regras. É como"),
+                         "Uma API liga programas. Ela usa regras.")
+        self.assertEqual(polir_resposta("Qual pasta você quer que eu abra?"),
+                         "Qual pasta você quer que eu abra?")
+
+    async def test_small_talk_skips_memory_tools_and_old_conversation(self):
+        class Leve:
+            def __init__(self):
+                self.pedidos = []
+            async def completar(self, sistema, usuario, **_k):
+                self.pedidos.append((sistema, usuario))
+                return '"Oi! Tudo bem?"'
+        config = Config(cerebro={"modelo_local": "qwen3:4b-instruct", "provedor_preferido": "local"})
+        brain = Cerebro(config, None, None, None)
+        fake = Leve()
+        brain.completar = fake.completar
+        historico = [
+            {"role": "user", "content": "me ajuda com o vídeo do canal"},
+            {"role": "assistant", "content": "Qual tema?"},
+            {"role": "user", "content": "oi"},
+        ]
+        resposta = await brain.responder(historico, conversa_leve=True, modo_voz=False)
+        self.assertEqual(resposta, "Oi! Tudo bem?")
+        sistema, usuario = fake.pedidos[0]
+        self.assertEqual(usuario, "oi")
+        self.assertNotIn("Qual tema", sistema)          # a conversa antiga não entra
+        self.assertNotIn("vídeo do canal", sistema + usuario)
 
 
 if __name__ == "__main__":
