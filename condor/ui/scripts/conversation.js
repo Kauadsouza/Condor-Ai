@@ -67,10 +67,13 @@ const CondorConversa = (() => {
     CondorWS.ao('conversa.limpa', limparTela);
     CondorWS.ao('resposta.token', (m) => acrescentar(m.texto));
     CondorWS.ao('resposta.fim', (m) => {
-      finalizar(m.texto, m.fontes || []); concluirTurno();
+      finalizar(m.texto, m.fontes || [], m.treino_id || ''); concluirTurno();
     });
     CondorWS.ao('ferramenta.inicio', (m) => acaoIniciou(m));
     CondorWS.ao('ferramenta.fim', (m) => acaoTerminou(m));
+    CondorWS.ao('conector.reserva', (m) => {
+      mostrarAviso(`API ${String(m.de || '').toUpperCase()} INDISPONÍVEL · RESPONDENDO COM O MODELO LOCAL`, true);
+    });
     CondorWS.ao('erro', (m) => {
       finalizar(m.mensagem || 'Deu ruim aqui.'); concluirTurno();
     });
@@ -282,7 +285,7 @@ const CondorConversa = (() => {
     rolar();
   }
 
-  function finalizar(texto, fontes = []) {
+  function finalizar(texto, fontes = [], treinoId = '') {
     mostrarDigitando(false);
     // Quando o modelo usou ferramentas, o texto do meio não vira resposta —
     // o que vale é o texto final que o servidor manda aqui.
@@ -292,9 +295,49 @@ const CondorConversa = (() => {
       bolhaAtual.textContent = texto;
     }
     mostrarFontes(fontes);
+    if (treinoId && bolhaAtual) adicionarAvaliacao(bolhaAtual, treinoId);
     fecharBolha();
     atualizarPresenca();
     CondorPet.setState('happy', 1400);
+  }
+
+  // 👍/👎 em cada resposta: é assim que o Condor aprende o seu jeito para o
+  // próximo treino. No 👎 você escreve como ele deveria ter respondido.
+  function adicionarAvaliacao(bolha, treinoId) {
+    const host = document.createElement('div');
+    host.className = 'msg-rating';
+    host.innerHTML = `<button type="button" data-nota="1" title="Boa resposta: usar no treino">👍</button>` +
+      `<button type="button" data-nota="-1" title="Resposta ruim: mostrar como deveria ser">👎</button><span></span>`;
+    const status = host.querySelector('span');
+    const enviar = async (nota, correcao = '') => {
+      host.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      try {
+        const resposta = await fetch('/api/treino/avaliar', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: treinoId, nota, correcao }),
+        });
+        const dados = await resposta.json();
+        if (!resposta.ok) throw new Error(dados.erro || 'não salvei');
+        host.querySelector(`[data-nota="${nota}"]`)?.classList.add('ativo');
+        status.textContent = correcao ? 'CORREÇÃO GUARDADA PARA O TREINO' : (nota > 0 ? 'VAI PRO TREINO' : 'ANOTADO');
+        host.querySelector('form')?.remove();
+      } catch (erro) {
+        status.textContent = String(erro.message).toUpperCase();
+        host.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+      }
+    };
+    host.querySelector('[data-nota="1"]').addEventListener('click', () => enviar(1));
+    host.querySelector('[data-nota="-1"]').addEventListener('click', () => {
+      if (host.querySelector('form')) return;
+      const form = document.createElement('form');
+      form.innerHTML = '<textarea rows="3" placeholder="Como o Condor deveria ter respondido? (opcional)"></textarea>' +
+        '<div><button type="submit">SALVAR</button><button type="button" data-cancelar>CANCELAR</button></div>';
+      form.addEventListener('submit', (e) => { e.preventDefault(); enviar(-1, form.querySelector('textarea').value.trim()); });
+      form.querySelector('[data-cancelar]').addEventListener('click', () => form.remove());
+      host.append(form);
+      form.querySelector('textarea').focus();
+    });
+    bolha.appendChild(host);
   }
 
   function mostrarFontes(fontes) {

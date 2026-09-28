@@ -132,17 +132,27 @@ const CondorCoreUI = (() => {
     document.getElementById('systemPermissions').innerHTML = requests.map((item) => `<article class="permission-request"><div><span>${escapeHtml(label(item.capability))}</span><p>${escapeHtml(item.reason)}</p><small>${escapeHtml(label(item.source))}</small></div><div class="permission-request-actions"><button type="button" data-permission-capability="${escapeHtml(item.capability)}" data-permission-request-id="${escapeHtml(item.id)}" data-permission-decision="block">BLOQUEAR</button><button type="button" class="allow-once" data-permission-capability="${escapeHtml(item.capability)}" data-permission-request-id="${escapeHtml(item.id)}" data-permission-decision="allow_once">SÓ UMA VEZ</button><button type="button" class="allow" data-permission-capability="${escapeHtml(item.capability)}" data-permission-request-id="${escapeHtml(item.id)}" data-permission-decision="allow_always">SEMPRE PERMITIR</button></div></article>`).join(''); renderContext(status.context || {});
     const connector = status.ai?.connector || {}; const aiForm = document.getElementById('systemAiForm');
     renderConnectorHealth(connector);
-    if (aiForm?.hidden) { const chosen = connector.preferred === 'auto' ? status.ai?.provider : connector.preferred; document.getElementById('systemAiProvider').value = ['openai', 'claude', 'local'].includes(chosen) ? chosen : 'local'; setSelectValue('systemOpenAiModel', connector.external_model, 'gpt-5.6-terra'); setSelectValue('systemClaudeModel', connector.claude_model, 'claude-sonnet-5'); setSelectValue('systemLocalModel', connector.providers?.local?.model, 'qwen3:4b-instruct'); document.getElementById('systemLocalEndpoint').value = connector.providers?.local?.endpoint || 'http://127.0.0.1:11434/v1'; syncAiProviderFields(); }
+    if (aiForm?.hidden) { const chosen = connector.preferred; document.getElementById('systemAiProvider').value = ['auto', 'openai', 'claude', 'local'].includes(chosen) ? chosen : 'auto'; setSelectValue('systemOpenAiModel', connector.external_model, 'gpt-5.6-terra'); setSelectValue('systemClaudeModel', connector.claude_model, 'claude-sonnet-5'); setSelectValue('systemLocalModel', connector.providers?.local?.model, 'qwen3:4b-instruct'); document.getElementById('systemLocalEndpoint').value = connector.providers?.local?.endpoint || 'http://127.0.0.1:11434/v1'; syncAiProviderFields(); }
   }
 
   function setSelectValue(id, value, fallback) { const select = document.getElementById(id); const allowed = Array.from(select.options).some((option) => option.value === value); select.value = allowed ? value : fallback; }
 
-  function syncAiProviderFields() { const selected = document.getElementById('systemAiProvider').value; document.querySelectorAll('[data-provider-field]').forEach((field) => { field.hidden = field.dataset.providerField !== selected; }); }
+  function syncAiProviderFields() { const selected = document.getElementById('systemAiProvider').value; document.querySelectorAll('[data-provider-field]').forEach((field) => { field.hidden = selected !== 'auto' && field.dataset.providerField !== selected; }); }
 
   function toggleAiConfig() { const form = document.getElementById('systemAiForm'); form.hidden = !form.hidden; document.getElementById('systemAiMessage').textContent = ''; if (!form.hidden) { syncAiProviderFields(); document.getElementById('systemAiProvider').focus(); } }
   async function saveAiConfig(event) {
     event.preventDefault(); const submit = event.currentTarget.querySelector('button[type="submit"]'); const message = document.getElementById('systemAiMessage');
     const providerMode = document.getElementById('systemAiProvider').value; const payload = { provider_mode: providerMode };
+    // Automático: grava o que estiver preenchido; com chave, usa a API e volta
+    // sozinho ao modelo local se ela falhar.
+    if (providerMode === 'auto') {
+      payload.external_model = document.getElementById('systemOpenAiModel').value;
+      payload.claude_model = document.getElementById('systemClaudeModel').value;
+      payload.local_model = document.getElementById('systemLocalModel').value;
+      payload.local_endpoint = document.getElementById('systemLocalEndpoint').value;
+      const openai = document.getElementById('systemOpenAiKey').value.trim(); if (openai) payload.openai_api_key = openai;
+      const claude = document.getElementById('systemClaudeKey').value.trim(); if (claude) payload.anthropic_api_key = claude;
+    }
     if (providerMode === 'openai') { payload.external_model = document.getElementById('systemOpenAiModel').value; const key = document.getElementById('systemOpenAiKey').value.trim(); if (key) payload.openai_api_key = key; }
     if (providerMode === 'claude') { payload.claude_model = document.getElementById('systemClaudeModel').value; const key = document.getElementById('systemClaudeKey').value.trim(); if (key) payload.anthropic_api_key = key; }
     if (providerMode === 'local') { payload.local_model = document.getElementById('systemLocalModel').value; payload.local_endpoint = document.getElementById('systemLocalEndpoint').value; }
