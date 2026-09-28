@@ -32,7 +32,6 @@ Condor inverts that. The memory sits encrypted on the owner's disk; the model is
 - Local speech, optional wake word, authentication-only computer vision and private image generation.
 - Permission-scoped tools for files, applications, research and development work.
 - A **read-only** mobile viewer on the private network — no command, memory or vault routes.
-- ARTX Hub integration for organisation, without sharing PC permissions or private memory.
 - Condor X: an experimental space for 3D design and bounded engineering simulation.
 - An optional PWA foundation (`cloud/`) for encrypted chat, notes and memory while the PC is off.
 
@@ -78,7 +77,6 @@ Desktop UI / voice / local projects
 Separate boundaries:
 - read-only mobile viewer
 - encrypted cloud companion foundation
-- ARTX Hub organisation layer
 ```
 
 ## Windows setup

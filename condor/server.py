@@ -68,13 +68,6 @@ ROOT = CODE_ROOT
 CADX_PARTIAL_BASELINE_MANIFEST = (
     CODE_ROOT / "condor" / "knowledge" / "cadx_partial_baseline" / "manifest.json"
 )
-HUB_OUT = Path(
-    os.getenv("CONDOR_HUB_OUT")
-    or (CODE_ROOT.parent.parent / "ARTX Hub" / "out")
-).resolve()
-
-
-_HUB_CSP_CACHE: dict[str, object] = {}
 
 CONDOR_X_REGIONS = {
     "head-group", "head", "neck", "torso", "chest", "abdomen", "pelvis", "power",
@@ -128,37 +121,6 @@ def _historico_para_interface(memoria: Memoria, limite: int = 24) -> list[dict]:
     ]
 
 
-def _hub_inline_script_sources() -> str:
-    """Retorna hashes CSP dos scripts inline exatos exportados pelo Next.js.
-
-    Guardado em cache por mtime/tamanho: antes isto lia o index.html do disco e
-    fazia SHA-256 de cada bloco a cada requisicao a /hub.
-    """
-    index = HUB_OUT / "index.html"
-    if not index.is_file():
-        return ""
-    try:
-        marca = index.stat()
-        assinatura = (marca.st_mtime_ns, marca.st_size)
-        if _HUB_CSP_CACHE.get("assinatura") == assinatura:
-            return str(_HUB_CSP_CACHE.get("valor", ""))
-        html = index.read_bytes()
-    except OSError:
-        return ""
-    sources: list[str] = []
-    for match in re.finditer(
-        rb"<script\b([^>]*)>(.*?)</script\s*>", html, flags=re.IGNORECASE | re.DOTALL
-    ):
-        attributes, body = match.groups()
-        if re.search(rb"\bsrc\s*=", attributes, flags=re.IGNORECASE):
-            continue
-        digest = base64.b64encode(hashlib.sha256(body).digest()).decode("ascii")
-        sources.append(f"'sha256-{digest}'")
-    valor = " ".join(sources)
-    _HUB_CSP_CACHE.update({"assinatura": assinatura, "valor": valor})
-    return valor
-
-
 class Conexoes:
     """As janelas abertas agora (normalmente uma só)."""
 
@@ -176,6 +138,20 @@ class Conexoes:
     @property
     def total(self) -> int:
         return len(self._sockets)
+
+    @property
+    def tem_player(self) -> bool:
+        """Alguma janela aberta anunciou que toca a voz (áudio já liberado)."""
+        return any(getattr(ws.state, "voz_player", False) for ws in self._sockets)
+
+    async def transmitir_players(self, msg: dict) -> None:
+        """Voz só para janelas que tocam áudio: duas janelas não falam em dobro."""
+        texto = json.dumps(msg, ensure_ascii=False)
+        for ws in [w for w in self._sockets if getattr(w.state, "voz_player", False)][:1]:
+            try:
+                await ws.send_text(texto)
+            except Exception:
+                self.sair(ws)
 
     async def transmitir(self, msg: dict) -> None:
         texto = json.dumps(msg, ensure_ascii=False)
@@ -232,7 +208,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     ouvidos = Ouvidos(config, cerebro)
     voz = Voz(config, cerebro)
     sessao_ref: dict = {}
-    escuta = Escuta(config, lambda wav: sessao_ref["s"].ao_ouvir(wav))
+    escuta = Escuta(config, lambda wav, **kw: sessao_ref["s"].ao_ouvir(wav, **kw))
 
     sessao = Sessao(config, memoria, cerebro, recall, extrator,
                     guarda, escuta, ouvidos, voz)
@@ -248,23 +224,19 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         nonlocal escuta
         if not config.escuta.ativa or not vault.unlocked:
             return
-        if not config.chave_picovoice:
-            escuta.motivo_inativa = "chave local do detector de voz ausente no cofre"
-            return
-        wake_models = list((state_root() / "wake").glob("condor*.ppn"))
-        if not wake_models:
-            escuta.motivo_inativa = "modelo condor*.ppn ausente em ~/.condor/wake"
-            return
+        # A escolha do detector (Picovoice com chave, senão Vosk) e o motivo de
+        # uma eventual indisponibilidade ficam dentro da própria Escuta.
         if escuta.is_alive() or escuta.ativa:
             return
         if escuta.ident is not None:
-            escuta = Escuta(config, lambda wav: sessao_ref["s"].ao_ouvir(wav))
+            escuta = Escuta(config, lambda wav, **kw: sessao_ref["s"].ao_ouvir(wav, **kw))
             sessao.escuta = escuta
         escuta.start()
         await asyncio.sleep(0.25)
 
     conexoes = Conexoes()
     sessao.ligar_avisos(conexoes.transmitir)
+    sessao.ligar_player(lambda: conexoes.tem_player, conexoes.transmitir_players)
     event_bus.subscribe(
         "*", lambda event: conexoes.transmitir({"tipo": "core.event", "event": event})
     )
@@ -412,14 +384,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                         status_code=423,
                     )
         resposta = await call_next(request)
-        if path.startswith(("/api", "/ui", "/hub")):
+        if path.startswith(("/api", "/ui")):
             resposta.headers["Cache-Control"] = "no-store, must-revalidate"
             resposta.headers["Pragma"] = "no-cache"
         script_sources = "'self'"
-        if request.url.path.startswith("/hub"):
-            inline_sources = _hub_inline_script_sources()
-            if inline_sources:
-                script_sources += f" {inline_sources}"
         resposta.headers["Content-Security-Policy"] = (
             f"default-src 'self'; script-src {script_sources}; "
             "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; "
@@ -455,8 +423,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         #   1. o segredo de boot, que exige ler um arquivo do perfil do dono —
         #      e como a janela do Condor abre a primeira sessao;
         #   2. um cookie de sessao ainda valido, que so existe se a prova 1 ja
-        #      foi dada nesta execucao — e como o Hub em /hub renova a dele sem
-        #      precisar do arquivo, por estar na mesma origem e na mesma aba.
+        #      foi dada nesta execucao.
         renovacao = local_security.token_valid(request.cookies.get(local_security.COOKIE))
         if not renovacao and not local_security.boot_token_valid(
             request.headers.get(local_security.CLIENT_HEADER)
@@ -481,18 +448,9 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     app.mount("/ui", StaticFiles(directory=str(Path(__file__).parent / "ui"), html=True),
               name="ui")
 
-    if HUB_OUT.exists():
-        app.mount("/hub", StaticFiles(directory=str(HUB_OUT), html=True), name="hub")
-
     @app.get("/")
     async def raiz():
         return RedirectResponse("/ui/index.html")
-
-    @app.post("/api/app/abrir")
-    async def api_app_open():
-        if not sessao.abrir_aplicativo():
-            return JSONResponse({"erro": "janela local indisponivel"}, status_code=503)
-        return {"ok": True, "app": "Condor AI", "url": "/ui/index.html"}
 
     @app.get("/api/estado")
     async def api_estado():
@@ -509,7 +467,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "integrity_ok": integrity.verify()[0] if vault.unlocked else None,
             "connector": provider.connector_state,
             "keep_window_open": not config.sessao.fechar_janela_ao_dormir,
-            "hub_available": HUB_OUT.exists(),
             "voice": {"stt": ouvidos.pronto, "tts": voz.pronto,
                       "wake_word": escuta.ativa, "wake_reason": escuta.motivo_inativa},
             "iphone": {"control": False, "integration": "shortcuts_setup_required"},
@@ -873,7 +830,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         guarda.emergency_stop()
         guarda.lock_owner_session()
         escuta.silenciar()
-        voz.calar()
+        await sessao.interromper_fala()
         await sessao.dormir("interruptor de emergencia")
         memoria.lock()
         vault.lock()
@@ -923,6 +880,8 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     @app.get("/api/memoria/grafo")
     async def api_grafo():
+        if response := _memoria_pronta():
+            return response
         return {**memoria.grafo(), "estatisticas": memoria.estatisticas()}
 
     @app.get("/api/memoria/mapa")
@@ -933,10 +892,14 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     @app.get("/api/memoria/fluxo")
     async def api_fluxo():
+        if response := _memoria_pronta():
+            return response
         return {"itens": memoria.fluxo_recente(12)}
 
     @app.get("/api/memoria/fatos")
     async def api_fatos(categoria: str | None = None, limite: int = 50):
+        if response := _memoria_pronta():
+            return response
         return {"fatos": memoria.fatos_recentes(limite, categoria)}
 
     @app.post("/api/memoria/perfil")
@@ -989,11 +952,16 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
     @app.delete("/api/memoria/fatos/{fato_id}")
     async def api_esquecer(fato_id: int):
-        return {"ok": memoria.esquecer_fato(fato_id)}
-
-    @app.get("/api/projetos")
-    async def api_projetos():
-        return {"projetos": memoria.projetos()}
+        if response := _memoria_pronta():
+            return response
+        ok = memoria.esquecer_fato(fato_id)
+        if ok:
+            guarda.auditar("memoria", "esquecer_fato", f"fato {fato_id}", True, False)
+            await event_bus.publish(
+                "MEMORY_FACT_FORGOTTEN", {"fact_id": fato_id, "stats": memoria.estatisticas()},
+                source="owner",
+            )
+        return {"ok": ok}
 
     # ── Condor Core API ───────────────────────────────────────────────────
 
@@ -1680,6 +1648,45 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             status_code=403,
         )
 
+    async def gerar_e_guardar(prompt: str, *, size: str = "1024x1024",
+                              quality: str = "medium", origem: str = "chat",
+                              seed: int | None = None) -> dict:
+        """Um caminho só para o chat e para o cérebro: gera, guarda cifrado e avisa."""
+        result = await cerebro.gerar_imagem(prompt, size=size, quality=quality, seed=seed)
+        item = memoria.salvar_imagem(base64.b64decode(result["image_b64"]), {
+            "pedido": sanitizar_para_memoria(prompt),
+            "prompt_final": result.get("prompt_final") or prompt,
+            "modelo": result["model"],
+            "seed": result.get("seed"),
+            "largura": result["width"],
+            "altura": result["height"],
+            "origem": origem,
+        })
+        await event_bus.publish(
+            "IMAGE_GENERATED",
+            {"model": result["model"], "prompt_chars": len(prompt), "image_id": item["id"]},
+            source="local_image",
+            transient={"image": item},
+        )
+        await world_state.remember_episode({
+            "kind": "created_image",
+            "summary": (
+                sanitizar_para_memoria(prompt)[:4000] or "imagem gerada localmente"
+            ),
+            "source": "local_image",
+            "confidence": 1.0,
+            "metadata": {
+                "model": result["model"],
+                "width": result["width"],
+                "height": result["height"],
+                "image_id": item["id"],
+                "stored_bitmap": "encrypted_gallery",
+            },
+        })
+        return {**result, "image": item}
+
+    orchestrator.ligar_imagem(gerar_e_guardar)
+
     @app.post("/api/media/images/generate")
     async def api_generate_image(payload: dict):
         if response := _memoria_pronta():
@@ -1696,10 +1703,15 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             )
         prompt = _texto(payload, "prompt", 32000)
         try:
-            result = await cerebro.gerar_imagem(
+            seed = int(payload["seed"]) if payload.get("seed") is not None else None
+        except (TypeError, ValueError):
+            return JSONResponse({"erro": "seed invalida"}, status_code=400)
+        try:
+            result = await gerar_e_guardar(
                 prompt,
                 size=_texto(payload, "size", 20, obrigatorio=False) or "1024x1024",
                 quality=_texto(payload, "quality", 20, obrigatorio=False) or "medium",
+                seed=seed,
             )
         except (ValueError, RuntimeError) as exc:
             return JSONResponse({"erro": str(exc)}, status_code=400)
@@ -1709,25 +1721,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 {"erro": "o gerador local de imagem falhou; confira a instalacao local"},
                 status_code=502,
             )
-        await event_bus.publish(
-            "IMAGE_GENERATED",
-            {"model": result["model"], "prompt_chars": len(prompt)},
-            source="local_image",
-        )
-        await world_state.remember_episode({
-            "kind": "created_image",
-            "summary": (
-                sanitizar_para_memoria(prompt)[:4000] or "imagem gerada localmente"
-            ),
-            "source": "local_image",
-            "confidence": 1.0,
-            "metadata": {
-                "model": result["model"],
-                "width": result["width"],
-                "height": result["height"],
-                "stored_bitmap": False,
-            },
-        })
         return {"ok": True, "prompt": prompt, **result}
 
     @app.get("/api/media/images/status")
@@ -1754,6 +1747,82 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 status_code=403,
             )
         return None
+
+    # ── Treino do modelo local ────────────────────────────────────────────
+
+    @app.get("/api/treino/resumo")
+    async def api_treino_resumo():
+        if response := _memoria_pronta():
+            return response
+        from condor.treino import META_EXEMPLOS
+        return {**memoria.resumo_treino(), "meta": META_EXEMPLOS,
+                "modelo_local": config.cerebro.modelo_local}
+
+    @app.post("/api/treino/avaliar")
+    async def api_treino_avaliar(payload: dict):
+        if response := _memoria_pronta():
+            return response
+        exemplo_id = _texto(payload, "id", 40)
+        correcao = _texto(payload, "correcao", 6000, False)
+        if contem_segredo(correcao):
+            return JSONResponse({"erro": "a correcao parece conter um segredo"}, status_code=400)
+        try:
+            nota = int(payload.get("nota", 0))
+            ok = memoria.avaliar_exemplo(exemplo_id, nota, correcao)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        return {"ok": ok, "resumo": memoria.resumo_treino()}
+
+    @app.post("/api/treino/exportar")
+    async def api_treino_exportar():
+        if response := _memoria_pronta():
+            return response
+        from condor.treino import exportar
+        pasta = Path.home() / "Downloads" / "CondorTreino"
+        try:
+            resultado = await asyncio.to_thread(exportar, memoria, config.nome_dono, pasta)
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        guarda.auditar("treino", "exportar_dataset", f"{resultado['exemplos']} exemplos", True, False)
+        if os.name == "nt":
+            try:
+                os.startfile(resultado["pasta"])  # abre a pasta para arrastar ao Colab
+            except OSError:
+                pass
+        return {"ok": True, **resultado}
+
+    @app.get("/api/media/images")
+    async def api_galeria(antes: float | None = None):
+        if response := _memoria_pronta():
+            return response
+        itens = memoria.imagens(60, antes)
+        return {"itens": itens, "proximo": itens[-1]["criado"] if len(itens) == 60 else None}
+
+    @app.get("/api/media/images/{imagem_id}")
+    async def api_imagem(imagem_id: str):
+        if response := _memoria_pronta():
+            return response
+        try:
+            png = memoria.ler_imagem(imagem_id)
+        except (ValueError, FileNotFoundError):
+            png = None
+        except RuntimeError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=409)
+        if png is None:
+            return JSONResponse({"erro": "imagem nao encontrada"}, status_code=404)
+        return Response(png, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
+    @app.delete("/api/media/images/{imagem_id}")
+    async def api_apagar_imagem(imagem_id: str):
+        if response := _memoria_pronta():
+            return response
+        try:
+            ok = memoria.apagar_imagem(imagem_id)
+        except ValueError:
+            return JSONResponse({"erro": "imagem invalida"}, status_code=400)
+        if ok:
+            guarda.auditar("media", "apagar_imagem", imagem_id, True, False)
+        return {"ok": ok}
 
     @app.get("/api/biometria/status")
     async def api_face_status():
@@ -1884,121 +1953,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "readings": [],
             "medical_diagnosis": False,
         }
-
-    @app.get("/api/hub")
-    async def api_hub():
-        from condor.actions.executor import info_sistema
-
-        snapshot = memoria.hub_snapshot()
-        audit_ok, audit_count = guarda.verificar_auditoria()
-        vision_ready = await cerebro.visao_pronta()
-        # psutil varre processos e bloqueia; numa async def isso trava o laco de
-        # eventos e a interface inteira para junto.
-        diagnostico = await asyncio.to_thread(info_sistema)
-        snapshot["system"] = {
-            "name": "Condor AI",
-            "local": True,
-            "platform": platform.system(),
-            "host": config.servidor.host,
-            "port": config.servidor.porta,
-            "provider": cerebro.provedor,
-            "model": cerebro.modelo_ativo,
-            "brain_ready": cerebro.pronto,
-            "voice_ready": ouvidos.pronto and voz.pronto,
-            "wake_ready": escuta.ativa,
-            "voice_detail": (
-                "STT Faster Whisper e TTS Piper locais prontos; ativacao por clique disponivel"
-                if ouvidos.pronto and voz.pronto
-                else escuta.motivo_inativa
-            ),
-            "vision_ready": vision_ready,
-            "vision_model": cerebro.modelo_visao,
-            "vault_unlocked": vault.unlocked,
-            "emergency_stop": guarda.stopped,
-            "simulation": config.seguranca.simulacao,
-            "profile": config.seguranca.perfil,
-            "audit_ok": audit_ok,
-            "audit_events": audit_count,
-            "hub_build": HUB_OUT.exists(),
-            "device_id": identity.device_id if vault.unlocked else None,
-            "diagnostic": diagnostico["saida"],
-        }
-        return snapshot
-
-    @app.post("/api/hub/tasks")
-    async def api_hub_task_create(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            item = memoria.hub_create_task(
-                _texto(payload, "titulo", 180),
-                _texto(payload, "projeto", 40, False) or "condor",
-                _texto(payload, "prioridade", 16, False) or "media",
-            )
-        except ValueError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-        return {"ok": True, "item": item}
-
-    @app.patch("/api/hub/tasks/{item_id}")
-    async def api_hub_task_update(item_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        status = str(payload.get("status") or "")
-        if status not in {"pendente", "fazendo", "concluida", "bloqueada"}:
-            return JSONResponse({"erro": "status de tarefa invalido"}, status_code=400)
-        return {"ok": memoria.hub_update_task(item_id[:80], status)}
-
-    @app.delete("/api/hub/tasks/{item_id}")
-    async def api_hub_task_delete(item_id: str):
-        if response := _memoria_pronta():
-            return response
-        return {"ok": memoria.hub_delete_task(item_id[:80])}
-
-    @app.post("/api/hub/notes")
-    async def api_hub_note_create(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            item = memoria.hub_create_note(
-                _texto(payload, "titulo", 180),
-                _texto(payload, "conteudo", 12000),
-                _texto(payload, "projeto", 40, False) or "condor",
-            )
-        except ValueError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-        return {"ok": True, "item": item}
-
-    @app.delete("/api/hub/notes/{item_id}")
-    async def api_hub_note_delete(item_id: str):
-        if response := _memoria_pronta():
-            return response
-        return {"ok": memoria.hub_delete_note(item_id[:80])}
-
-    @app.patch("/api/hub/notes/{item_id}")
-    async def api_hub_note_update(item_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            titulo = _texto(payload, "titulo", 180)
-            conteudo = _texto(payload, "conteudo", 12000)
-        except ValueError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-        return {"ok": memoria.hub_update_note(item_id[:80], titulo, conteudo)}
-
-    @app.patch("/api/hub/condor-x/{item_id}")
-    async def api_hub_part_update(item_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        # Os irmaos (tarefas, missoes, criativo) validam contra lista fechada;
-        # so este aceitava qualquer string truncada em 30 chars.
-        status = str(payload.get("status") or "")
-        if status not in {"conceito", "simulacao", "prototipo", "bloqueado", "validado"}:
-            return JSONResponse({"erro": "status de peca invalido"}, status_code=400)
-        try:
-            progresso = max(0, min(100, int(payload.get("progresso", 0))))
-        except (TypeError, ValueError):
-            return JSONResponse({"erro": "progresso invalido"}, status_code=400)
-        return {"ok": memoria.hub_update_part(item_id[:80], status, progresso)}
 
     @app.get("/api/condor-x/regions/{regiao}/items")
     async def api_condor_x_region_items(regiao: str):
@@ -2166,55 +2120,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if response := _memoria_pronta():
             return response
         return {"runs": memoria.condor_x_propulsion_runs(layout_id[:80] if layout_id else None, limit)}
-
-    @app.post("/api/hub/creator")
-    async def api_hub_creator_create(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            item = memoria.hub_create_creator_item(
-                _texto(payload, "titulo", 180),
-                _texto(payload, "etapa", 40, False) or "ideia",
-                _texto(payload, "notas", 4000, False),
-            )
-        except ValueError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-        return {"ok": True, "item": item}
-
-    @app.patch("/api/hub/creator/{item_id}")
-    async def api_hub_creator_update(item_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        status = str(payload.get("status") or "")
-        if status not in {"ideia", "roteiro", "gravacao", "edicao", "publicado"}:
-            return JSONResponse({"erro": "status criativo invalido"}, status_code=400)
-        return {"ok": memoria.hub_update_creator_item(item_id[:80], status)}
-
-    @app.post("/api/hub/missions")
-    async def api_hub_mission_create(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            item = memoria.hub_create_mission(
-                _texto(payload, "titulo", 180),
-                _texto(payload, "detalhe", 4000, False),
-            )
-        except ValueError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-        return {"ok": True, "item": item}
-
-    @app.patch("/api/hub/missions/{item_id}")
-    async def api_hub_mission_update(item_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        estado = str(payload.get("estado") or "planejada")
-        if estado not in {"planejada", "ativa", "pausada", "concluida"}:
-            return JSONResponse({"erro": "estado de missao invalido"}, status_code=400)
-        try:
-            progresso = max(0, min(100, int(payload.get("progresso", 0))))
-        except (TypeError, ValueError):
-            return JSONResponse({"erro": "progresso invalido"}, status_code=400)
-        return {"ok": memoria.hub_update_mission(item_id[:80], estado, progresso)}
 
     @app.post("/api/voice/transcribe")
     async def api_voice_transcribe(request: Request, dispatch: bool = True):
@@ -2484,6 +2389,12 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
         texto = (msg.get("texto") or "").strip()
         if 0 < len(texto) <= 512:
             sessao.responder_senha(texto)
+
+    elif tipo == "voz.player":
+        socket.state.voz_player = msg.get("ativo") is True
+
+    elif tipo == "voz.parar":
+        await sessao.interromper_fala()
 
     elif tipo == "acordar":
         await sessao.acordar()

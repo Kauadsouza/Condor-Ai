@@ -1,13 +1,6 @@
 # Arquitetura
 
 ```text
-ARTX Hub /hub
-  -> sistemas ARTX independentes
-  -> aba Condor (assistente organizacional)
-     -> cria atividades do Hub
-     -> abre sistemas ARTX
-     -> nao recebe memoria, arquivos ou comandos do PC
-
 Aplicativo Condor -> janela nativa -> /ui
   -> sessao local HttpOnly de 4 h + Host/Origin/Client exatos
   -> limites de corpo, frequencia, conexoes e tentativas de autenticacao
@@ -31,7 +24,6 @@ Cofre AES-GCM
 
 SQLite em RAM
   -> snapshot AES-GCM em ~/.condor/memory
-  -> notas e tarefas locais do Hub
   -> modulos e progresso do Condor X
   -> layouts e execucoes M01 do Propulsion Placement Lab
 
@@ -194,8 +186,8 @@ O Propulsion Placement Lab vive somente na ficha do Condor X. A interface envia
 layouts para `/api/condor-x/propulsion/*`; o servidor normaliza o contrato e
 orquestra as engines em `condor/engine`. Massa e CG alimentam inercia e momentos;
 esses resultados alimentam placement, controle, falhas, missao e safety index.
-Layouts e runs ficam no mesmo SQLite em RAM com snapshot AES-GCM. Nenhum endpoint
-do Hub e nenhum Device Bridge recebe essas fontes abstratas. A
+Layouts e runs ficam no mesmo SQLite em RAM com snapshot AES-GCM. Nenhum
+Device Bridge recebe essas fontes abstratas. A
 `ActionSafetyLayer` continua bloqueando qualquer acao fisica com propulsao.
 
 ```text
@@ -244,8 +236,8 @@ portateis de Python e formatos abertos.
 
 1. concluido: conector generativo local compativel com Responses API;
 2. concluido: STT, TTS, push-to-talk e visao totalmente locais;
-3. concluido: ARTX Hub local com assistente Condor e catalogo de projetos no aplicativo;
-4. concluido: aplicativo Condor em janela propria, separado do Hub e portavel entre Windows e Linux;
+3. concluido: catalogo de projetos no aplicativo;
+4. concluido: aplicativo Condor em janela propria e portavel entre Windows e Linux;
 5. concluido: referencia humana dividida em regioes, sem medidas corporais presumidas;
 6. concluido: modelador 3D parametrico por regiao, versoes cifradas e exportacao STL;
 7. concluido: montagem 3D completa recomposta automaticamente pelas regioes salvas;

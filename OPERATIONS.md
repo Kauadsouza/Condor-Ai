@@ -2,7 +2,7 @@
 
 ## Componentes
 
-- `127.0.0.1:7777`: Condor, ARTX Hub e APIs privadas no mesmo processo;
+- `127.0.0.1:7777`: Condor e APIs privadas no mesmo processo;
 - `127.0.0.1:11434`: Ollama local, nunca exposto pelo Condor;
 - `qwen3:4b-instruct`: conversa e ferramentas;
 - `qwen3-vl:2b`: leitura local de capturas autorizadas;
@@ -10,16 +10,13 @@
 - Piper `pt_BR-faber-medium`: texto para voz em CPU;
 - `~/.condor`: configuracao, pesos e estado privado.
 
-O Hub e exportado como arquivos estaticos e montado em `/hub`. A aba Condor do
-Hub organiza atividades, mas nao recebe controle operacional do PC. O aplicativo
-Condor abre `/ui` em uma janela propria; apenas essa interface oferece conversa,
-memoria e ferramentas locais. O cookie de sessao e HttpOnly e vale para as duas
-interfaces porque elas usam a mesma origem local.
+O aplicativo Condor abre `/ui` em uma janela propria; essa e a unica interface
+que oferece conversa, memoria e ferramentas locais. O cookie de sessao e HttpOnly
+e fica restrito a origem local.
 
 ## Comandos
 
 ```powershell
-.\scripts\build_hub.ps1
 .\scripts\run.ps1
 .\scripts\install_app_shortcut.ps1
 .\.venv\Scripts\python.exe .\scripts\doctor.py
@@ -27,7 +24,6 @@ interfaces porque elas usam a mesma origem local.
 ```
 
 ```bash
-sh scripts/build_hub.sh
 sh scripts/run.sh
 sh scripts/install_app_shortcut.sh
 .venv/bin/python scripts/doctor.py

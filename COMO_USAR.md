@@ -5,9 +5,6 @@
 1. Execute o instalador correspondente ao PC.
 2. Abra o atalho **Condor** criado na Area de Trabalho ou no menu de aplicativos.
 3. O aplicativo abre diretamente a interface completa em uma janela propria.
-   O Hub em `http://127.0.0.1:7777/hub/index.html` inclui um assistente Condor
-   para criar atividades e abrir sistemas, mas nao recebe memoria, arquivos ou
-   acoes do PC.
 4. Crie o cofre com seu nome e uma frase secreta exclusiva.
 5. Chaves externas sao opcionais e ficam cifradas no cofre.
 
@@ -17,10 +14,8 @@ instalacao, `scripts/run.ps1` inicia o Condor e a IA local juntos. No Linux, use
 
 O Condor nunca pede conta do Windows nem vinculacao com celular.
 
-## Hub e aplicativo
+## Aplicativo
 
-- **Hub:** o Condor organiza atividades e abre os sistemas ARTX. Ele nao altera
-  o PC e nao recebe a memoria local.
 - **Aplicativo Condor:** conversa, voz, memoria, projetos e diagnostico. E a
   unica interface operacional do computador.
 - **Projetos:** mostra o catalogo local. Ao abrir um card, o aplicativo exibe

@@ -7,7 +7,7 @@ SERVICE_FILE="$SERVICE_DIR/condor.service"
 ESCAPED_ROOT=$(printf '%s' "$PROJECT_ROOT" | sed 's/ /\\x20/g')
 {
   printf '%s\n' '[Unit]'
-  printf '%s\n' 'Description=Condor local e ARTX Hub'
+  printf '%s\n' 'Description=Condor local'
   printf '%s\n' 'After=graphical-session.target network.target'
   printf '%s\n' '' '[Service]'
   printf '%s\n' 'Type=simple'

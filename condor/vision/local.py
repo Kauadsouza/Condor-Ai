@@ -9,7 +9,7 @@ import httpx
 
 
 class VisaoLocal:
-    # A interface consulta /api/hub em laco e cada consulta abria uma conexao
+    # A interface consulta o estado em laco e cada consulta abria uma conexao
     # nova com o Ollama so pra perguntar se o modelo existe (~390 ms).
     VALIDADE_DISPONIBILIDADE = 30.0
 

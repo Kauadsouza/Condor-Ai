@@ -43,8 +43,7 @@ tamanho e frequencia das mensagens.
 A primeira sessao de cada execucao exige um segredo de boot gravado em
 `~/.condor/security/ui-token`, que a janela do Condor le do disco e envia em
 `X-Condor-Token`. Cabecalho de identidade da interface e forjavel por qualquer
-programa da maquina; ler um arquivo do perfil do dono, nao. O Hub em `/hub`
-renova a sessao apresentando o cookie ja estabelecido, sem precisar do arquivo.
+programa da maquina; ler um arquivo do perfil do dono, nao.
 Isso protege contra outro processo abrir sessao sozinho e ler a memoria; nao
 protege contra codigo malicioso rodando com a mesma conta de usuario, que le o
 arquivo do mesmo jeito.

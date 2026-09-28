@@ -63,11 +63,6 @@ class LocalSessionSecurity:
             # ruidosamente no boot do que servir a API sem essa prova.
             raise
 
-    def discard_boot_token(self) -> None:
-        try:
-            self.boot_token_path().unlink(missing_ok=True)
-        except OSError:
-            pass
 
     def boot_token_valid(self, supplied: str | None) -> bool:
         return bool(supplied and hmac.compare_digest(supplied, self.boot_token))
@@ -100,7 +95,7 @@ class LocalSessionSecurity:
 
     @staticmethod
     def client_allowed(value: str | None) -> bool:
-        return value in {"desktop-ui", "hub-local"}
+        return value == "desktop-ui"
 
     def request_allowed(
         self,

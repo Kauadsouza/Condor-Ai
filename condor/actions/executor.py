@@ -410,8 +410,8 @@ def info_sistema() -> dict:
 
     if (pronto := _do_cache()) is not None:
         return pronto
-    # A trava evita duas varreduras simultaneas: /api/saude e /api/hub sao
-    # consultados juntos e cada varredura segura o GIL por mais de um segundo,
+    # A trava evita duas varreduras simultaneas: /api/saude e o estado do sistema
+    # sao consultados juntos e cada varredura segura o GIL por mais de um segundo,
     # o que travava o laco de eventos mesmo rodando fora dele.
     with _TRAVA_SISTEMA:
         if (pronto := _do_cache()) is not None:

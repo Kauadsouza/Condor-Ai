@@ -1,8 +1,7 @@
 # CELL: Condor no PC e no celular
 
 A aba `CELL` da interface local e a ponte de configuracao e acompanhamento do
-Condor AI Cloud. O aplicativo hospedado vive em `cloud/` e permanece independente
-do ARTX Hub.
+Condor AI Cloud. O aplicativo hospedado vive em `cloud/`.
 
 Invariante: existe somente a mente `condor-kaua-primary-v1`, com a identidade
 `condor-core-identity-v1`. "Local", "cloud", "PC" e "celular" indicam apenas o

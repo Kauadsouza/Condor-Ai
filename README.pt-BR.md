@@ -32,7 +32,6 @@ O Condor inverte isso. A memória fica no disco do dono, criptografada; o modelo
 - Fala local, palavra de ativação opcional, visão computacional só para autenticação e geração de imagem privada.
 - Ferramentas com permissão escopada para arquivos, aplicativos, pesquisa e desenvolvimento.
 - Visualizador móvel **somente leitura** na rede privada — sem rota de comando, memória ou cofre.
-- Integração com o ARTX Hub para organização, sem compartilhar permissões do PC nem memória privada.
 - Condor X: espaço experimental para projeto 3D e simulações de engenharia delimitadas.
 - Base opcional de PWA (`cloud/`) para conversa, notas e memória cifradas quando o PC está desligado.
 
@@ -78,7 +77,6 @@ Interface de desktop / voz / projetos locais
 Fronteiras separadas:
 - visualizador móvel somente leitura
 - base do companheiro na nuvem, cifrada
-- camada de organização do ARTX Hub
 ```
 
 ## Instalação no Windows

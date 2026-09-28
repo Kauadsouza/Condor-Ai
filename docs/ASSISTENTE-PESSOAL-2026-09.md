@@ -4,7 +4,7 @@ Revisão de 12 de setembro de 2026. Substitui a proposta de interface de 9 de se
 
 ## Interface e capacidades
 
-A interface original volta a ser a entrada do aplicativo e do Hub local: Chat, Projetos, Programação, Laboratório, Memória, CELL e Sistema. O visual, o pet e os módulos existentes são preservados. O endereço experimental redireciona para a interface completa.
+A interface original volta a ser a entrada do aplicativo: Chat, Projetos, Programação, Laboratório, Memória, CELL e Sistema. O visual, o pet e os módulos existentes são preservados. O endereço experimental redireciona para a interface completa.
 
 As melhorias do núcleo permanecem: streaming nativo do Ollama com ferramentas, contexto local padrão de 8192, formato de resposta adequado a texto/voz, recuperação de erros e inicialização no login do Windows. O sistema continua oferecendo os provedores e chaves na aba Sistema; o uso externo envia contexto ao provedor escolhido.
 

@@ -1,8 +1,8 @@
 # Condor AI Cloud
 
 Aplicativo privado e instalavel para manter chat, fatos e anotacoes do Condor
-disponiveis no celular e no PC. Ele e um sistema proprio do Condor: nao usa o
-banco do ARTX Hub e nao publica nenhuma porta do computador.
+disponiveis no celular e no PC. Ele e um sistema proprio do Condor e nao publica
+nenhuma porta do computador.
 
 Existe uma unica mente canonica, `condor-kaua-primary-v1`, usando a identidade
 `condor-core-identity-v1`. PC e celular sao apenas interfaces dessa mesma mente;
