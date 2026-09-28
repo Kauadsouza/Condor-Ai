@@ -3,23 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator
+from typing import Any
 
 from condor.brain.identity import contrato_runtime
 
-
-class MockAIProvider:
-    """Fallback explícito: nunca finge que uma IA externa está conectada."""
-
-    name = "mock"
-
-    @property
-    def pronto(self) -> bool:
-        return True
-
-    async def stream(self, prompt: str, context: dict[str, Any]) -> AsyncIterator[str]:
-        del prompt, context
-        yield "O AI Gateway está pronto, mas nenhum provedor de IA foi conectado."
 
 
 class AIGateway:
@@ -62,6 +49,9 @@ class AIGateway:
         return result
 
     async def responder(self, *args, **kwargs):
+        if kwargs.get("conversa_leve"):
+            # Cumprimento não precisa do estado da tela: só deixaria o prompt maior.
+            return await self._provider.responder(*args, **kwargs)
         history = args[0] if args else kwargs.get("historico", [])
         if history and isinstance(history[-1], dict) and history[-1].get("role") == "user":
             self._context.update(recent_intent=str(history[-1].get("content") or "")[:500])
@@ -69,7 +59,7 @@ class AIGateway:
         existing_reference = str(kwargs.get("memoria_relevante") or "").strip()
         kwargs["memoria_relevante"] = (
             f"{existing_reference}\n\n" if existing_reference else ""
-        ) + "ESTADO ATUAL DA INTERFACE (JSON ESTRUTURADO):\n" + structured_context
+        ) + "ESTADO ATUAL DA INTERFACE (JSON; só use se ele falar da tela ou do projeto aberto):\n" + structured_context
         await self._events.publish(
             "AI_REQUEST", {"context": self._context.for_ai()}, source="ai_gateway",
             project_id=self._context.snapshot().get("project_id"),

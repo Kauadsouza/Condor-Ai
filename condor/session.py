@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import subprocess
 import sys
 import time
@@ -24,6 +25,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from condor.brain.offline import responder_offline
+from condor.brain.persona import conversa_leve
+from condor.voice.fala import FalaEmFluxo
 from condor.memory.extractor import (
     pedido_explicito_memoria,
     pergunta_confirmacao_memoria,
@@ -31,6 +34,13 @@ from condor.memory.extractor import (
 )
 
 log = logging.getLogger("condor.sessao")
+
+
+def chamou_condor(texto: str) -> bool:
+    """O nome precisa abrir a frase (até a 4ª palavra): "ei Condor, ..." vale;
+    "falei do condor dos Andes no vídeo de ontem" no meio de uma conversa não."""
+    palavras = re.findall(r"[a-zà-ÿ]+", str(texto or "").casefold())[:4]
+    return "condor" in palavras
 
 ROOT = Path(__file__).parent.parent
 
@@ -64,6 +74,8 @@ class Sessao:
         self._futuro_senha: asyncio.Future | None = None
         self._avisar: Callable[[dict], Awaitable[None]] | None = None
         self._ultimo_aprendizado: dict | None = None
+        self._tem_player: Callable[[], bool] = lambda: False
+        self._fala: FalaEmFluxo | None = None
 
         guarda.registrar_pedido_senha(self._pedir_senha)
 
@@ -72,6 +84,38 @@ class Sessao:
     def ligar_avisos(self, fn: Callable[[dict], Awaitable[None]]) -> None:
         """O servidor registra aqui como mandar evento pra interface."""
         self._avisar = fn
+
+    def ligar_player(self, fn: Callable[[], bool],
+                     entregar: Callable[[dict], Awaitable[None]] | None = None) -> None:
+        """O servidor informa se alguma janela toca a voz e como mandar só para ela."""
+        self._tem_player = fn
+        self._entregar_audio = entregar
+
+    def _nova_fala(self) -> FalaEmFluxo | None:
+        if not getattr(self.voz, "pronto", False):
+            return None
+        destino = getattr(self, "_entregar_audio", None) or self._avisar
+        entregar = destino if (destino and self._tem_player()) else None
+        self._fala = FalaEmFluxo(self.voz, entregar)
+        return self._fala
+
+    async def _falar_ate_o_fim(self, fala: FalaEmFluxo, texto_final: str) -> None:
+        await self._mudar_estado(FALANDO)
+        self.escuta.silenciar()
+        try:
+            await fala.terminar(texto_final)
+        finally:
+            if self._fala is fala:
+                self._fala = None
+            self.escuta.voltar_a_ouvir()
+
+    async def interromper_fala(self) -> None:
+        """O dono falou por cima ou apertou Esc: o Condor cala na hora."""
+        fala, self._fala = self._fala, None
+        if fala is not None:
+            fala.cancelar()
+            await self._evento("voz.parar", turno=fala.turno)
+        self.voz.calar()
 
     async def _evento(self, tipo: str, **dados) -> None:
         if self._avisar:
@@ -106,17 +150,29 @@ class Sessao:
             self.preparar_bloqueio(f"trava facial: {motivo}"), self._loop
         )
 
-    def ao_ouvir(self, wav: bytes) -> None:
+    def ao_ouvir(self, wav: bytes, confirmar_nome: bool = False) -> None:
         """Chamado DE DENTRO da thread do microfone. Só empurra pro laço
         de eventos e sai — nada pesado pode rodar aqui."""
         if self._loop is None:
             return
-        asyncio.run_coroutine_threadsafe(self._processar_voz(wav), self._loop)
+        asyncio.run_coroutine_threadsafe(
+            self._processar_voz(wav, confirmar_nome=confirmar_nome), self._loop
+        )
 
-    async def _processar_voz(self, wav: bytes) -> None:
+    async def _processar_voz(self, wav: bytes, confirmar_nome: bool = False) -> None:
         try:
-            await self._mudar_estado(PENSANDO)
-            texto = await self.ouvidos.transcrever(wav)
+            if confirmar_nome:
+                # Detector sem chave: "com dor" e "Condor" soam iguais. Só
+                # responde se o Whisper confirmar que o nome foi dito, e sem
+                # mudar a tela antes disso (nada pisca num alarme falso).
+                texto = await self.ouvidos.transcrever(wav)
+                if not chamou_condor(texto):
+                    log.info("Palavra de ativação não confirmada; ignorado.")
+                    return
+                await self._mudar_estado(PENSANDO)
+            else:
+                await self._mudar_estado(PENSANDO)
+                texto = await self.ouvidos.transcrever(wav)
 
             if not texto:
                 log.info("Chamou mas não entendi nada.")
@@ -186,9 +242,13 @@ class Sessao:
                     {"role": "assistant", "content": fala_condor},
                 ))
                 self._podar_historico()
+                if not aprendizado.get("blocked") and not verificacao_de_memoria:
+                    # "Lembra que..." e conversa sem cérebro também são
+                    # analisados: a fila cifrada espera o modelo ficar pronto.
+                    self.extrator.enfileirar(texto, resposta)
                 await self._evento("resposta.fim", texto=resposta, fontes=[])
-                if por_voz and reproduzir_voz:
-                    await self.voz.falar(resposta)
+                if por_voz and reproduzir_voz and (fala := self._nova_fala()):
+                    await self._falar_ate_o_fim(fala, resposta)
                 await self._mudar_estado(OUVINDO)
                 await self._evento("memoria.stats", **self.memoria.estatisticas())
                 await self._evento("custo", **self.memoria.custo_hoje())
@@ -201,22 +261,49 @@ class Sessao:
             # trechos relevantes recuperados do banco cifrado local.
             # A fala atual ainda não foi persistida, portanto não reaparece
             # falsamente dentro de "conversas anteriores" no próprio prompt.
-            referencia = await self.recall.contexto_para(texto)
+            # "oi", "valeu", "tudo bem?": resposta curta, sem memória nem
+            # ferramentas. "sim"/"ok" logo depois de uma pergunta dele são
+            # resposta a ela, não papo, e seguem o caminho normal.
+            anterior = next((m.get("content", "") for m in reversed(self.historico[:-1])
+                             if m.get("role") == "assistant"), "")
+            leve = conversa_leve(texto) and not str(anterior).rstrip().endswith("?")
+            referencia = "" if leve else await self.recall.contexto_para(texto)
             self._salvar_turno_seguro("user", texto)
+
+            # Voz: cada frase pronta já vai sendo falada enquanto o resto é gerado.
+            fala = self._nova_fala() if (por_voz and reproduzir_voz) else None
 
             async def on_token(t: str) -> None:
                 await self._evento("resposta.token", texto=t)
+                if fala is not None:
+                    fala.alimentar(t)
+
+            ferramentas_usadas = 0
+            anteriores = [dict(m) for m in self.historico[:-1]]
 
             async def on_evento(ev: dict) -> None:
+                nonlocal ferramentas_usadas
+                if ev.get("tipo") == "ferramenta.inicio":
+                    ferramentas_usadas += 1
                 await self._evento(ev.pop("tipo"), **ev)
 
-            resposta = await self.cerebro.responder(
-                self.historico, memoria_relevante=referencia, modo_voz=por_voz,
-                on_token=on_token, on_evento=on_evento)
+            try:
+                resposta = await self.cerebro.responder(
+                    self.historico, memoria_relevante=referencia, modo_voz=por_voz,
+                    on_token=on_token, on_evento=on_evento, conversa_leve=leve)
+            except BaseException:
+                if fala is not None:
+                    fala.cancelar()
+                    self._fala = None
+                raise
 
+            treino_id = self._registrar_exemplo(
+                texto, resposta, referencia, anteriores, por_voz, ferramentas_usadas,
+            )
             await self._evento(
                 "resposta.fim", texto=resposta,
                 fontes=list(getattr(self.cerebro, "ultimas_fontes", []) or []),
+                treino_id=treino_id,
             )
             resposta_memoria = sanitizar_para_memoria(resposta)
             self._salvar_turno_seguro("assistant", resposta_memoria)
@@ -229,18 +316,42 @@ class Sessao:
 
             self.extrator.enfileirar(texto, resposta)
 
-            if por_voz and reproduzir_voz and resposta:
-                await self._mudar_estado(FALANDO)
-                self.escuta.silenciar()
-                try:
-                    await self.voz.falar(resposta)
-                finally:
-                    self.escuta.voltar_a_ouvir()
+            if fala is not None:
+                if resposta:
+                    await self._falar_ate_o_fim(fala, resposta)
+                else:
+                    fala.cancelar()
+                    self._fala = None
 
             self.ultimo_contato = time.time()
             await self._mudar_estado(OUVINDO)
             await self._evento("memoria.stats", **self.memoria.estatisticas())
             await self._evento("custo", **self.memoria.custo_hoje())
+
+    def _registrar_exemplo(self, pedido: str, resposta: str, contexto: str,
+                           anteriores: list[dict], por_voz: bool, ferramentas: int) -> str:
+        """Guarda a troca como exemplo de treino, quando ela pode ensinar algo.
+
+        Fica de fora: resposta que não veio de um modelo (erro, reserva offline),
+        turno com ferramenta (treinar "abri o Spotify" sem a chamada real
+        ensinaria o modelo a fingir que executou) e qualquer segredo.
+        """
+        if (ferramentas or not resposta.strip()
+                or not bool(getattr(self.cerebro, "ultimo_turno_valido", False))
+                or not bool(getattr(self.memoria, "unlocked", False))
+                or sanitizar_para_memoria(pedido) != pedido
+                or sanitizar_para_memoria(resposta) != resposta):
+            return ""
+        try:
+            return self.memoria.registrar_exemplo(
+                pedido, resposta, contexto=contexto, anteriores=anteriores,
+                provedor=str(getattr(self.cerebro, "provedor", "")),
+                modelo=str(getattr(self.cerebro, "modelo_ativo", "")),
+                por_voz=por_voz,
+            )
+        except Exception as exc:
+            log.warning("Exemplo de treino não registrado: %s", exc)
+            return ""
 
     def _salvar_turno_seguro(self, papel: str, conteudo: str) -> None:
         """Não cria a ilusão de persistência quando o cofre já foi bloqueado."""
@@ -287,9 +398,12 @@ class Sessao:
         self.historico = []
         self.memoria.abrir_sessao()
 
-        # Retoma o fio da última conversa, pra ele não parecer amnésico.
+        # Retoma o fio só se a última mensagem foi há pouco (ele dorme em 2 min).
+        # Conversa de horas atrás no contexto fazia o modelo responder a ela
+        # junto com o "oi" novo.
         anterior = self.memoria.historico(limite=6)
-        if anterior:
+        ultimo = float(getattr(self.memoria, "ultimo_turno_em", lambda: 0.0)() or 0.0)
+        if anterior and (not ultimo or time.time() - ultimo < 15 * 60):
             self.historico = anterior
 
         log.info("Acordei.")
@@ -358,11 +472,6 @@ class Sessao:
                 log.info("Aplicativo local trazido para frente.")
         except Exception as exc:
             log.error("Não consegui abrir a janela: %s", exc)
-
-    def abrir_aplicativo(self) -> bool:
-        """Abre ou traz para frente somente a interface operacional local."""
-        self._abrir_janela()
-        return self._janela is not None and self._janela.poll() is None
 
     def _fechar_janela(self) -> None:
         if self._janela is None:

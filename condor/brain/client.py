@@ -27,9 +27,9 @@ from openai import AsyncOpenAI
 from condor.brain import tools as ferramentas
 from condor.brain.anthropic import AnthropicAPIError, AnthropicMessagesClient
 from condor.brain.offline import responder_offline
-from condor.brain.persona import montar_prompt
-from condor.brain.ollama import responder_ollama
-from condor.media import LocalImageGenerator
+from condor.brain.persona import montar_prompt, montar_prompt_leve
+from condor.brain.ollama import embeddings_ollama, responder_ollama
+from condor.media import LocalImageGenerator, is_image_request
 from condor.knowledge import EngineeringKnowledgeBase
 from condor.vision.local import VisaoLocal
 
@@ -42,6 +42,48 @@ def _texto_local_normalizado(texto: str) -> str:
         if not unicodedata.combining(char)
     )
     return re.sub(r"\s+", " ", value.casefold()).strip()
+
+
+def _limite_resposta(pedido: str, modo_voz: bool, teto: int) -> int:
+    """Tamanho máximo proporcional ao pedido: o dono quer direto e rápido."""
+    texto = _texto_local_normalizado(pedido)
+    if re.search(r"\b(?:passo a passo|detalh|complet|codigo|script|programa|tutorial|"
+                 r"explica tudo|aprofund|lista de|artigo|texto sobre|roteiro)", texto):
+        return min(teto, 320) if modo_voz else teto
+    if re.search(r"\b(?:rapid|resum|curt|em uma frase|so (?:me )?diz|sim ou nao)", texto):
+        return 120
+    return min(teto, 220) if modo_voz else min(teto, 280)
+
+
+_OFERTA_FINAL = re.compile(
+    r"(?:\n|^|(?<=[.!?]) )[^\n.!?]*\b(?:se quiser|quer que eu|quer (?:algo|mais|um|uma)|"
+    r"posso (?:te )?\w+|caso queira|se precisar|me avisa se|qualquer coisa|"
+    r"prefere (?:algo|que))[^\n]*[?.!]?\s*$",
+    re.IGNORECASE,
+)
+_ABERTURA_VAZIA = re.compile(r"^(?:claro|[oó]timo|perfeito|certo|beleza|entendi)[!.,]\s+", re.IGNORECASE)
+_FIM_DE_FRASE = re.compile(r"[.!?:)\]\"”`]\s*$")
+_EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿⬀-⯿️]")
+
+
+def polir_resposta(texto: str) -> str:
+    """Tira a oferta de ajuda no final e os emojis que o modelo pequeno insiste
+    em colocar mesmo com a regra no prompt."""
+    limpo = _EMOJI.sub("", str(texto or "")).strip()
+    limpo = _ABERTURA_VAZIA.sub("", limpo)
+    # Resposta cortada pelo limite de tamanho termina na última frase inteira,
+    # não no meio ("É como").
+    if limpo and "```" not in limpo and not _FIM_DE_FRASE.search(limpo):
+        corte = max(limpo.rfind(". "), limpo.rfind(".\n"), limpo.rfind("! "), limpo.rfind("? "))
+        if corte > len(limpo) * 0.4:
+            limpo = limpo[:corte + 1]
+    for _ in range(2):   # "Quer algo mais...? Posso ajustar." são duas ofertas
+        sem_oferta = _OFERTA_FINAL.sub("", limpo).rstrip()
+        if len(sem_oferta) < 12 or sem_oferta == limpo:
+            break
+        limpo = sem_oferta
+    limpo = re.sub(r"[ \t]+\n", "\n", limpo)
+    return re.sub(r"\n{3,}", "\n\n", limpo).strip()
 
 
 def _selecionar_esquemas_locais(historico: list[dict]) -> list[dict]:
@@ -57,10 +99,23 @@ def _selecionar_esquemas_locais(historico: list[dict]) -> list[dict]:
             fala = mensagem["content"]
             break
     texto = _texto_local_normalizado(fala)
-    nomes = {"buscar_memoria"}
+    nomes: set[str] = set()
+    # A memória relevante já vai no prompt; a ferramenta só quando ele fala de
+    # memória. Sem ferramenta, o prompt fica menor e a resposta sai mais rápido.
+    if re.search(r"\b(?:lembr|memori|anot|sabe (?:sobre|de) mim|te (?:falei|contei|disse)|o que (?:eu|voce sabe))",
+                 texto):
+        nomes.add("buscar_memoria")
 
     def contem(*termos: str) -> bool:
         return any(termo in texto for termo in termos)
+
+    # "Guarda isso", "anota que", "não esquece": o modelo local também pode
+    # gravar memória por conta própria, não só o extrator em segundo plano.
+    if is_image_request(fala) or contem("imagem", "ilustracao", "desenho", "thumbnail"):
+        nomes.add("condor_gerar_imagem")
+
+    if contem("lembr", "anota", "anote", "guarda ", "guarde", "nao esquec", "memoriz", "salva isso", "salve isso"):
+        nomes.add("condor_registrar_memoria")
 
     if contem("cpu", "memoria ram", "uso da ram", "estado do pc", "estado do computador",
               "espaco em disco", "armazenamento", "bateria do pc", "info do sistema"):
@@ -181,7 +236,6 @@ class Cerebro:
         self._guarda = guarda
         self._recall = recall
         self._cliente: AsyncOpenAI | None = None
-        self._audio_cliente: AsyncOpenAI | None = None
         self._anthropic: AnthropicMessagesClient | None = None
         self._visao = VisaoLocal(config)
         self._imagem = LocalImageGenerator(config)
@@ -194,6 +248,13 @@ class Cerebro:
         }
         self.ultimas_fontes: list[dict[str, str]] = []
         self.ultimo_erro: str = ""
+        # API externa caiu (sem crédito, sem internet, chave inválida): o
+        # modelo local assume por alguns minutos e a API é tentada de novo.
+        self._reserva_local_ate = 0.0
+        self._falha_externa = False
+        self.ultimo_turno_valido = False
+        self.ultimo_modelo_embedding = ""
+        self._ferramentas_no_turno = 0
 
     def ligar_orquestrador(self, orchestrator) -> None:
         """Conecta as ferramentas internas somente depois que o Core terminou o boot."""
@@ -228,6 +289,10 @@ class Cerebro:
     @property
     def provedor(self) -> str:
         preferred = self._cfg.cerebro.provedor_preferido
+        local_configurado = bool(self._cfg.cerebro.modelo_local.strip())
+        if (local_configurado and preferred != "local"
+                and time.time() < getattr(self, "_reserva_local_ate", 0.0)):
+            return "local"
         if preferred == "openai" and self._cfg.chave_openai:
             return "openai"
         if preferred == "claude" and self._cfg.chave_anthropic:
@@ -236,12 +301,14 @@ class Cerebro:
             return "local"
         if preferred in {"openai", "claude", "local"}:
             return "offline"
-        if self._cfg.cerebro.modelo_local.strip():
-            return "local"
+        # "auto": com chave de API usa a API (mais potente); sem chave, o local.
+        # Colar a chave na aba Sistema basta para o Condor subir de nível.
         if self._cfg.chave_openai:
             return "openai"
         if self._cfg.chave_anthropic:
             return "claude"
+        if local_configurado:
+            return "local"
         return "offline"
 
     @property
@@ -301,7 +368,6 @@ class Cerebro:
 
     def reset_connection(self) -> None:
         self._cliente = None
-        self._audio_cliente = None
         self._anthropic = None
         self._provider_tests = {
             name: {"verified": None, "detail": "ainda não testado", "tested_at": None}
@@ -319,17 +385,6 @@ class Cerebro:
             self.ultimo_erro = str(detail)[:500]
         return bool(ok), str(detail)[:180]
 
-    @property
-    def audio_cliente(self) -> AsyncOpenAI:
-        """Voz pode usar chave externa opcional mesmo com cerebro generativo local."""
-        if self._audio_cliente is None:
-            if self._cfg.chave_openai:
-                self._audio_cliente = AsyncOpenAI(
-                    api_key=self._cfg.chave_openai, timeout=90.0, max_retries=2
-                )
-            else:
-                self._audio_cliente = self.cliente
-        return self._audio_cliente
 
     @property
     def pronto(self) -> bool:
@@ -357,15 +412,13 @@ class Cerebro:
     async def visao_pronta(self) -> bool:
         return await self._visao.pronto()
 
-    async def analisar_imagem(self, imagem_b64: str, pedido: str = "") -> str:
-        """Analisa um quadro no modelo multimodal local configurado."""
-        return await self._visao.analisar(imagem_b64, pedido)
 
     async def gerar_imagem(self, prompt: str, *, size: str = "1024x1024",
-                           quality: str = "medium") -> dict[str, Any]:
+                           quality: str = "medium", seed: int | None = None) -> dict[str, Any]:
         """Melhora o prompt e gera no PC sem enviar texto ou imagem a nuvem."""
         enhanced = await self._melhorar_prompt_imagem_local(prompt)
-        result = await self._imagem.generate(enhanced, size=size, quality=quality)
+        result = await self._imagem.generate(enhanced, size=size, quality=quality, seed=seed)
+        result["prompt_final"] = enhanced
         result["prompt_enhanced_locally"] = enhanced != " ".join(str(prompt or "").split())
         return result
 
@@ -526,6 +579,76 @@ class Cerebro:
         modo_voz: bool = True,
         on_token: Callable[[str], Awaitable[None]] | None = None,
         on_evento: Callable[[dict], Awaitable[None]] | None = None,
+        conversa_leve: bool = False,
+    ) -> str:
+        """Responde pelo provedor ativo; se a API externa cair, o local assume."""
+        provedor = self.provedor
+        self._falha_externa = False
+        # Só resposta que saiu de fato de um modelo pode virar exemplo de treino.
+        self.ultimo_turno_valido = True
+        self._ferramentas_no_turno = 0
+        if conversa_leve:
+            resposta = polir_resposta(await self._responder_leve(historico, on_token))
+            if resposta:
+                if historico and historico[-1].get("role") == "assistant":
+                    historico[-1]["content"] = resposta
+                return resposta
+        resposta = await self._responder_provedor(
+            historico, memoria_relevante, modo_voz, on_token, on_evento,
+        )
+        # Só refaz no local se nenhuma ferramenta rodou: senão o modelo local
+        # repetiria uma ação que a API já executou (abrir, salvar, criar...).
+        if (provedor in {"openai", "claude"} and self._falha_externa
+                and self._ferramentas_no_turno == 0
+                and self._cfg.cerebro.modelo_local.strip()):
+            self._reserva_local_ate = time.time() + 300.0
+            log.warning("%s indisponível; modelo local assume por 5 min.", provedor)
+            if on_evento:
+                await on_evento({
+                    "tipo": "conector.reserva", "de": provedor, "para": "local",
+                    "motivo": self.ultimo_erro[:160],
+                })
+            self.ultimo_turno_valido = True
+            resposta = await self._responder_provedor(
+                historico, memoria_relevante, modo_voz, on_token, on_evento,
+            )
+        polida = polir_resposta(resposta) if self.ultimo_turno_valido else resposta
+        if polida != resposta:
+            if historico and historico[-1].get("role") == "assistant" and historico[-1].get("content") == resposta:
+                historico[-1]["content"] = polida
+            resposta = polida
+        return resposta
+
+    async def _responder_leve(self, historico: list[dict],
+                              on_token: Callable[[str], Awaitable[None]] | None) -> str:
+        """Cumprimento/agradecimento: prompt mínimo, sem memória, ferramentas nem
+        histórico antigo. Responde em ~1 s e não puxa assunto."""
+        pedido = ""
+        for mensagem in reversed(historico):
+            if mensagem.get("role") == "user" and isinstance(mensagem.get("content"), str):
+                pedido = mensagem["content"]
+                break
+        if not pedido:
+            return ""
+        texto = await self.completar(
+            montar_prompt_leve(self._cfg.nome_dono), pedido,
+            max_tokens=60, temperatura=0.4,
+        )
+        texto = " ".join(str(texto or "").split()).strip().strip('"')
+        if not texto:
+            return ""
+        if on_token:
+            await on_token(texto)
+        historico.append({"role": "assistant", "content": texto})
+        return texto
+
+    async def _responder_provedor(
+        self,
+        historico: list[dict],
+        memoria_relevante: str = "",
+        modo_voz: bool = True,
+        on_token: Callable[[str], Awaitable[None]] | None = None,
+        on_evento: Callable[[dict], Awaitable[None]] | None = None,
     ) -> str:
         """Loop de ferramentas pela Responses API; externo usa ``store=False``."""
         cfg = self._cfg.cerebro
@@ -535,13 +658,20 @@ class Cerebro:
             if mensagem.get("role") == "user" and isinstance(mensagem.get("content"), str):
                 pedido_atual = mensagem["content"]
                 break
+        schemas = (
+            _selecionar_esquemas_locais(historico)
+            if self.provedor == "local" else ferramentas.ESQUEMAS
+        )
         sistema = montar_prompt(
             self._cfg.nome_dono,
             memoria_relevante,
             modo_voz,
             mensagem_atual=pedido_atual,
-            contexto_estruturado=memoria_relevante,
+            # Modos (engenharia, Condor X...) saem do que ele disse, não do
+            # projeto aberto na tela: senão um "oi" virava conversa de engenharia.
+            contexto_estruturado="",
             conhecimento_tecnico=self._engineering.context(pedido_atual),
+            ferramentas=bool(schemas) or self.provedor != "local",
         )
         if self.provedor == "claude":
             return await self._responder_claude(
@@ -549,10 +679,6 @@ class Cerebro:
             )
         resposta_final = ""
         input_items = _historico_para_responses(historico)
-        schemas = (
-            _selecionar_esquemas_locais(historico)
-            if self.provedor == "local" else ferramentas.ESQUEMAS
-        )
         response_tools = [_response_tool(schema) for schema in schemas]
         # A pesquisa hospedada devolve fontes e citacoes no proprio Responses
         # API. O conector local continua usando buscar_web/ler_site, pois
@@ -626,6 +752,7 @@ class Cerebro:
                 if on_token:
                     await on_token(fallback)
                 historico.append({"role": "assistant", "content": fallback})
+                self.ultimo_turno_valido = False
                 return fallback
             input_items.append({
                 "role": "user",
@@ -665,7 +792,7 @@ class Cerebro:
                     response = await responder_ollama(
                         endpoint=cfg.endpoint_local, model=self.modelo_ativo,
                         instructions=sistema, items=input_items, tools=response_tools,
-                        max_tokens=min(cfg.max_tokens, 320) if modo_voz else cfg.max_tokens,
+                        max_tokens=_limite_resposta(pedido_atual, modo_voz, cfg.max_tokens),
                         context=cfg.contexto_local, temperature=cfg.temperatura, on_token=on_token,
                     )
                 else:
@@ -689,7 +816,10 @@ class Cerebro:
                     if on_token and fallback:
                         await on_token(fallback)
                     historico.append({"role": "assistant", "content": fallback})
+                    self.ultimo_turno_valido = False
                     return fallback
+                self._falha_externa = True
+                self.ultimo_turno_valido = False
                 return _erro_amigavel(exc)
 
             self.mark_connection_test(
@@ -814,12 +944,15 @@ class Cerebro:
                 self.ultimo_erro = str(exc)[:500]
                 self.mark_connection_test(False, f"claude: {str(exc)[:150]}", "claude")
                 log.error("Erro na chamada ao Claude: %s", exc)
+                self._falha_externa = True
+                self.ultimo_turno_valido = False
                 return _erro_amigavel(exc)
 
             self._contabilizar(self.modelo_ativo, response.get("usage"))
             blocks = response.get("content") or []
             if not isinstance(blocks, list):
                 self.mark_connection_test(False, "claude: resposta sem blocos de conteúdo", "claude")
+                self.ultimo_turno_valido = False
                 return "O Claude respondeu em um formato incompatível; registrei no Diagnóstico."
             tool_calls = [item for item in blocks if isinstance(item, dict) and item.get("type") == "tool_use"]
             texts = [
@@ -871,6 +1004,7 @@ class Cerebro:
     # ── Execução com a trava ───────────────────────────────────────────────
 
     async def _executar_com_guarda(self, nome: str, args: dict) -> dict:
+        self._ferramentas_no_turno += 1
         decisao = self._guarda.avaliar(nome, args)
         exigiu_senha = decisao.requires_approval
 
@@ -903,35 +1037,12 @@ class Cerebro:
             pass
         return resultado
 
-    async def _fechar_sem_ferramentas(self, historico: list[dict], sistema: str) -> str:
-        historico.append({
-            "role": "user",
-            "content": "[Sistema: você já usou muitas ferramentas nesse pedido. "
-                       "Pare de executar e responda agora, em uma ou duas frases, "
-                       "o que você conseguiu fazer e o que ficou faltando.]",
-        })
-        try:
-            request = {
-                "model": self.modelo_ativo,
-                "instructions": sistema,
-                "input": _historico_para_responses(historico),
-                "max_output_tokens": 400,
-            }
-            if self.provedor == "openai":
-                request["store"] = False
-            resposta = await self.cliente.responses.create(**request)
-            self._contabilizar(self.modelo_ativo, resposta.usage)
-            texto = (resposta.output_text or "").strip()
-            historico.append({"role": "assistant", "content": texto})
-            return texto
-        except Exception as exc:
-            log.error("Falha no fecho: %s", exc)
-            return "Fiz o que deu, mas travei antes de terminar."
 
     # ── Chamada simples, sem ferramenta (extrator, resumo) ─────────────────
 
     async def completar(self, sistema: str, usuario: str, modelo: str | None = None,
-                        json_mode: bool = False, max_tokens: int = 800) -> str:
+                        json_mode: bool = False, max_tokens: int = 800,
+                        temperatura: float | None = None) -> str:
         modelo = self.modelo_ativo if self.provedor in {"local", "claude"} else (
             modelo or self._cfg.cerebro.modelo_rapido
         )
@@ -958,7 +1069,8 @@ class Cerebro:
                     endpoint=self._cfg.cerebro.endpoint_local, model=modelo,
                     instructions=sistema, items=[{"role": "user", "content": usuario}],
                     tools=[], max_tokens=max_tokens, context=self._cfg.cerebro.contexto_local,
-                    temperature=self._cfg.cerebro.temperatura, json_mode=json_mode,
+                    temperature=self._cfg.cerebro.temperatura if temperatura is None else temperatura,
+                    json_mode=json_mode,
                 )
                 self._contabilizar(modelo, resposta.usage)
                 return resposta.output_text
@@ -982,11 +1094,50 @@ class Cerebro:
             )
             return ""
 
+    @property
+    def modelo_embedding_ativo(self) -> str:
+        """Modelo dos vetores da memória. Fixo (não oscila com uma queda do
+        Ollama): só vetores do mesmo modelo se comparam."""
+        if self._cfg.cerebro.modelo_embedding_local:
+            return self._cfg.cerebro.modelo_embedding_local
+        return self._cfg.cerebro.modelo_embedding if self.provedor == "openai" else ""
+
+    def _embedding_local_ok(self) -> bool:
+        return bool(self._cfg.cerebro.modelo_embedding_local) and (
+            time.time() >= getattr(self, "_embedding_local_pausa", 0.0)
+        )
+
+    async def embeddings_locais(self, textos: list[str]) -> list[list[float]] | None:
+        """Vetores pelo Ollama local, qualquer que seja o cérebro ativo.
+
+        A memória pertence ao Condor: o mesmo espaço vetorial vale para local,
+        OpenAI e Claude, não custa nada e o texto nunca sai do PC.
+        """
+        if not textos or not self._embedding_local_ok():
+            return None
+        try:
+            vetores = await embeddings_ollama(
+                endpoint=self._cfg.cerebro.endpoint_local,
+                model=self._cfg.cerebro.modelo_embedding_local,
+                textos=[texto[:4000] for texto in textos],
+            )
+            return vetores if len(vetores) == len(textos) else None
+        except Exception as exc:
+            # Ollama fora do ar ou modelo não baixado: tenta de novo em 2 min
+            # em vez de atrasar todo turno com uma requisição fadada a falhar.
+            self._embedding_local_pausa = time.time() + 120.0
+            log.info("Embedding local indisponível (%s); recall textual segue.", exc)
+            return None
+
     async def embedding(self, texto: str) -> list[float] | None:
-        # Ollama/Claude nao compartilham automaticamente o modelo de embeddings
-        # configurado para OpenAI. Evita uma requisicao fadada a falhar em cada
-        # turno; o recall textual local continua funcionando normalmente.
-        if self.provedor in {"local", "claude"}:
+        """Vetor de uma consulta; ``ultimo_modelo_embedding`` diz de qual modelo veio."""
+        self.ultimo_modelo_embedding = ""
+        locais = await self.embeddings_locais([texto])
+        if locais:
+            self.ultimo_modelo_embedding = self._cfg.cerebro.modelo_embedding_local
+            return locais[0]
+        # Sem Ollama, só a OpenAI tem endpoint de embeddings. Claude não tem.
+        if self.provedor != "openai":
             return None
         try:
             r = await self.cliente.embeddings.create(
@@ -998,6 +1149,7 @@ class Cerebro:
             )
             self._memoria.registrar_uso(self._cfg.cerebro.modelo_embedding, tokens, 0,
                                         custo)
+            self.ultimo_modelo_embedding = self._cfg.cerebro.modelo_embedding
             return r.data[0].embedding
         except Exception as exc:
             log.debug("Embedding falhou: %s", exc)
