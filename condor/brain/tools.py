@@ -168,6 +168,7 @@ INTERNAS = frozenset({
     "condor_buscar_dispositivos",
     "condor_conectar_dispositivo",
     "condor_desconectar_dispositivo",
+    "condor_olhar_camera",
 })
 
 ESQUEMAS.extend([
@@ -215,6 +216,12 @@ ESQUEMAS.extend([
        {"port": _TXT, "baud_rate": _NUM, "project_id": _TXT}, ["port", "baud_rate"]),
     _f("condor_desconectar_dispositivo", "Fecha uma conexao serial aberta pelo Device Bridge.",
        {"device_id": _TXT}, ["device_id"]),
+    _f("condor_olhar_camera",
+       "Tira UMA foto pela webcam do dono, analisa localmente e desliga a camera na hora. "
+       "Use so quando ele pedir para voce olhar ele ou algo na frente dele: 'o que voce ve', "
+       "'analisa minha roupa', 'como eu to', 'olha isso aqui'. Nada e salvo. Para a tela, use screenshot.",
+       {"pedido": {**_TXT, "description": "O que o dono quer que voce observe, nas palavras dele."}},
+       ["pedido"]),
 ])
 
 # Shell, codigo arbitrario e instalacao em tempo de execucao nao ficam
@@ -285,6 +292,7 @@ ROTULOS = {
     "condor_buscar_dispositivos": "procurando dispositivos",
     "condor_conectar_dispositivo": "conectando dispositivo",
     "condor_desconectar_dispositivo": "desconectando dispositivo",
+    "condor_olhar_camera": "olhando pela câmera",
 }
 
 

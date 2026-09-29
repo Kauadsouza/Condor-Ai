@@ -127,5 +127,5 @@ const CondorGestures = (() => {
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
   else init();
-  return { start, stop, toggle };
+  return { start, stop, toggle, cameraInUse: () => Boolean(stream) };
 })();

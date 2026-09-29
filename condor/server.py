@@ -237,6 +237,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     conexoes = Conexoes()
     sessao.ligar_avisos(conexoes.transmitir)
     sessao.ligar_player(lambda: conexoes.tem_player, conexoes.transmitir_players)
+    sessao.ligar_janelas(lambda: conexoes.total > 0)
+    # Câmera amiga: a janela tira uma foto, a visão LOCAL descreve e só o texto
+    # segue para o cérebro, mesmo quando o chat está na OpenAI ou no Claude.
+    orchestrator.ligar_camera(sessao.capturar_camera, provider._visao)
     event_bus.subscribe(
         "*", lambda event: conexoes.transmitir({"tipo": "core.event", "event": event})
     )
@@ -2268,7 +2272,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
             while True:
                 bruto = await socket.receive_text()
-                if len(bruto) > 64 * 1024:
+                # Só a foto pedida pela câmera amiga passa do limite normal, e
+                # apenas enquanto existe um pedido de foto esperando resposta.
+                limite = CAMERA_WS_MAX if sessao.aguardando_foto else 64 * 1024
+                if len(bruto) > limite:
                     await socket.close(code=1009)
                     return
                 if (
@@ -2354,6 +2361,9 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 # no meio por coleta de lixo.
 _EM_VOO: set[asyncio.Task] = set()
 
+# 3 MB de foto viram ~4 MB em base64, mais o envelope JSON.
+CAMERA_WS_MAX = 4_300_000
+
 
 async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
     tipo = msg.get("tipo")
@@ -2390,6 +2400,14 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
         if 0 < len(texto) <= 512:
             sessao.responder_senha(texto)
 
+    elif tipo == "camera.quadro":
+        # Quadro com id desconhecido (atrasado ou forjado) é descartado em silêncio.
+        sessao.responder_camera(
+            str(msg.get("id") or "")[:64],
+            image_b64=msg.get("image_b64") if isinstance(msg.get("image_b64"), str) else None,
+            erro=str(msg.get("erro") or "")[:200] or None,
+        )
+
     elif tipo == "voz.player":
         socket.state.voz_player = msg.get("ativo") is True
 
@@ -2410,7 +2428,7 @@ async def rodar(app: FastAPI, config: Config) -> None:
     cfg = uvicorn.Config(app, host=config.servidor.host, port=config.servidor.porta,
                           log_config=None, log_level="warning",
                           server_header=False, date_header=False,
-                          ws_max_size=1024 * 1024,
+                          ws_max_size=CAMERA_WS_MAX + 1024,
                           ws_ping_interval=20, ws_ping_timeout=40,
                           limit_concurrency=64, backlog=32,
                           timeout_keep_alive=5)

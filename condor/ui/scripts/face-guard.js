@@ -400,5 +400,6 @@ const CondorFaceGuard = (() => {
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true }); else init();
-  return { status, showGate, openEnrollment };
+  // A câmera amiga consulta isto antes de pedir a webcam (exclusiva no Windows).
+  return { status, showGate, openEnrollment, cameraInUse: () => Boolean(stream) };
 })();

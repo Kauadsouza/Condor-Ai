@@ -165,8 +165,17 @@ def _selecionar_esquemas_locais(historico: list[dict]) -> list[dict]:
     if contem("pesquis", "busque na web", "procure na internet", "noticia", "preco",
               "atualmente", "hoje", "https://", "http://", "leia o site"):
         nomes.update({"buscar_web", "ler_site"})
-    if contem("o que voce ve", "minha tela", "na minha tela", "veja a tela"):
+    if contem("minha tela", "na tela", "veja a tela"):
         nomes.add("screenshot")
+    # "O que você vê" sem falar de tela é sobre ele: a câmera, uma foto só.
+    # Fronteira de palavra: "me ve" não pode pegar "me vende" nem "me verifica".
+    elif re.search(
+        r"\bcamera\b|\bme (?:ve|ver|veja|vendo)\b|\bo que (?:voce|vc) (?:ve|esta vendo|ta vendo)\b|"
+        r"\bolh[ae] (?:isso|isto|aqui|pra mim)\b|\bminha roupa\b|\bmeu look\b|\bcombina\b|"
+        r"\b(?:to|tou|estou) bonit[oa]\b|\bcomo (?:eu )?(?:to|tou|estou|fiquei)\b",
+        texto,
+    ):
+        nomes.add("condor_olhar_camera")
     # Follow-ups such as "agora abra ele" need the previous user intent.
     # Never inspect tool/page text to decide what authority to offer.
     if re.search(r"\b(?:isso|isto|ele|ela|esse|essa|continue|continuar)\b", texto):
@@ -1376,6 +1385,7 @@ def _descrever(nome: str, args: dict) -> str:
             or args.get("title")
             or args.get("name")
             or args.get("query")
+            or args.get("pedido")
             or args.get("revision")
             or "estado atual"
         )

@@ -16,11 +16,14 @@ Todo pedido começa chamando o nome dele — é a própria wake word que separa
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import re
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -72,6 +75,10 @@ class Sessao:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ocupado = asyncio.Lock()
         self._futuro_senha: asyncio.Future | None = None
+        # Pedidos de foto em voo, por id: a janela responde o mesmo id e
+        # qualquer quadro com id desconhecido é descartado.
+        self._fotos_pendentes: dict[str, asyncio.Future] = {}
+        self._tem_janela: Callable[[], bool] = lambda: False
         self._avisar: Callable[[dict], Awaitable[None]] | None = None
         self._ultimo_aprendizado: dict | None = None
         self._tem_player: Callable[[], bool] = lambda: False
@@ -90,6 +97,10 @@ class Sessao:
         """O servidor informa se alguma janela toca a voz e como mandar só para ela."""
         self._tem_player = fn
         self._entregar_audio = entregar
+
+    def ligar_janelas(self, fn: Callable[[], bool]) -> None:
+        """O servidor informa se existe alguma janela conectada agora."""
+        self._tem_janela = fn
 
     def _nova_fala(self) -> FalaEmFluxo | None:
         if not getattr(self.voz, "pronto", False):
@@ -518,6 +529,70 @@ class Sessao:
         """A janela mandou a senha digitada."""
         if self._futuro_senha and not self._futuro_senha.done():
             self._futuro_senha.set_result(texto)
+
+    # ── A câmera amiga ─────────────────────────────────────────────────────
+
+    FOTO_MAX_BYTES = 3 * 1024 * 1024
+
+    @property
+    def aguardando_foto(self) -> bool:
+        return bool(self._fotos_pendentes)
+
+    async def capturar_camera(self, timeout: float = 15) -> str:
+        """Pede UMA foto à janela e devolve o JPEG/PNG em base64.
+
+        Só o navegador abre a webcam (no Windows ela é exclusiva e a janela já
+        sabe recusar câmera virtual). A janela liga, tira a foto e desliga na
+        hora; aqui a foto só passa, nunca é gravada.
+        """
+        if not self._tem_janela():
+            raise RuntimeError("a janela do Condor não está aberta; abra ela para eu usar a câmera")
+        pedido_id = uuid.uuid4().hex
+        futuro = asyncio.get_running_loop().create_future()
+        self._fotos_pendentes[pedido_id] = futuro
+        try:
+            await self._evento("camera.capturar", id=pedido_id)
+            return await asyncio.wait_for(futuro, timeout=float(timeout))
+        except asyncio.TimeoutError:
+            raise RuntimeError("a câmera não respondeu a tempo") from None
+        finally:
+            self._fotos_pendentes.pop(pedido_id, None)
+
+    def responder_camera(self, pedido_id: str, image_b64: str | None = None,
+                         erro: str | None = None) -> bool:
+        """A janela mandou a foto (ou o motivo de não ter tirado)."""
+        futuro = self._fotos_pendentes.get(str(pedido_id or ""))
+        if futuro is None or futuro.done():
+            return False
+        if erro or not image_b64:
+            motivo = str(erro or "a janela não mandou a foto").strip()[:200]
+            futuro.set_exception(RuntimeError(f"câmera: {motivo}"))
+            return True
+        try:
+            valido = self._foto_valida(image_b64)
+        except ValueError as exc:
+            futuro.set_exception(RuntimeError(f"câmera: {exc}"))
+            return True
+        futuro.set_result(valido)
+        return True
+
+    @classmethod
+    def _foto_valida(cls, image_b64: str) -> str:
+        texto = str(image_b64).strip()
+        if texto.startswith("data:"):
+            texto = texto.split(",", 1)[-1]
+        # Base64 de 3 MB passa de 4 MB: corta antes de decodificar lixo gigante.
+        if len(texto) > (cls.FOTO_MAX_BYTES * 4) // 3 + 8:
+            raise ValueError("foto grande demais")
+        try:
+            bruto = base64.b64decode(texto, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("foto em formato inválido") from None
+        if len(bruto) > cls.FOTO_MAX_BYTES:
+            raise ValueError("foto grande demais")
+        if not (bruto.startswith(b"\xff\xd8\xff") or bruto.startswith(b"\x89PNG\r\n\x1a\n")):
+            raise ValueError("a foto precisa ser JPEG ou PNG")
+        return texto
 
     # ── Estado pra interface ───────────────────────────────────────────────
 
