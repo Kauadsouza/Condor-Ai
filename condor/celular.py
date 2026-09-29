@@ -337,11 +337,51 @@ def entrar_tailscale() -> str:
     # continua válido depois que o comando desiste de esperar.
     if estado_tailscale().get("logado"):
         return ""
-    _, saida = _rodar_tailscale("up", "--force-reauth", "--timeout=20s", timeout=30)
-    achado = _URL_TAILSCALE.search(saida)
-    if achado:
-        return achado.group(0)
-    return str(estado_tailscale().get("auth_url") or "")
+    # --unattended: no Windows, sem isto o Tailscale só fica ligado enquanto o
+    # app dele está aberto na bandeja; fechou (ou o comando terminou), o login
+    # pendente era cancelado e o PC nunca aparecia na rede. Com ele, o PC fica
+    # alcançável pelo celular mesmo sem ninguém mexer no Tailscale.
+    achado = _esperar_link("up", "--unattended", "--force-reauth")
+    return achado or str(estado_tailscale().get("auth_url") or "")
+
+
+def _esperar_link(*args: str, espera: float = 12.0) -> str:
+    """Roda o comando em segundo plano e devolve o link que ele imprimir.
+
+    O processo continua vivo esperando o dono clicar no link: matá-lo
+    (como um timeout faria) cancelava o login ou a liberação do HTTPS.
+    """
+    exe = _tailscale_exe()
+    if not exe:
+        return ""
+    opcoes: dict[str, Any] = {}
+    if sys.platform == "win32":
+        opcoes["creationflags"] = 0x08000000
+    try:
+        processo = subprocess.Popen([exe, *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                                    errors="replace", **opcoes)
+    except OSError:
+        return ""
+    linhas: list[str] = []
+
+    def ler() -> None:
+        for linha in processo.stdout:          # type: ignore[union-attr]
+            linhas.append(linha)
+
+    leitor = threading.Thread(target=ler, daemon=True)
+    leitor.start()
+    fim = time.monotonic() + espera
+    while time.monotonic() < fim:
+        achado = _URL_TAILSCALE.search("".join(linhas))
+        if achado:
+            return achado.group(0)
+        if processo.poll() is not None:
+            leitor.join(timeout=1)
+            achado = _URL_TAILSCALE.search("".join(linhas))
+            return achado.group(0) if achado else ""
+        time.sleep(0.2)
+    return ""
 
 
 def publicar_no_tailscale(porta: int) -> dict:
@@ -351,15 +391,16 @@ def publicar_no_tailscale(porta: int) -> dict:
     uma vez só para o dono clicar; a configuração fica gravada e sobrevive a
     reinícios.
     """
-    codigo, saida = _rodar_tailscale("serve", "--bg", "--yes", f"http://127.0.0.1:{porta}", timeout=20)
-    if codigo == 0:
+    if publicado_no_tailscale(porta):
         return {"ok": True, "precisa_liberar": ""}
-    achado = _URL_TAILSCALE.search(saida)
-    if achado:
-        # Desfaz só o que este pedido deixou pendurado, não o resto do serve do dono.
-        _rodar_tailscale("serve", "--https=443", "off", timeout=10)
-        return {"ok": False, "precisa_liberar": achado.group(0)}
-    return {"ok": False, "precisa_liberar": "", "erro": saida.strip()[-300:]}
+    # Se o HTTPS ainda não foi liberado, o comando imprime o link e fica
+    # esperando; quando o dono libera, ele mesmo termina de publicar.
+    link = _esperar_link("serve", "--bg", "--yes", f"http://127.0.0.1:{porta}", espera=15)
+    if link:
+        return {"ok": False, "precisa_liberar": link}
+    if publicado_no_tailscale(porta):
+        return {"ok": True, "precisa_liberar": ""}
+    return {"ok": False, "precisa_liberar": "", "erro": "o Tailscale não confirmou a publicação"}
 
 
 def publicado_no_tailscale(porta: int) -> bool:
