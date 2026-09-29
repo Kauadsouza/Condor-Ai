@@ -331,7 +331,13 @@ def estado_tailscale() -> dict:
 
 def entrar_tailscale() -> str:
     """Pede o link de login do Tailscale (abre no navegador do PC)."""
-    _, saida = _rodar_tailscale("up", "--json", "--timeout=8s", timeout=12)
+    # "up --json" em serviço travado em NoState não devolve link nenhum; com
+    # --force-reauth o Tailscale sempre imprime "To authenticate, visit: <link>".
+    # Só é chamado sem conta conectada, então não desloga ninguém. O link
+    # continua válido depois que o comando desiste de esperar.
+    if estado_tailscale().get("logado"):
+        return ""
+    _, saida = _rodar_tailscale("up", "--force-reauth", "--timeout=20s", timeout=30)
     achado = _URL_TAILSCALE.search(saida)
     if achado:
         return achado.group(0)

@@ -46,7 +46,12 @@ const CondorCell = (() => {
       const resposta = await pedir(caminho, corpo);
       pintar(resposta);
       if (resposta.precisa_liberar) mensagem('LIBERE O HTTPS NA PÁGINA DO TAILSCALE QUE ABRIU E CLIQUE LIGAR DE NOVO.');
-      else if (caminho.endsWith('entrar-tailscale') && resposta.link) mensagem('ENTRE NA SUA CONTA NO NAVEGADOR E VOLTE AQUI.');
+      else if (caminho.endsWith('entrar-tailscale')) {
+        mensagem(resposta.link
+          ? `ENTRE NA SUA CONTA NO NAVEGADOR. SE NÃO ABRIU, COPIE: ${resposta.link}`
+          : 'O TAILSCALE NÃO DEVOLVEU O LINK · ABRA O APP TAILSCALE NO WINDOWS E CLIQUE EM LOG IN.');
+        esperarLogin();
+      }
       else if (caminho.endsWith('ligar') && !resposta.ok) mensagem(`NÃO LIGOU · ${resposta.erro || 'veja o Tailscale'}`);
       else mensagem('');
     } catch (erro) {
@@ -55,6 +60,20 @@ const CondorCell = (() => {
   }
 
   function mensagem(texto) { const alvo = $('celMsg'); if (alvo) alvo.textContent = texto; }
+
+  // Depois do ENTRAR, confere sozinho a cada 5 s até a conta aparecer (até 10 min).
+  let vigiaLogin = null;
+  function esperarLogin() {
+    clearInterval(vigiaLogin);
+    const ate = Date.now() + 10 * 60 * 1000;
+    vigiaLogin = setInterval(async () => {
+      if (Date.now() > ate) { clearInterval(vigiaLogin); return; }
+      try {
+        const novo = await pedir('/api/celular');
+        if (novo.tailscale?.logado) { clearInterval(vigiaLogin); pintar(novo); mensagem('CONTA CONECTADA · AGORA INSTALE O TAILSCALE NO IPHONE E CLIQUE LIGAR.'); }
+      } catch (_) { /* tenta de novo */ }
+    }, 5000);
+  }
 
   function passo(id, feito, texto) {
     const item = $(id);
