@@ -289,7 +289,6 @@ const CondorVoz = (() => {
       if (continuous) $('voiceHint').textContent = 'CONVERSA CONTÍNUA · PODE FALAR';
       $('orbCore').classList.add('active');
       pintarOrbe('gravando');
-      CondorPet.setState('listening');
     } catch (erro) {
       stopForSecurity();
       $('voiceHint').textContent = 'PERMISSÃO DO MICROFONE NÃO CONCEDIDA';
@@ -336,7 +335,6 @@ const CondorVoz = (() => {
       if (!resposta.ok) throw new Error(dados.erro || 'não entendi a fala');
       CondorConversa.adicionarUsuario(dados.texto);
       $('voiceHint').textContent = 'CONDOR ESTÁ PROCESSANDO LOCALMENTE';
-      CondorPet.setState('thinking');
     } catch (erro) {
       $('voiceStatus').textContent = '● VOZ LOCAL';
       $('voiceStatus').style.color = 'var(--cyan)';

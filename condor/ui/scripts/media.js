@@ -41,7 +41,6 @@ const CondorMedia = (() => {
       }
       pendingIntent = null;
       loading = CondorConversa.adicionarCarregando('CONDOR ESTÁ CRIANDO A IMAGEM');
-      CondorPet.setState('thinking');
       const result = await api('/api/media/images/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, pedido, size: '1024x1024', quality: 'high' }),
@@ -56,7 +55,6 @@ const CondorMedia = (() => {
     } catch (error) {
       loading?.remove();
       CondorConversa.adicionarCondor(`Não consegui gerar a imagem agora: ${error.message}`);
-      CondorPet.setState('error', 2600);
     }
   }
 

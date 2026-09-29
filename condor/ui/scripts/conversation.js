@@ -127,7 +127,6 @@ const CondorConversa = (() => {
     }
     CondorWS.mandarTexto(item.texto);
     mostrarDigitando(true);
-    CondorPet.setState('thinking');
   }
 
   function concluirTurno() {
@@ -184,7 +183,6 @@ const CondorConversa = (() => {
     bolhaAtual.textContent = textoAtual;
     fecharBolha();
     atualizarPresenca();
-    CondorPet.setState('happy', 1200);
   }
 
   function adicionarMidia(imageUrl, caption, kind = 'image') {
@@ -195,7 +193,7 @@ const CondorConversa = (() => {
     const image = document.createElement('img'); image.src = imageUrl; image.alt = caption || 'Imagem no chat do Condor';
     const text = document.createElement('figcaption'); text.textContent = caption || '';
     figure.append(image, text); linha.appendChild(figure); area().appendChild(linha);
-    atualizarPresenca(); rolar(); CondorPet.setState('happy', 1800);
+    atualizarPresenca(); rolar();
     return figure;
   }
 
@@ -233,7 +231,6 @@ const CondorConversa = (() => {
     atualizarFila();
     atualizarPresenca();
     $('textInput').focus();
-    CondorPet.setState('happy', 1000);
   }
 
   async function limparHistorico() {
@@ -286,7 +283,6 @@ const CondorConversa = (() => {
     abrirBolhaCondor();
     textoAtual += pedaco;
     bolhaAtual.textContent = textoAtual;
-    CondorPet.setState('speaking');
     rolar();
   }
 
@@ -303,7 +299,6 @@ const CondorConversa = (() => {
     if (treinoId && bolhaAtual) adicionarAvaliacao(bolhaAtual, treinoId);
     fecharBolha();
     atualizarPresenca();
-    CondorPet.setState('happy', 1400);
   }
 
   // 👍/👎 em cada resposta: é assim que o Condor aprende o seu jeito para o
@@ -417,11 +412,9 @@ const CondorConversa = (() => {
 
   function mostrarDigitando(ligado) {
     $('typingIndicator').style.display = ligado ? 'block' : 'none';
-    if (ligado) CondorPet.setState('thinking');
   }
 
   function atualizarPresenca() {
-    CondorPet.messageCount(area().querySelectorAll('.msg-row').length);
   }
 
   function marcarSessao(rotulo) {

@@ -83,7 +83,7 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
 @media(prefers-reduced-motion:reduce){.condor-frame::before,#screen-conversacao::after{animation:none}}
 
 /* ── CONVERSAÇÃO ────────────────────────────────────────────────── */
-.conv-wrap{position:relative;padding:80px 238px 200px 48px;display:flex;flex-direction:column;gap:16px;height:100vh;overflow-y:auto;scroll-behavior:smooth;}
+.conv-wrap{position:relative;padding:80px 48px 200px 48px;display:flex;flex-direction:column;gap:16px;height:100vh;overflow-y:auto;scroll-behavior:smooth;}
 .clear-chat-btn{position:absolute;top:22px;right:156px;z-index:11;min-width:134px;min-height:36px;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:8px 13px;border:1px solid rgba(94,234,212,.22);border-radius:10px;background:linear-gradient(145deg,rgba(7,22,29,.88),rgba(12,10,26,.9));color:var(--cyan-soft);font:9px var(--font-mono);letter-spacing:1.4px;cursor:pointer;pointer-events:auto;touch-action:manipulation;-webkit-user-select:none;user-select:none;-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:inset 0 0 18px rgba(94,234,212,.025);transition:transform .2s,border-color .2s,box-shadow .2s,color .2s}.clear-chat-btn::before{content:'✦';font-size:10px;color:var(--cyan);text-shadow:0 0 9px rgba(94,234,212,.65);pointer-events:none}.clear-chat-btn:hover{transform:translateY(-1px);border-color:rgba(94,234,212,.52);color:#e6fffc;box-shadow:0 0 24px rgba(94,234,212,.09),inset 0 0 20px rgba(94,234,212,.04)}.clear-chat-btn:focus-visible{outline:1px solid var(--cyan);outline-offset:3px}.clear-chat-dialog{position:fixed;top:50%;left:50%;right:auto;bottom:auto;transform:translate(-50%,-50%);margin:0;width:min(430px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding:0;overflow:hidden;border:1px solid rgba(94,234,212,.3);border-radius:18px;background:linear-gradient(155deg,rgba(8,19,30,.99),rgba(10,7,22,.99));color:var(--text);box-shadow:0 30px 100px rgba(0,0,0,.7),0 0 42px rgba(94,234,212,.08)}.clear-chat-dialog::backdrop{background:rgba(1,3,9,.76);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}.clear-chat-dialog form{padding:25px}.clear-chat-dialog-head{display:flex;align-items:flex-start;gap:14px}.clear-chat-dialog-icon{flex:0 0 42px;height:42px;display:grid;place-items:center;border:1px solid rgba(94,234,212,.25);border-radius:13px;background:rgba(94,234,212,.06);color:var(--cyan);font-size:18px;box-shadow:inset 0 0 18px rgba(94,234,212,.05)}.clear-chat-dialog h2{margin:1px 0 7px;font:12px var(--font-mono);letter-spacing:2px;color:var(--cyan-soft)}.clear-chat-dialog p{margin:0;color:var(--text-mute);font-size:11px;line-height:1.65}.clear-chat-dialog p.error{color:var(--pink-soft)}.clear-chat-dialog-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:23px;padding-top:17px;border-top:1px solid rgba(255,255,255,.07)}.clear-chat-dialog-actions button{padding:9px 13px;border-radius:9px;font:9px var(--font-mono);letter-spacing:1.2px;cursor:pointer}.clear-chat-cancel{border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.025);color:var(--text-dim)}.clear-chat-confirm{border:1px solid rgba(244,114,182,.35);background:linear-gradient(145deg,rgba(83,24,55,.5),rgba(45,12,34,.65));color:var(--pink-soft);box-shadow:inset 0 0 16px rgba(244,114,182,.04)}.clear-chat-confirm:hover{border-color:rgba(244,114,182,.65);color:#ffd7e9}.clear-chat-confirm:disabled{cursor:wait;opacity:.55}.chat-notice{position:absolute;top:70px;right:38px;z-index:9;max-width:340px;padding:9px 12px;border:1px solid rgba(94,234,212,.22);border-radius:9px;background:rgba(5,18,25,.94);color:var(--cyan-soft);font:8px var(--font-mono);letter-spacing:1px;opacity:0;transform:translateY(-5px);pointer-events:none;transition:opacity .2s,transform .2s}.chat-notice.show{opacity:1;transform:translateY(0)}.chat-notice.error{border-color:rgba(244,114,182,.35);background:rgba(35,9,24,.95);color:var(--pink-soft)}
 .session-mark{display:none;align-items:center;justify-content:center;gap:12px;margin-bottom:8px;}
 .session-mark .line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(139,124,255,.2),transparent);max-width:120px;}
@@ -464,88 +464,8 @@ body{display:flex;align-items:stretch;justify-content:stretch;padding:0;}
 @media(max-width:860px){.cx-engineering-layout{grid-template-columns:1fr}.cx-engineering-nav{grid-template-columns:repeat(2,minmax(0,1fr));border-right:0;border-bottom:1px solid rgba(88,228,211,.09)}.cx-engineering-nav>small{grid-column:1/-1}.cx-engineering-cards,.cx-engineering-claims{grid-template-columns:1fr}.cx-engineering-next{grid-template-columns:1fr}.cx-engineering-actions{justify-content:flex-start}}
 @media(max-width:620px){.cx-engineering-header,.cx-engineering-screen{padding:16px}.cx-engineering-summary{grid-template-columns:1fr}.cx-engineering-boundary{margin:12px 16px 0;display:grid}.cx-engineering-nav{grid-template-columns:1fr}.cx-engineering-screen-head{display:grid}.cx-engineering-status{justify-items:start}.cx-maturity{grid-template-columns:1fr}.cx-engineering-footer{flex-direction:column;padding:10px 16px}}
 
-/* ── CONDOR COMPANION + MEDIA ─────────────────────────────────── */
-.condor-companion{position:absolute;left:50%;top:46%;z-index:2;display:grid;justify-items:center;gap:16px;transform:translate(-50%,-50%);pointer-events:none;transition:all .55s cubic-bezier(.22,.75,.2,1)}
-.condor-companion.has-messages{left:46px;top:auto;bottom:198px;transform:scale(.54);transform-origin:left bottom;opacity:.78}
-.pet-aura{position:absolute;width:300px;height:300px;border-radius:50%;background:conic-gradient(from 20deg,rgba(94,234,212,.2),rgba(139,124,255,.28),rgba(244,114,182,.12),rgba(8,15,34,0),rgba(94,234,212,.2));filter:blur(38px);opacity:.38;animation:pet-aura 9s linear infinite}
-.pet-body{position:relative;width:178px;height:166px;display:grid;place-items:center;border:1px solid rgba(126,246,232,.22);border-radius:52% 52% 45% 45%/42% 42% 58% 58%;background:radial-gradient(circle at 50% 38%,rgba(109,92,190,.38),transparent 31%),linear-gradient(145deg,#18213a 0%,#0d1327 43%,#17122c 72%,#080c19 100%);box-shadow:0 0 30px rgba(94,234,212,.25),0 0 96px rgba(139,124,255,.2),inset 0 -30px 46px rgba(1,3,13,.72),inset 0 2px 12px rgba(255,255,255,.08);animation:pet-float 4.6s ease-in-out infinite;filter:drop-shadow(0 16px 24px rgba(0,0,0,.42))}
-.pet-body::before,.pet-body::after{content:'';position:absolute;z-index:-1;bottom:-8px;width:70px;height:82px;background:linear-gradient(160deg,#202947,#090e20 70%);clip-path:polygon(50% 0,100% 18%,83% 100%,48% 74%,10% 100%,0 20%)}.pet-body::before{left:-17px;transform:rotate(19deg)}.pet-body::after{right:-17px;transform:scaleX(-1) rotate(19deg)}
-.pet-crest{position:absolute;z-index:0;top:-34px;left:50%;width:120px;height:78px;transform:translateX(-50%);filter:drop-shadow(0 0 9px rgba(94,234,212,.18))}.pet-crest i{position:absolute;bottom:0;left:50%;width:34px;height:76px;border:1px solid rgba(126,246,232,.2);border-radius:90% 12% 75% 18%;background:linear-gradient(145deg,#29345b,#10162d 72%);transform-origin:bottom}.pet-crest i:nth-child(1){transform:translateX(-72%) rotate(-34deg) scale(.72)}.pet-crest i:nth-child(2){transform:translateX(-52%) rotate(-12deg) scale(.9)}.pet-crest i:nth-child(3){transform:translateX(-48%) rotate(12deg) scale(.9)}.pet-crest i:nth-child(4){transform:translateX(-28%) rotate(34deg) scale(.72)}
-.pet-face{position:relative;z-index:2;width:126px;height:118px;margin-top:9px;border-radius:54% 54% 48% 48%;background:radial-gradient(ellipse at 50% 22%,rgba(161,117,185,.45),transparent 31%),linear-gradient(155deg,rgba(35,46,76,.88),rgba(14,19,39,.96));box-shadow:inset 0 0 26px rgba(2,5,18,.56);filter:drop-shadow(0 3px 8px rgba(2,3,12,.64))}.pet-face::before{content:'';position:absolute;left:50%;top:9px;width:52px;height:49px;transform:translateX(-50%);border-radius:50% 50% 42% 42%;background:linear-gradient(180deg,rgba(189,125,177,.45),rgba(79,47,103,.22) 74%,transparent);clip-path:polygon(50% 0,100% 20%,84% 100%,50% 77%,16% 100%,0 20%)}
-.pet-brow{position:absolute;z-index:3;top:35px;width:43px;height:11px;border-top:5px solid #313b63;border-radius:60% 20% 0 0;filter:drop-shadow(0 2px 2px rgba(0,0,0,.8))}.pet-brow.left{left:12px;transform:rotate(13deg)}.pet-brow.right{right:12px;transform:scaleX(-1) rotate(13deg)}
-.pet-eye{position:absolute;z-index:2;top:43px;width:32px;height:25px;overflow:hidden;border:2px solid rgba(195,255,249,.72);border-radius:56% 44% 58% 42%;background:radial-gradient(circle at 52% 48%,#06101b 0 18%,#5ef1e1 20% 37%,#d9fffb 39% 51%,#071425 54%);box-shadow:0 0 14px rgba(94,234,212,.65),inset 0 0 8px rgba(255,255,255,.35);animation:pet-blink 5.4s infinite;transition:.25s}.pet-eye::after{content:'';position:absolute;top:4px;left:8px;width:5px;height:5px;border-radius:50%;background:white;box-shadow:0 0 6px white}.pet-eye.left{left:20px;transform:rotate(7deg)}.pet-eye.right{right:20px;transform:rotate(-7deg)}
-.pet-beak{position:absolute;z-index:4;top:57px;left:50%;width:42px;height:50px;transform:translateX(-50%);clip-path:polygon(50% 0,94% 27%,76% 75%,50% 100%,24% 75%,6% 27%);background:linear-gradient(135deg,#d7e0ea 0%,#7888a6 38%,#303a58 70%,#c2cde0 100%);box-shadow:inset -6px -8px 12px rgba(6,9,25,.46);transition:.2s}.pet-beak::after{content:'';position:absolute;left:8px;right:8px;top:19px;height:2px;border-radius:50%;background:rgba(11,17,37,.58);box-shadow:0 8px 12px rgba(0,0,0,.24)}
-.pet-mouth{position:absolute;z-index:3;left:50%;top:93px;width:31px;height:7px;transform:translateX(-50%);border-radius:0 0 70% 70%;background:#080c1b;box-shadow:0 0 8px rgba(244,114,182,.18);transition:.2s}.pet-status{padding:8px 12px;border:1px solid rgba(255,255,255,.11);border-radius:999px;background:rgba(7,8,21,.68);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:#cdd9ea;font:8px var(--font-mono);letter-spacing:2px;box-shadow:0 10px 30px rgba(0,0,0,.22)}
-.condor-companion[data-state="listening"] .pet-body{box-shadow:0 0 50px rgba(94,234,212,.72),0 0 120px rgba(94,234,212,.2),inset 0 -30px 46px rgba(1,3,13,.72)}.condor-companion[data-state="listening"] .pet-eye{transform:scale(1.12)}.condor-companion[data-state="thinking"] .pet-body{animation-duration:1.8s;box-shadow:0 0 48px rgba(139,124,255,.72),0 0 125px rgba(139,124,255,.26),inset 0 -30px 46px rgba(1,3,13,.72)}.condor-companion[data-state="thinking"] .pet-eye::after{transform:translateX(7px)}.condor-companion[data-state="speaking"] .pet-mouth{height:15px;animation:pet-talk .34s infinite alternate}.condor-companion[data-state="speaking"] .pet-beak{transform:translateX(-50%) rotate(-1deg)}.condor-companion[data-state="happy"] .pet-eye{height:12px;border-radius:50% 50% 20% 20%;background:#bafff7}.condor-companion[data-state="camera"] .pet-body{box-shadow:0 0 50px rgba(250,199,117,.7),0 0 115px rgba(244,114,182,.18),inset 0 -30px 46px rgba(1,3,13,.72)}.condor-companion[data-state="camera"] .pet-eye{border-color:#fac775;box-shadow:0 0 16px rgba(250,199,117,.75)}.condor-companion[data-state="error"] .pet-eye{border-color:#f472b6;box-shadow:0 0 16px rgba(244,114,182,.72)}
-@keyframes pet-float{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-12px) rotate(1.5deg)}}@keyframes pet-aura{to{transform:rotate(360deg)}}@keyframes pet-blink{0%,45%,49%,100%{scale:1 1}47%{scale:1 .08}}@keyframes pet-talk{to{transform:translateX(-50%) scaleY(.42)}}
-.pet-body{width:226px;height:226px;border:0;border-radius:48%;background:transparent;box-shadow:none;filter:drop-shadow(0 22px 28px rgba(0,0,0,.55));isolation:isolate}.pet-body::before,.pet-body::after{display:none}.pet-avatar{position:absolute;z-index:1;inset:-13px;width:252px;height:252px;object-fit:contain;-webkit-user-select:none;user-select:none;filter:saturate(.98) contrast(1.04) drop-shadow(0 0 20px rgba(35,255,142,.08));transition:filter .3s ease,transform .35s cubic-bezier(.22,.75,.2,1)}.pet-eye-glow{position:absolute;z-index:3;top:62px;width:30px;height:24px;border-radius:50%;background:radial-gradient(circle,rgba(225,255,228,.8) 0 8%,rgba(64,255,111,.48) 20%,rgba(18,218,86,.17) 48%,transparent 72%);mix-blend-mode:screen;filter:blur(.4px);opacity:.75;animation:pet-green-breathe 2.8s ease-in-out infinite;transition:.25s}.pet-eye-glow.left{left:58px;transform:rotate(4deg)}.pet-eye-glow.right{right:58px;transform:rotate(-4deg)}.pet-lid{position:absolute;z-index:4;top:57px;width:38px;height:0;border-radius:50%;background:linear-gradient(#111827,#202b3b);opacity:0;transition:height .2s ease,opacity .2s ease}.pet-lid.left{left:54px;transform:rotate(4deg)}.pet-lid.right{right:54px;transform:rotate(-4deg)}.pet-signal-ring{position:absolute;z-index:0;inset:22px;border:1px solid rgba(41,255,126,.18);border-radius:50%;box-shadow:0 0 40px rgba(41,255,126,.08);opacity:.5;transition:.3s}.pet-status{border-color:rgba(51,255,127,.2);background:rgba(4,14,14,.72);color:#caffd7;box-shadow:0 10px 30px rgba(0,0,0,.28),0 0 20px rgba(41,255,126,.05)}.condor-companion[data-state="listening"] .pet-avatar{transform:scale(1.035);filter:saturate(1.08) contrast(1.08) drop-shadow(0 0 28px rgba(41,255,126,.3))}.condor-companion[data-state="listening"] .pet-eye-glow{opacity:1;filter:blur(.2px) brightness(1.35);animation-duration:.8s}.condor-companion[data-state="listening"] .pet-signal-ring{animation:pet-signal 1.25s ease-out infinite}.condor-companion[data-state="thinking"] .pet-avatar{animation:pet-think 2.2s ease-in-out infinite}.condor-companion[data-state="thinking"] .pet-eye-glow{animation:pet-eye-scan 1.3s ease-in-out infinite alternate}.condor-companion[data-state="speaking"] .pet-avatar{animation:pet-speak .42s ease-in-out infinite alternate}.condor-companion[data-state="speaking"] .pet-eye-glow{opacity:1;box-shadow:0 0 18px rgba(41,255,126,.65)}.condor-companion[data-state="happy"] .pet-avatar{transform:translateY(-7px) scale(1.045)}.condor-companion[data-state="happy"] .pet-eye-glow{opacity:1;filter:brightness(1.5)}.condor-companion[data-state="camera"] .pet-avatar{filter:saturate(1.05) contrast(1.1) drop-shadow(0 0 30px rgba(41,255,126,.25))}.condor-companion[data-state="camera"] .pet-eye-glow{opacity:1;filter:brightness(1.45)}.condor-companion[data-state="error"] .pet-avatar{animation:pet-error .22s ease-in-out 3}.condor-companion[data-state="error"] .pet-eye-glow{opacity:1;filter:brightness(1.2);background:radial-gradient(circle,rgba(232,255,233,.9) 0 8%,rgba(65,255,115,.6) 20%,rgba(22,220,88,.2) 48%,transparent 72%)}.condor-companion[data-state="sleeping"] .pet-lid{height:20px;opacity:.92}.condor-companion[data-state="sleeping"] .pet-eye-glow{opacity:.15}.condor-companion[data-state="sleeping"] .pet-avatar{filter:saturate(.7) brightness(.72)}@keyframes pet-green-breathe{0%,100%{opacity:.6;scale:.94}50%{opacity:1;scale:1.08}}@keyframes pet-signal{0%{scale:.8;opacity:.7}100%{scale:1.35;opacity:0}}@keyframes pet-think{0%,100%{transform:rotate(-1.8deg)}50%{transform:rotate(1.8deg) translateY(-4px)}}@keyframes pet-eye-scan{from{transform:translateX(-2px)}to{transform:translateX(3px)}}@keyframes pet-speak{from{transform:translateY(0) scale(1)}to{transform:translateY(-3px) scale(1.012)}}@keyframes pet-error{0%,100%{transform:translateX(0)}50%{transform:translateX(4px)}}
-/* CONDOR PET V4 — ninho fora do chat, voo, voz, carinho e movimento livre. */
-.pet-nest{position:absolute;z-index:1;top:102px;right:24px;width:184px;height:174px;display:grid;align-content:end;justify-items:center;padding:0 12px 15px;border:1px solid rgba(72,255,145,.13);border-radius:46% 46% 18px 18px;background:radial-gradient(ellipse at 50% 72%,rgba(72,255,145,.075),transparent 49%),linear-gradient(155deg,rgba(8,18,25,.55),rgba(5,8,17,.82));box-shadow:inset 0 -24px 40px rgba(0,0,0,.32),0 18px 45px rgba(0,0,0,.16);pointer-events:none;transition:border-color .3s ease,opacity .3s ease}
-.pet-nest::before{content:'';position:absolute;left:18px;right:18px;bottom:43px;height:15px;border:1px solid rgba(151,115,76,.34);border-top:3px solid rgba(177,137,91,.5);border-radius:50%;background:radial-gradient(ellipse,rgba(85,60,38,.5),rgba(20,18,22,.25) 68%,transparent 70%);box-shadow:0 6px 18px rgba(0,0,0,.38)}
-.pet-nest::after{content:'Z  Z';position:absolute;top:19px;right:26px;color:rgba(152,255,185,.54);font:9px var(--font-mono);letter-spacing:4px;animation:pet-nest-sleep 2.8s ease-in-out infinite}
-.pet-nest-label{position:relative;z-index:1;color:#6f9580;font:7px var(--font-mono);letter-spacing:1.5px;text-align:center}.pet-nest-label b{display:block;margin-bottom:4px;color:#9ed7ae;font-weight:500}
-.pet-nest.is-empty{border-color:rgba(139,124,255,.1);opacity:.58}.pet-nest.is-empty::after{opacity:0}
-.condor-companion{--pet-look-x:0px;--pet-look-y:0px;--pet-tilt:0deg;left:calc(100% - 116px);top:177px;right:auto;bottom:auto;gap:8px;transform:translate(-50%,-50%) scale(.58);transform-origin:center;pointer-events:none;-webkit-user-select:none;user-select:none;will-change:left,top,transform;transition:left .72s cubic-bezier(.22,.82,.2,1),top .72s cubic-bezier(.22,.82,.2,1),transform .55s cubic-bezier(.22,.82,.2,1),opacity .3s ease}
-.condor-companion.has-messages{left:calc(100% - 116px);top:177px;bottom:auto;transform:translate(-50%,-50%) scale(.58);transform-origin:center;opacity:1}
-.condor-companion[data-placement="active"],.condor-companion[data-placement="custom"]{transform:translate(-50%,-50%) scale(.72);z-index:6}
-.condor-companion.is-flying{z-index:7;filter:drop-shadow(0 25px 30px rgba(0,0,0,.5))}.condor-companion.is-flying .pet-wing-left{animation:pet-flight-left .24s ease-in-out infinite alternate}.condor-companion.is-flying .pet-wing-right{animation:pet-flight-right .24s ease-in-out infinite alternate}.condor-companion.is-flying .pet-status{color:#48ff91;border-color:rgba(72,255,145,.5)}
-.condor-pet-button{position:relative;width:250px;height:250px;padding:0;border:0;border-radius:46%;appearance:none;background:transparent;box-shadow:none;outline:none;pointer-events:auto;cursor:pointer;touch-action:none;isolation:isolate;filter:drop-shadow(0 22px 28px rgba(0,0,0,.52));animation:pet-interactive-float 4.8s ease-in-out infinite;transition:filter .25s ease,scale .25s ease}
-.condor-pet-button::before,.condor-pet-button::after{display:none}
-.condor-pet-button:hover{filter:drop-shadow(0 22px 34px rgba(0,0,0,.56)) drop-shadow(0 0 18px rgba(41,240,119,.15))}
-.condor-pet-button:focus-visible{outline:2px solid #48ff91;outline-offset:7px}
-.condor-pet-button:active{scale:.98}
-.condor-pet-svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
-.condor-pet-svg .pet-face,.condor-pet-svg .pet-eye,.condor-pet-svg .pet-beak,.condor-pet-svg .pet-lid{position:static;width:auto;height:auto;border:0;border-radius:0;background:none;box-shadow:none;filter:none;animation:none;overflow:visible}
-.condor-pet-svg .pet-head{transform:translate(var(--pet-look-x),var(--pet-look-y)) rotate(var(--pet-tilt));transform-box:fill-box;transform-origin:center 72%;transition:transform .14s ease-out}
-.condor-pet-svg .pet-pupil{transform:translate(var(--pet-look-x),var(--pet-look-y));transform-box:fill-box;transform-origin:center;transition:transform .1s ease-out}
-.condor-pet-svg .pet-wing{transform-box:fill-box;transform-origin:center 22%;transition:transform .28s ease}
-.condor-pet-svg .pet-shadow{fill:rgba(0,0,0,.46);filter:blur(4px)}
-.condor-pet-svg .pet-core-light{filter:drop-shadow(0 0 8px rgba(41,240,119,.35));transition:opacity .25s ease}
-.condor-pet-svg .pet-lid{fill:#1b2941;opacity:0;transform:scaleY(.08);transform-box:fill-box;transform-origin:center top;transition:opacity .12s ease,transform .12s ease;animation:pet-lid-blink 5.8s ease-in-out infinite}
-.pet-touch-zone{position:absolute;z-index:3;left:29%;right:29%;top:7%;height:38%;border-radius:50%;pointer-events:none}
-.pet-interaction-hint{position:absolute;z-index:5;left:50%;bottom:-6px;width:max-content;max-width:320px;padding:7px 10px;transform:translate(-50%,8px);border:1px solid rgba(72,255,145,.2);border-radius:999px;background:rgba(3,12,16,.92);color:#bdeccb;font:7px var(--font-mono);letter-spacing:1.1px;opacity:0;pointer-events:none;transition:.25s ease}
-.condor-pet-button:hover .pet-interaction-hint,.condor-pet-button:focus-visible .pet-interaction-hint{opacity:1;transform:translate(-50%,0)}
-.pet-heart-layer{position:absolute;z-index:8;inset:0;overflow:visible;pointer-events:none}
-.pet-heart{position:absolute;left:50%;top:31%;color:#48ff91;font-size:16px;text-shadow:0 0 13px rgba(72,255,145,.8);animation:pet-heart-rise 1.15s ease-out forwards;will-change:transform,opacity}
-.pet-status{pointer-events:auto;border-color:rgba(72,255,145,.24);background:rgba(3,13,16,.78);color:#d7ffe1;transition:border-color .25s ease,color .25s ease,transform .25s ease}
-.condor-companion.is-petting .condor-pet-button{cursor:grabbing;filter:drop-shadow(0 18px 30px rgba(0,0,0,.5)) drop-shadow(0 0 25px rgba(72,255,145,.24))}
-.condor-companion.is-dragging{transition:none}.condor-companion.is-dragging .condor-pet-button{cursor:grabbing;filter:drop-shadow(0 24px 34px rgba(0,0,0,.58)) drop-shadow(0 0 22px rgba(139,124,255,.26))}
-.condor-companion.is-petting .pet-head{transition-duration:.06s}
-.condor-companion.is-petted .pet-wing-left{transform:rotate(-12deg) translate(-4px,-2px)}
-.condor-companion.is-petted .pet-wing-right{transform:rotate(12deg) translate(4px,-2px)}
-.condor-companion.is-petted .pet-status{border-color:rgba(72,255,145,.58);color:#48ff91;transform:translateY(-2px)}
-.condor-companion[data-state="listening"] .pet-core-light,.condor-companion[data-state="speaking"] .pet-core-light{opacity:.55;animation:pet-core-pulse .9s ease-in-out infinite alternate}
-.condor-companion[data-state="listening"] .pet-eye circle:nth-of-type(1){filter:url(#petGreenGlow);animation:pet-eye-listen .85s ease-in-out infinite alternate}
-.condor-companion[data-state="thinking"] .pet-head{animation:pet-head-think 1.7s ease-in-out infinite alternate}
-.condor-companion[data-state="thinking"] .pet-pupil{animation:pet-pupil-scan 1.1s ease-in-out infinite alternate}
-.condor-companion[data-state="speaking"] .condor-pet-svg .pet-beak{transform:none}
-.condor-companion[data-state="speaking"] .pet-beak-lower{transform-box:fill-box;transform-origin:center top;animation:pet-beak-talk .28s ease-in-out infinite alternate}
-.condor-companion[data-state="speaking"] .pet-torso{transform-box:fill-box;transform-origin:center;animation:pet-body-talk .42s ease-in-out infinite alternate}
-.condor-companion[data-state="happy"] .pet-wing-left{transform:rotate(-14deg) translate(-4px,-3px)}
-.condor-companion[data-state="happy"] .pet-wing-right{transform:rotate(14deg) translate(4px,-3px)}
-.condor-companion[data-state="happy"] .pet-head{animation:pet-happy-hop .42s ease-in-out 2 alternate}
-.condor-companion[data-state="camera"] .pet-eye{filter:drop-shadow(0 0 8px rgba(72,255,145,.75))}
-.condor-companion[data-state="sleeping"] .pet-lid{opacity:.96;transform:scaleY(1);animation:none}
-.condor-companion[data-state="sleeping"] .pet-eye{opacity:.28}
-.condor-companion[data-state="sleeping"] .condor-pet-button{filter:saturate(.65) brightness(.72) drop-shadow(0 18px 24px rgba(0,0,0,.5))}
-.condor-companion[data-state="error"] .condor-pet-button{animation:pet-interactive-error .22s ease-in-out 4}
-@keyframes pet-interactive-float{0%,100%{transform:translateY(0) rotate(-.7deg)}50%{transform:translateY(-9px) rotate(.7deg)}}
-@keyframes pet-heart-rise{0%{opacity:0;transform:translate(-50%,8px) scale(.55) rotate(-8deg)}20%{opacity:1}100%{opacity:0;transform:translate(calc(-50% + var(--heart-drift)),calc(-70px - var(--heart-rise))) scale(1.35) rotate(12deg)}}
-@keyframes pet-core-pulse{to{opacity:.9;transform:scale(1.16)}}
-@keyframes pet-eye-listen{to{opacity:.8;transform:scale(1.08)}}
-@keyframes pet-lid-blink{0%,46%,50%,100%{opacity:0;transform:scaleY(.08)}48%{opacity:.96;transform:scaleY(1)}}
-@keyframes pet-head-think{from{transform:translate(-3px,-1px) rotate(-3deg)}to{transform:translate(4px,1px) rotate(3deg)}}
-@keyframes pet-pupil-scan{from{transform:translateX(-5px)}to{transform:translateX(5px)}}
-@keyframes pet-beak-talk{from{transform:scaleY(.25)}to{transform:scaleY(1.05) translateY(2px)}}
-@keyframes pet-body-talk{to{transform:scale(1.015) translateY(-2px)}}
-@keyframes pet-happy-hop{to{transform:translateY(-7px) rotate(2deg)}}
-@keyframes pet-interactive-error{0%,100%{transform:translateX(0)}50%{transform:translateX(6px)}}
-@keyframes pet-flight-left{from{transform:rotate(-7deg) translate(-2px,0)}to{transform:rotate(-35deg) translate(-10px,-7px)}}
-@keyframes pet-flight-right{from{transform:rotate(7deg) translate(2px,0)}to{transform:rotate(35deg) translate(10px,-7px)}}
-@keyframes pet-nest-sleep{0%,100%{opacity:.35;transform:translate(0,4px)}50%{opacity:.8;transform:translate(5px,-4px)}}
-@media(max-width:900px){.conv-wrap{padding-right:190px}.pet-nest{right:12px;width:152px}.condor-companion,.condor-companion.has-messages{left:calc(100% - 88px)}}
-@media(max-width:700px){.conv-wrap{padding:74px 18px 188px}.pet-nest{top:84px;right:8px;width:112px;height:118px;padding-bottom:9px}.pet-nest::before{left:10px;right:10px;bottom:34px}.pet-nest::after{top:10px;right:12px}.pet-nest-label{font-size:5px}.condor-companion,.condor-companion.has-messages{display:grid;left:calc(100% - 62px);top:141px;bottom:auto;transform:translate(-50%,-50%) scale(.4);opacity:1}.condor-companion[data-placement="active"],.condor-companion[data-placement="custom"]{transform:translate(-50%,-50%) scale(.56)}.condor-pet-button{width:230px;height:230px}}
-@media(prefers-reduced-motion:reduce){.condor-pet-button,.condor-companion [class*="pet-"]{animation-duration:.001ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important}}
+/* ── MÍDIA NO CHAT ─────────────────────────────────── */
+@media(max-width:700px){.conv-wrap{padding:74px 18px 188px}}
 .chat-compose{display:flex;align-items:center;gap:8px;margin-top:10px;padding:0 20px}.chat-compose input{flex:1;min-width:0;background:rgba(255,255,255,.045);border:1px solid rgba(139,124,255,.22);border-radius:11px;padding:11px 15px;color:var(--text);font-family:var(--font-sans);font-size:12px;outline:none;caret-color:var(--cyan)}.chat-tool-btn,.chat-send-btn{height:39px;padding:0 12px;border:1px solid rgba(139,124,255,.22);border-radius:10px;background:rgba(139,124,255,.055);color:var(--violet-soft);font:9px var(--font-mono);letter-spacing:1px;cursor:pointer}.chat-tool-btn:hover,.chat-tool-btn.active{border-color:rgba(94,234,212,.48);background:rgba(94,234,212,.08);color:var(--cyan)}.chat-send-btn{border-color:rgba(94,234,212,.28);background:rgba(94,234,212,.08);color:var(--cyan)}
 .chat-queue-status{margin:8px 20px 0;color:var(--amber);font:8px var(--font-mono);letter-spacing:1.4px;text-align:right}.chat-compose.has-queue input{border-color:rgba(250,199,117,.32)}.chat-compose.has-queue .chat-send-btn{border-color:rgba(250,199,117,.38);background:rgba(250,199,117,.08);color:var(--amber)}
 .msg-media{width:min(520px,70vw);overflow:hidden;border:1px solid rgba(94,234,212,.2);border-radius:16px;background:rgba(5,11,21,.88);box-shadow:0 18px 50px rgba(0,0,0,.3)}.msg-media img{display:block;width:100%;max-height:520px;object-fit:contain;background:#03050b}.msg-media figcaption{padding:12px 14px;color:var(--text-mute);font-size:10px;line-height:1.5}.msg-media.loading{min-height:180px;display:grid;place-items:center;color:var(--violet-soft);font:9px var(--font-mono);letter-spacing:2px}
@@ -735,64 +655,6 @@ body.viewer-open{overflow:hidden}
       </form>
     </dialog>
     <div class="chat-notice" id="chatNotice" role="status" aria-live="polite"></div>
-    <aside class="pet-nest" id="condorPetNest" aria-label="Ninho do Condor Pet">
-      <span class="pet-nest-label"><b>NINHO DO CONDOR</b>CLIQUE NELE PARA ACORDAR</span>
-    </aside>
-    <div class="condor-companion" id="condorCompanion" data-state="sleeping" data-placement="nest">
-      <div class="pet-aura" aria-hidden="true"></div>
-      <button class="pet-body condor-pet-button" id="condorPet" type="button"
-              aria-label="Conversar por voz com o Condor Pet" aria-describedby="condorPetStatus">
-        <span class="pet-interaction-hint">CABEÇA: CARINHO · CORPO: MOVER · NINHO: DORMIR · CLIQUE: VOZ</span>
-        <svg class="condor-pet-svg" viewBox="0 0 260 260" role="img" aria-label="Condor Pet">
-          <defs>
-            <linearGradient id="petFeather" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#263653"/><stop offset=".48" stop-color="#111a2e"/><stop offset="1" stop-color="#070c18"/>
-            </linearGradient>
-            <linearGradient id="petFeatherLight" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#405171"/><stop offset="1" stop-color="#16223b"/>
-            </linearGradient>
-            <linearGradient id="petBeak" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#d8e4dc"/><stop offset=".42" stop-color="#71817f"/><stop offset="1" stop-color="#28363a"/>
-            </linearGradient>
-            <radialGradient id="petEye" cx="38%" cy="34%" r="66%">
-              <stop offset="0" stop-color="#e8fff0"/><stop offset=".16" stop-color="#92ffad"/><stop offset=".48" stop-color="#24ef68"/><stop offset="1" stop-color="#087638"/>
-            </radialGradient>
-            <filter id="petGreenGlow" x="-80%" y="-80%" width="260%" height="260%">
-              <feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-          </defs>
-          <ellipse class="pet-shadow" cx="130" cy="235" rx="67" ry="12"/>
-          <g class="pet-tail"><path d="M105 196 84 239l35-24 11 36 11-36 35 24-21-43Z" fill="url(#petFeather)"/></g>
-          <g class="pet-wing pet-wing-left">
-            <path d="M103 133C68 134 42 159 46 202c18-5 30-13 40-26-4 16-1 29 4 39 20-12 31-35 31-61Z" fill="url(#petFeather)" stroke="#526681" stroke-opacity=".35"/>
-            <path d="M94 151c-18 8-29 21-35 39M103 163c-14 12-20 26-20 41" fill="none" stroke="#8aa0bd" stroke-opacity=".2"/>
-          </g>
-          <g class="pet-wing pet-wing-right">
-            <path d="M157 133c35 1 61 26 57 69-18-5-30-13-40-26 4 16 1 29-4 39-20-12-31-35-31-61Z" fill="url(#petFeather)" stroke="#526681" stroke-opacity=".35"/>
-            <path d="M166 151c18 8 29 21 35 39M157 163c14 12 20 26 20 41" fill="none" stroke="#8aa0bd" stroke-opacity=".2"/>
-          </g>
-          <g class="pet-torso">
-            <ellipse cx="130" cy="170" rx="52" ry="66" fill="url(#petFeather)" stroke="#526681" stroke-opacity=".45"/>
-            <path d="M97 162c9 10 20 15 33 15s24-5 33-15M99 181c9 9 19 13 31 13s22-4 31-13M105 200c8 7 16 10 25 10s17-3 25-10" fill="none" stroke="#7a91ad" stroke-opacity=".25"/>
-            <ellipse class="pet-core-light" cx="130" cy="179" rx="20" ry="31" fill="#29f077" opacity=".07"/>
-          </g>
-          <g class="pet-feet"><path d="M111 218v13m-13 4 13-4 11 5m27-18v13m13 4-13-4-11 5" fill="none" stroke="#72847f" stroke-width="5" stroke-linecap="round"/></g>
-          <g class="pet-head">
-            <path class="pet-crest-feather" d="M103 73 90 38l29 25 11-43 11 43 29-25-13 35Z" fill="url(#petFeatherLight)" stroke="#5b708c" stroke-opacity=".42"/>
-            <path class="pet-neck-ruff" d="M77 101 57 113l22 11-14 20 28 1 5 25 32-19 32 19 5-25 28-1-14-20 22-11-20-12Z" fill="url(#petFeatherLight)" stroke="#607590" stroke-opacity=".38"/>
-            <path class="pet-face" d="M79 88c4-36 27-52 51-52s47 16 51 52c4 38-15 66-51 66S75 126 79 88Z" fill="url(#petFeather)" stroke="#647994" stroke-opacity=".48"/>
-            <path d="M87 78c12-17 27-24 43-24s31 7 43 24l-16-5-11 11-16-17-16 17-11-11Z" fill="#344560" opacity=".8"/>
-            <g class="pet-eye pet-eye-left"><ellipse cx="106" cy="99" rx="21" ry="18" fill="#050a14" stroke="#648077"/><circle cx="106" cy="100" r="12" fill="url(#petEye)" filter="url(#petGreenGlow)"/><circle class="pet-pupil pet-pupil-left" cx="106" cy="100" r="5.5" fill="#03100a"/><circle cx="102" cy="95" r="3" fill="#eaffef"/></g>
-            <g class="pet-eye pet-eye-right"><ellipse cx="154" cy="99" rx="21" ry="18" fill="#050a14" stroke="#648077"/><circle cx="154" cy="100" r="12" fill="url(#petEye)" filter="url(#petGreenGlow)"/><circle class="pet-pupil pet-pupil-right" cx="154" cy="100" r="5.5" fill="#03100a"/><circle cx="150" cy="95" r="3" fill="#eaffef"/></g>
-            <path class="pet-lid pet-lid-left" d="M84 99q22-21 44 0-22-8-44 0Z"/><path class="pet-lid pet-lid-right" d="M132 99q22-21 44 0-22-8-44 0Z"/>
-            <g class="pet-beak"><path class="pet-beak-upper" d="M108 111q22-18 44 0l-22 37-22-37Z" fill="url(#petBeak)" stroke="#b1c0bb" stroke-opacity=".4"/><path class="pet-beak-lower" d="M113 130q17 13 34 0-4 26-17 27-13-1-17-27Z" fill="#465457"/><path d="M114 126q16 7 32 0" fill="none" stroke="#091014" stroke-width="3" stroke-linecap="round"/></g>
-          </g>
-        </svg>
-        <span class="pet-touch-zone" aria-hidden="true"></span>
-        <span class="pet-heart-layer" id="petHeartLayer" aria-hidden="true"></span>
-      </button>
-      <div class="pet-status" id="condorPetStatus" role="status" aria-live="polite">SAUDAÇÃO LOCAL</div>
-    </div>
     <div class="conv-wrap" id="chatWrap">
       <div class="session-mark">
         <div class="line"></div>
@@ -1222,10 +1084,9 @@ body.viewer-open{overflow:hidden}
 <script src="scripts/camera.js?v=20260928-camera-v1"></script>
 <script src="scripts/security.js?v=20260824-slow-v2"></script>
 <script src="scripts/router.js"></script>
-<script src="scripts/companion.js?v=20260824-pet-nest-v4"></script>
-<script src="scripts/conversation.js?v=20260929-celular-v1"></script>
-<script src="scripts/voice.js?v=20260928-orbe-cores-v1"></script>
-<script src="scripts/media.js?v=20260929-consciencia-v2"></script>
+<script src="scripts/conversation.js?v=20260929-sem-pet"></script>
+<script src="scripts/voice.js?v=20260929-sem-pet"></script>
+<script src="scripts/media.js?v=20260929-sem-pet"></script>
 <script src="scripts/memory.js?v=20260928-aprendizado-v1"></script>
 <script src="scripts/gallery.js?v=20260928-galeria-v1"></script>
 <script src="scripts/viewer.js?v=20260928-visor-v1"></script>
