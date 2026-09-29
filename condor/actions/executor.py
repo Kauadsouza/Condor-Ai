@@ -560,6 +560,25 @@ def atalho(teclas: str) -> dict:
         return _erro(f"{type(exc).__name__}: {exc}")
 
 
+def rolar(passos: int) -> dict:
+    """Gira a roda do mouse onde o ponteiro estiver; positivo sobe.
+
+    No Windows o pyautogui repassa o valor cru ao mouse_event, entao um
+    "passo" vira 120 unidades (um dente da roda). O limite evita que um valor
+    fora da curva role a pagina inteira de uma vez.
+    """
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
+        passos = max(-10, min(10, int(passos)))
+        if not passos:
+            return _erro("Rolagem vazia.")
+        pyautogui.scroll(passos * 120)
+        return _ok(f"Rolagem: {passos:+d}")
+    except Exception as exc:
+        return _erro(f"{type(exc).__name__}: {exc}")
+
+
 def ler_clipboard() -> dict:
     try:
         import pyperclip

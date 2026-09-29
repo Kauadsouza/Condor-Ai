@@ -4,3 +4,7 @@
 *.stp binary
 *.obj binary
 *.stl binary
+
+# MediaPipe vendorizado: os bytes precisam bater com MANIFEST.json, entao nada
+# de conversao CRLF no checkout.
+condor/ui/vendor/mediapipe/** binary
