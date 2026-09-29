@@ -27,23 +27,45 @@ const CondorCamera = (() => {
       || (typeof CondorGestures !== 'undefined' && Boolean(CondorGestures.cameraInUse?.()));
   }
 
-  async function abrirFisica(video) {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('câmera indisponível');
-    const base = { width: { ideal: 1280 }, height: { ideal: 720 } };
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const physical = physicalCandidates(devices)[0];
-    // Sem rótulos ainda, peça a frontal; nunca a câmera padrão, que pode ser virtual.
-    const constraints = physical
-      ? { ...base, deviceId: { exact: physical.deviceId } }
-      : { ...base, facingMode: { exact: 'user' } };
+  async function usar(video, constraints, expectedLabel = '') {
     const stream = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
-    const label = stream.getVideoTracks()[0]?.label || physical?.label || '';
+    const label = stream.getVideoTracks()[0]?.label || expectedLabel;
     if (!label || banned.test(label)) {
       stream.getTracks().forEach((track) => track.stop());
       throw new Error('câmera virtual recusada');
     }
     video.srcObject = stream;
     await video.play();
+    return stream;
+  }
+
+  const semCamera = (error) => ['OverconstrainedError', 'NotFoundError'].includes(String(error?.name || ''));
+
+  // Mesmo caminho da trava facial: pela câmera física conhecida; sem rótulos,
+  // a frontal; se o WebView não tiver "frontal" (OverconstrainedError), lista
+  // de novo — a permissão já liberou os rótulos — e abre pelo deviceId físico.
+  async function abrirFisica(video) {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('câmera indisponível');
+    const base = { width: { ideal: 1280 }, height: { ideal: 720 } };
+    let physical = physicalCandidates(await navigator.mediaDevices.enumerateDevices())[0];
+    if (physical) return usar(video, { ...base, deviceId: { exact: physical.deviceId } }, physical.label);
+    try {
+      return await usar(video, { ...base, facingMode: { exact: 'user' } });
+    } catch (error) {
+      if (!semCamera(error)) throw error;
+    }
+    physical = physicalCandidates(await navigator.mediaDevices.enumerateDevices())[0];
+    if (physical) return usar(video, { ...base, deviceId: { exact: physical.deviceId } }, physical.label);
+    // Último recurso: qualquer câmera, mas só vale se o rótulo dela for físico;
+    // virtual ou sem nome é fechada na hora por usar().
+    const stream = await usar(video, base);
+    const aberta = stream.getVideoTracks()[0]?.getSettings?.().deviceId;
+    const fisicas = physicalCandidates(await navigator.mediaDevices.enumerateDevices());
+    if (aberta && fisicas.length && !fisicas.some((device) => device.deviceId === aberta)) {
+      stream.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+      throw new Error('câmera virtual recusada');
+    }
     return stream;
   }
 

@@ -161,6 +161,10 @@ class GestureEngine:
         """Valida a sessão (e renova o prazo) sem analisar quadro algum."""
         return self._session(token)
 
+    def check(self, token: str) -> GestureSession:
+        """Valida a sessão sem renovar o prazo: só o ping e os quadros renovam."""
+        return self._session(token, renovar=False)
+
     def stop(self, token: str) -> bool:
         with self._lock:
             return self._sessions.pop(str(token or ""), None) is not None
@@ -172,13 +176,14 @@ class GestureEngine:
                 if session.last_seen < cutoff:
                     self._sessions.pop(token, None)
 
-    def _session(self, token: str) -> GestureSession:
+    def _session(self, token: str, renovar: bool = True) -> GestureSession:
         self._expire()
         with self._lock:
             session = self._sessions.get(str(token or ""))
             if session is None:
                 raise PermissionError("sessão gestual inválida ou expirada")
-            session.last_seen = time.monotonic()
+            if renovar:
+                session.last_seen = time.monotonic()
             return session
 
     @staticmethod

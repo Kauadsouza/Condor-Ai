@@ -16,6 +16,7 @@ import mimetypes
 import os
 import platform
 import re
+import uuid
 from pathlib import Path
 
 import uvicorn
@@ -58,7 +59,8 @@ from condor.security.session import LocalSessionSecurity
 from condor.security.vault import CondorVault, VaultError
 from condor.security.identity import DeviceIdentity
 from condor.security.face_guard import FacePresenceGuard
-from condor.session import Sessao
+from condor.development.arduino import fqbn_valido
+from condor.session import Sessao, nome_placa_seguro
 from condor.voice.stt import Ouvidos
 from condor.voice.tts import Voz
 from condor.voice.wake import Escuta
@@ -135,7 +137,29 @@ class Conexoes:
 
     async def entrar(self, ws: WebSocket) -> None:
         await ws.accept()
+        ws.state.conexao_id = uuid.uuid4().hex
         self._sockets.append(ws)
+
+    @staticmethod
+    def id_de(ws: WebSocket) -> str:
+        return str(getattr(ws.state, "conexao_id", "") or "")
+
+    async def enviar_para_um(self, msg: dict) -> str | None:
+        """Manda para UMA janela e devolve o id dela (None se não há nenhuma).
+
+        Prefere a que anunciou voz_player: é a janela do app que o dono está
+        usando, não uma aba esquecida.
+        """
+        candidatos = sorted(self._sockets, key=lambda w: not getattr(w.state, "voz_player", False))
+        texto = json.dumps(msg, ensure_ascii=False)
+        for ws in candidatos:
+            try:
+                await ws.send_text(texto)
+            except Exception:
+                self.sair(ws)
+                continue
+            return self.id_de(ws)
+        return None
 
     def sair(self, ws: WebSocket) -> None:
         if ws in self._sockets:
@@ -245,6 +269,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     sessao.ligar_avisos(conexoes.transmitir)
     sessao.ligar_player(lambda: conexoes.tem_player, conexoes.transmitir_players)
     sessao.ligar_janelas(lambda: conexoes.total > 0)
+    sessao.ligar_camera(conexoes.enviar_para_um)
     # Câmera amiga: a janela tira uma foto, a visão LOCAL descreve e só o texto
     # segue para o cérebro, mesmo quando o chat está na OpenAI ou no Claude.
     orchestrator.ligar_camera(sessao.capturar_camera, provider._visao)
@@ -1481,12 +1506,16 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if not gesture_pc.valid(action):
             guarda.auditar("security", f"gesture_pc:{str(action)[:40]}", "DENIED: fora da lista", False, False)
             return JSONResponse({"erro": "ação gestual desconhecida"}, status_code=400)
+        # Só confere a sessão: quem renova o prazo é o ping. Uma página que
+        # parou de pingar não mantém a sessão viva mandando ações.
         try:
-            gesture_engine.touch(str(payload.get("token") or "")[:120])
+            gesture_engine.check(str(payload.get("token") or "")[:120])
         except PermissionError as exc:
             return JSONResponse({"erro": str(exc)}, status_code=403)
         if response := _memoria_pronta():
             return response
+        if not memoria.permission_allowed("gesture_camera"):
+            return JSONResponse({"erro": "permissão gestual revogada"}, status_code=403)
         if not memoria.permission_allowed("gesture_pc_control"):
             request_item = memoria.request_permission(
                 "gesture_pc_control",
@@ -2364,12 +2393,15 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 
             while True:
                 bruto = await socket.receive_text()
-                # Só a foto pedida pela câmera amiga passa do limite normal, e
-                # apenas enquanto existe um pedido de foto esperando resposta.
-                limite = CAMERA_WS_MAX if sessao.aguardando_foto else 64 * 1024
-                if len(bruto) > limite:
-                    await socket.close(code=1009)
-                    return
+                # Só a foto pedida pela câmera amiga passa de 64 KB, e só da
+                # janela que recebeu o pedido, com o id dele. O tamanho é
+                # conferido antes de gastar tempo com o JSON.
+                quadro = None
+                if len(bruto) > WS_MAX_NORMAL:
+                    quadro = _quadro_camera_esperado(bruto, sessao.foto_pendente_de(Conexoes.id_de(socket)))
+                    if quadro is None:
+                        await socket.close(code=1009)
+                        return
                 if (
                     not local_security.token_valid(socket.cookies.get(local_security.COOKIE))
                     or not local_security.rate_allowed("ws-message", 180, 60)
@@ -2377,7 +2409,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                     await socket.close(code=1008)
                     return
                 try:
-                    msg = json.loads(bruto)
+                    msg = quadro if quadro is not None else json.loads(bruto)
                 except json.JSONDecodeError:
                     continue
                 if not isinstance(msg, dict):
@@ -2385,7 +2417,11 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 if msg.get("tipo") in {"texto", "acordar"} and (
                     not vault.unlocked or not guarda.owner_session_active or face_guard.access_blocked
                 ):
-                    await socket.send_text(json.dumps({"tipo": "erro", "mensagem": "Desbloqueie o Condor para conversar."}))
+                    erro = {"tipo": "erro", "mensagem": "Desbloqueie o Condor para conversar."}
+                    # Sem o contexto o chat principal mostraria o erro da aba Programação.
+                    if msg.get("contexto") == "programacao":
+                        erro["contexto"] = "programacao"
+                    await socket.send_text(json.dumps(erro, ensure_ascii=False))
                     continue
                 if msg.get("tipo") == "senha" and not local_security.rate_allowed("ws-password", 10, 60):
                     await socket.send_text(json.dumps({
@@ -2453,18 +2489,41 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
 # no meio por coleta de lixo.
 _EM_VOO: set[asyncio.Task] = set()
 
-# 3 MB de foto viram ~4 MB em base64, mais o envelope JSON.
+# 3 MB de foto viram ~4 MB em base64, mais o envelope JSON. O uvicorn
+# precisa aceitar isso; o limite de verdade é conferido mensagem a mensagem.
 CAMERA_WS_MAX = 4_300_000
+WS_MAX_NORMAL = 64 * 1024
+
+
+def _quadro_camera_esperado(bruto: str, pedido_id: str | None) -> dict | None:
+    """Mensagem grande só passa se for o camera.quadro do pedido desta janela.
+
+    Devolve a mensagem já lida (para não montar o JSON de 4 MB duas vezes)."""
+    if not pedido_id or len(bruto) > CAMERA_WS_MAX:
+        return None
+    # Triagem barata no começo da mensagem antes de montar um JSON de 4 MB.
+    if '"camera.quadro"' not in bruto[:256] or pedido_id not in bruto[:256]:
+        return None
+    try:
+        msg = json.loads(bruto)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(msg, dict) and msg.get("tipo") == "camera.quadro" and msg.get("id") == pedido_id:
+        return msg
+    return None
 
 
 def _alvo_programacao(valor) -> dict:
-    """Só texto curto de nome/porta/fqbn chega ao prompt; nada mais do cliente."""
+    """Só texto curto de nome/porta/fqbn chega ao turno; nada mais do cliente."""
     if not isinstance(valor, dict):
         return {}
     alvo = {
-        chave: " ".join(str(valor.get(chave) or "").split())[:120]
-        for chave in ("name", "port", "fqbn") if valor.get(chave)
+        chave: nome_placa_seguro(valor.get(chave))
+        for chave in ("name", "port") if nome_placa_seguro(valor.get(chave))
     }
+    fqbn = str(valor.get("fqbn") or "").strip()
+    if fqbn_valido(fqbn):
+        alvo["fqbn"] = fqbn
     # Só o id do projeto: o código em si o servidor lê do próprio cofre.
     projeto = str(valor.get("projeto") or "")
     if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", projeto):
@@ -2477,14 +2536,15 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
 
     if tipo == "texto":
         texto = (msg.get("texto") or "").strip()
-        if len(texto) > 8000:
-            await socket.send_text(json.dumps({
-                "tipo": "erro", "mensagem": "Mensagem excede 8000 caracteres."
-            }, ensure_ascii=False))
-            return
         # A aba Programação conversa pelo mesmo socket; o contexto marca o
         # turno para o painel certo e o alvo diz para qual placa escrever.
         contexto = "programacao" if msg.get("contexto") == "programacao" else ""
+        if len(texto) > 8000:
+            erro = {"tipo": "erro", "mensagem": "Mensagem excede 8000 caracteres."}
+            if contexto:
+                erro["contexto"] = contexto
+            await socket.send_text(json.dumps(erro, ensure_ascii=False))
+            return
         alvo = _alvo_programacao(msg.get("alvo")) if contexto else None
         if texto:
             # Solto numa tarefa pra não travar o WebSocket enquanto ele pensa —
@@ -2504,7 +2564,7 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
                         erro = {"tipo": "erro", "mensagem": "Não consegui concluir esta resposta. Tente novamente."}
                         if contexto:
                             erro["contexto"] = contexto
-                        await socket.send_text(json.dumps(erro))
+                        await socket.send_text(json.dumps(erro, ensure_ascii=False))
                     except Exception:
                         pass
             tarefa = asyncio.create_task(processar_com_recuperacao())
@@ -2517,11 +2577,13 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
             sessao.responder_senha(texto)
 
     elif tipo == "camera.quadro":
-        # Quadro com id desconhecido (atrasado ou forjado) é descartado em silêncio.
+        # Quadro com id desconhecido (atrasado ou forjado) ou vindo de outra
+        # janela que não a que recebeu o pedido é descartado em silêncio.
         sessao.responder_camera(
             str(msg.get("id") or "")[:64],
             image_b64=msg.get("image_b64") if isinstance(msg.get("image_b64"), str) else None,
             erro=str(msg.get("erro") or "")[:200] or None,
+            socket_id=Conexoes.id_de(socket),
         )
 
     elif tipo == "voz.player":

@@ -540,6 +540,7 @@ CREATE INDEX IF NOT EXISTS idx_security_alerts_time ON security_alerts(created D
 DEFAULT_PERMISSIONS = (
     ("microphone", 0, "local"),
     ("camera", 0, "local"),
+    ("chat_camera", 0, "local"),
     ("gesture_camera", 0, "local"),
     ("gesture_pc_control", 0, "local"),
     ("serial", 0, "device"),

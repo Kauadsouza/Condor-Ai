@@ -311,7 +311,7 @@ async def executar(nome: str, argumentos: dict, contexto: dict | None = None) ->
         orchestrator = contexto.get("orchestrator")
         if orchestrator is None:
             return {"ok": False, "saida": "Orquestrador do Condor indisponivel."}
-        return await orchestrator.execute(nome, argumentos)
+        return await orchestrator.execute(nome, argumentos, fala_dono=str(contexto.get("fala_dono") or ""))
 
     fn = FUNCOES.get(nome)
     if fn is None:

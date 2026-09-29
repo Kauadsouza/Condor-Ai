@@ -31,6 +31,7 @@ from condor.brain.persona import montar_prompt, montar_prompt_leve
 from condor.brain.ollama import embeddings_ollama, responder_ollama
 from condor.media import LocalImageGenerator, is_image_request
 from condor.knowledge import EngineeringKnowledgeBase
+from condor.vision.intencao import fala_do_dono, pede_camera
 from condor.vision.local import VisaoLocal
 
 log = logging.getLogger("condor.cerebro")
@@ -168,13 +169,7 @@ def _selecionar_esquemas_locais(historico: list[dict]) -> list[dict]:
     if contem("minha tela", "na tela", "veja a tela"):
         nomes.add("screenshot")
     # "O que você vê" sem falar de tela é sobre ele: a câmera, uma foto só.
-    # Fronteira de palavra: "me ve" não pode pegar "me vende" nem "me verifica".
-    elif re.search(
-        r"\bcamera\b|\bme (?:ve|ver|veja|vendo)\b|\bo que (?:voce|vc) (?:ve|esta vendo|ta vendo)\b|"
-        r"\bolh[ae] (?:isso|isto|aqui|pra mim)\b|\bminha roupa\b|\bmeu look\b|\bcombina\b|"
-        r"\b(?:to|tou|estou) bonit[oa]\b|\bcomo (?:eu )?(?:to|tou|estou|fiquei)\b",
-        texto,
-    ):
+    if pede_camera(fala):
         nomes.add("condor_olhar_camera")
     # Follow-ups such as "agora abra ele" need the previous user intent.
     # Never inspect tool/page text to decide what authority to offer.
@@ -203,10 +198,22 @@ def _selecionar_esquemas_locais(historico: list[dict]) -> list[dict]:
             "condor_desconectar_dispositivo",
         })
 
+    # O follow-up acima pode herdar a câmera da fala anterior; ela só vale
+    # quando a fala ATUAL pede.
+    if not pede_camera(fala):
+        nomes.discard("condor_olhar_camera")
     return [
         schema for schema in ferramentas.ESQUEMAS
         if schema["function"]["name"] in nomes
     ]
+
+
+def _esquemas_completos(historico: list[dict]) -> list[dict]:
+    """OpenAI/Claude recebem o catálogo inteiro, menos a câmera quando a fala
+    atual do dono não pede para ele olhar."""
+    if pede_camera(fala_do_dono(historico)):
+        return list(ferramentas.ESQUEMAS)
+    return [s for s in ferramentas.ESQUEMAS if s["function"]["name"] != "condor_olhar_camera"]
 
 # Preço por 1 milhão de tokens (USD). Serve pro contador da interface —
 # se a OpenAI mudar a tabela, é só ajustar aqui.
@@ -251,6 +258,7 @@ class Cerebro:
         self._engineering = EngineeringKnowledgeBase()
         self._image_prompt_client: AsyncOpenAI | None = None
         self._orchestrator = None
+        self._fala_dono_turno = ""
         self._provider_tests: dict[str, dict[str, Any]] = {
             name: {"verified": None, "detail": "ainda não testado", "tested_at": None}
             for name in ("openai", "claude", "local")
@@ -674,9 +682,12 @@ class Cerebro:
             if mensagem.get("role") == "user" and isinstance(mensagem.get("content"), str):
                 pedido_atual = mensagem["content"]
                 break
+        # A fala do dono (sem dados anexados) é o que o orquestrador confere
+        # antes de ligar a câmera; nunca o texto de uma ferramenta ou página.
+        self._fala_dono_turno = fala_do_dono(historico)
         schemas = (
             _selecionar_esquemas_locais(historico)
-            if self.provedor == "local" else ferramentas.ESQUEMAS
+            if self.provedor == "local" else _esquemas_completos(historico)
         )
         sistema = montar_prompt(
             self._cfg.nome_dono,
@@ -941,7 +952,7 @@ class Cerebro:
     ) -> str:
         """Loop de ferramentas nativo da Messages API da Anthropic."""
         messages = _historico_para_anthropic(historico)
-        schemas = ferramentas.ESQUEMAS
+        schemas = _esquemas_completos(historico)
         tools = [_anthropic_tool(schema) for schema in schemas]
 
         async def _evento(tipo: str, **dados) -> None:
@@ -1042,7 +1053,10 @@ class Cerebro:
 
         inicio = time.time()
         resultado = await ferramentas.executar(
-            nome, args, contexto={"recall": self._recall, "orchestrator": self._orchestrator})
+            nome, args, contexto={
+                "recall": self._recall, "orchestrator": self._orchestrator,
+                "fala_dono": getattr(self, "_fala_dono_turno", ""),
+            })
         duracao = time.time() - inicio
 
         try:

@@ -13,6 +13,7 @@ import re
 from typing import Any, Awaitable, Callable
 
 from condor.development import detect_language
+from condor.vision.intencao import pede_camera
 
 
 class CondorOrchestrator:
@@ -35,7 +36,9 @@ class CondorOrchestrator:
         # exigir ai_devices, desligada por padrao, fazia a busca falhar em 0.0s.
         "condor_conectar_dispositivo": "ai_devices",
         "condor_desconectar_dispositivo": "ai_devices",
-        "condor_olhar_camera": "camera",
+        # Permissão própria: a "camera" é só da trava facial e liberar uma
+        # não pode liberar a outra.
+        "condor_olhar_camera": "chat_camera",
     }
     # Quando a permissao falta, algumas ferramentas abrem o pedido no painel
     # Sistema em vez de so recusar: o dono libera ali e pede de novo.
@@ -43,7 +46,7 @@ class CondorOrchestrator:
         "condor_olhar_camera": (
             "Tirar uma foto só quando o dono pedir e desligar a câmera na hora.",
             "chat_camera",
-            "A câmera está desligada pra mim. Libera a permissão 'camera' no painel "
+            "A câmera está desligada pra mim. Libera a permissão 'chat_camera' no painel "
             "Sistema e me pede de novo que eu dou uma olhada.",
         ),
     }
@@ -83,12 +86,19 @@ class CondorOrchestrator:
             "condor_olhar_camera": self._look_camera,
         }
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def execute(self, name: str, arguments: dict[str, Any], fala_dono: str = "") -> dict[str, Any]:
         if not self.memory.unlocked:
             return {"ok": False, "saida": "O cofre do Condor esta bloqueado."}
         handler = self._handlers.get(name)
         if handler is None:
             return {"ok": False, "saida": f"Operacao interna desconhecida: {name}"}
+        # Defesa em profundidade: uma página ou arquivo lido pelo modelo pode
+        # "pedir" a foto. Só vale se a última fala do próprio dono pediu.
+        if name == "condor_olhar_camera" and not pede_camera(fala_dono):
+            return {
+                "ok": False,
+                "saida": "Camera recusada: o dono nao pediu para voce olhar nesta mensagem.",
+            }
         capability = self.TOOL_CAPABILITIES.get(name)
         if capability and not self.memory.permission_allowed(capability):
             if name in self.PERMISSION_REQUESTS:

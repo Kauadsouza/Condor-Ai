@@ -253,6 +253,36 @@ class GestureServerTests(unittest.TestCase):
         self.memoria.set_permission_decision("gesture_camera", "block")
         self.assertEqual(self.client.post("/api/gestures/ping", json={"token": token}).status_code, 403)
 
+    def test_action_requires_gesture_camera_too(self):
+        token = self._token()
+        self.memoria.set_permission_decision("gesture_pc_control", "allow_always")
+        self.memoria.set_permission_decision("gesture_camera", "block")
+        denied = self.client.post("/api/gestures/action", json={"token": token, "action": "playpause"})
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_action_does_not_renew_the_session(self):
+        token = self._token()
+        self.memoria.set_permission_decision("gesture_pc_control", "allow_always")
+        engine = self.app.state.gesture_engine
+        antigo = engine._sessions[token].last_seen - 5
+        engine._sessions[token].last_seen = antigo
+        ok = self.client.post("/api/gestures/action", json={"token": token, "action": "playpause"})
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual(engine._sessions[token].last_seen, antigo)
+        # O ping continua sendo o caminho que renova.
+        self.assertEqual(self.client.post("/api/gestures/ping", json={"token": token}).status_code, 200)
+        self.assertGreater(engine._sessions[token].last_seen, antigo)
+
+    def test_action_fails_once_the_page_stops_pinging(self):
+        token = self._token()
+        self.memoria.set_permission_decision("gesture_pc_control", "allow_always")
+        engine = self.app.state.gesture_engine
+        engine._sessions[token].last_seen -= engine.SESSION_TTL + 1
+        expired = self.client.post("/api/gestures/action", json={"token": token, "action": "playpause"})
+        self.assertEqual(expired.status_code, 403)
+        self.assertEqual(self.fake.calls, [])
+
     def test_permission_is_off_by_default(self):
         from condor.memory.db import DEFAULT_PERMISSIONS
         self.assertIn(("gesture_pc_control", 0, "local"), DEFAULT_PERMISSIONS)

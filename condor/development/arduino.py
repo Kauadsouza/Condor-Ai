@@ -23,10 +23,16 @@ COMMON_AVR_BOARDS = (
     {"name": "Arduino Micro", "fqbn": "arduino:avr:micro"},
 )
 
-_FQBN = re.compile(
-    r"^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+"
-    r"(?::[A-Za-z0-9_.=,-]+)?$"
-)
+# Caracteres só da lista curta e sem "-" ou "." na frente (não vira opção do
+# arduino-cli); além disso, fabricante:arquitetura:placa no mínimo.
+_FQBN_CHARS = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.:-]*$")
+_FQBN_PARTES = re.compile(r"^[^:]+:[^:]+:[^:]+(?::[^:]+)*$")
+
+
+def fqbn_valido(fqbn) -> bool:
+    texto = str(fqbn or "")
+    return (len(texto) <= 160 and bool(_FQBN_CHARS.fullmatch(texto))
+            and bool(_FQBN_PARTES.fullmatch(texto)))
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -128,7 +134,7 @@ class ArduinoToolchain:
             boards = []
             for board in entry.get("matching_boards") or []:
                 fqbn = str(board.get("fqbn") or "")
-                if _FQBN.fullmatch(fqbn):
+                if fqbn_valido(fqbn):
                     boards.append({"name": str(board.get("name") or fqbn)[:120], "fqbn": fqbn})
             detected.append({
                 "port": str(port.get("address") or "")[:120],
@@ -170,7 +176,7 @@ class ArduinoToolchain:
 
     @staticmethod
     def _validate_fqbn(fqbn: str) -> None:
-        if not _FQBN.fullmatch(fqbn):
+        if not fqbn_valido(fqbn):
             raise ValueError("modelo de placa inválido")
 
     @classmethod

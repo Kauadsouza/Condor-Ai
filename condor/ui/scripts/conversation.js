@@ -84,6 +84,7 @@ const CondorConversa = (() => {
     // O servidor recusa um pedido novo enquanto termina o anterior. Sem isto a
     // mensagem digitada sumia da tela sem explicacao nenhuma.
     CondorWS.ao('ocupado', (m) => {
+      if (deOutroPainel(m)) return;
       finalizar(m.mensagem || 'Ainda estou no pedido anterior.'); concluirTurno();
     });
     CondorWS.ao('dormiu', () => { marcarSessao('DORMIU'); fecharBolha(); });
