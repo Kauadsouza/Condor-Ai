@@ -2708,7 +2708,7 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertNotIn("campo.disabled", conversation)
         self.assertNotIn("botao.disabled", conversation)
         self.assertIn("Promise.resolve(mediaTask).finally(concluirTurno)", conversation)
-        self.assertIn("pendingIntent = { type: 'image', prompt, resolve }", media)
+        self.assertIn("pendingIntent = { type: 'image', prompt, pedido, resolve }", media)
         self.assertIn("intent.resolve()", media)
         self.assertIn("async with self._ocupado", session)
         self.assertIn("pedidos simultaneos aguardam aqui na ordem", session)

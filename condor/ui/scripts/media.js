@@ -29,14 +29,14 @@ const CondorMedia = (() => {
     return false;
   }
 
-  async function generateImage(prompt, permissionConfirmed = false) {
+  async function generateImage(prompt, permissionConfirmed = false, pedido = '') {
     let loading = null;
     try {
       if (!permissionConfirmed && !await ensurePermission(
         'ai_media', 'Gerar esta imagem inteiramente neste PC.', 'chat_image_generation',
       )) {
         return await new Promise((resolve) => {
-          pendingIntent = { type: 'image', prompt, resolve };
+          pendingIntent = { type: 'image', prompt, pedido, resolve };
         });
       }
       pendingIntent = null;
@@ -44,7 +44,7 @@ const CondorMedia = (() => {
       CondorPet.setState('thinking');
       const result = await api('/api/media/images/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, size: '1024x1024', quality: 'high' }),
+        body: JSON.stringify({ prompt, pedido, size: '1024x1024', quality: 'high' }),
       });
       loading.remove();
       if (result.image?.id) CondorGaleria.marcarMostrada(result.image.id);
@@ -65,8 +65,15 @@ const CondorMedia = (() => {
   }
 
   function imageIntent(text) {
-    return /\b(cria|crie|criar|gera|gere|gerar|faz|faca|fazer|produza|produzir|desenha|desenhe)\b[^.!?]*\b(img|imagem|imagens|foto|fotografia|ilustracao|arte|desenho|poster|capa|thumbnail)\b/
-      .test(normalize(text));
+    const t = normalize(text);
+    if (!/\b(cria|crie|criar|gera|gere|gerar|faz|faca|fazer|produza|produzir|desenha|desenhe)\b[^.!?]*\b(img|imagem|imagens|foto|fotografia|ilustracao|arte|desenho|poster|capa|thumbnail)\b/.test(t)) {
+      return false;
+    }
+    // "Você consegue gerar imagem?" é pergunta sobre ele, não pedido: vai para
+    // a conversa. "Pode gerar uma imagem de um gato?" tem assunto, então é pedido.
+    const pergunta = /\?\s*$/.test(t) || /\b(consegue|sabe|como)\b/.test(t);
+    const assunto = /\b(img|imagem|imagens|foto|fotografia|ilustracao|arte|desenho|poster|capa|thumbnail)\s+(de|do|da|dos|das|com|sobre|:)\s*\S/.test(t);
+    return !pergunta || assunto;
   }
 
   function extractImagePrompt(text) {
@@ -79,7 +86,7 @@ const CondorMedia = (() => {
 
   function handleChatPrompt(text) {
     if (imageIntent(text)) {
-      return generateImage(extractImagePrompt(text));
+      return generateImage(extractImagePrompt(text), false, String(text).trim());
     }
     return null;
   }
@@ -95,7 +102,7 @@ const CondorMedia = (() => {
       return;
     }
     pendingIntent = null;
-    if (intent.type === 'image') await generateImage(intent.prompt, true);
+    if (intent.type === 'image') await generateImage(intent.prompt, true, intent.pedido);
     intent.resolve();
   }
 
@@ -105,5 +112,5 @@ const CondorMedia = (() => {
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
   else init();
-  return { ensurePermission, handleChatPrompt };
+  return { ensurePermission, handleChatPrompt, imageIntent };
 })();

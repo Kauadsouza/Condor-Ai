@@ -27,6 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from condor.brain import consciencia
 from condor.brain.offline import responder_offline
 from condor.brain.persona import conversa_leve
 from condor.development.arduino import fqbn_valido
@@ -403,6 +404,7 @@ class Sessao:
         # Fatos pessoais inequívocos são registrados antes da resposta. É
         # rápido, local e funciona até quando Ollama ou uma API falham.
         aprendizado = await self.extrator.aprender_local(texto)
+        self._anotar_fala_do_dono(texto)
         pedido_de_memoria = pedido_explicito_memoria(texto)
         verificacao_de_memoria = pergunta_confirmacao_memoria(texto)
         if (aprendizado.get("saved") or aprendizado.get("unchanged")
@@ -466,7 +468,9 @@ class Sessao:
                          if m.get("role") == "assistant"), "")
         leve = (conversa_leve(texto)
                 and not str(anterior).rstrip().endswith("?"))
-        referencia = "" if leve else await self.recall.contexto_para(texto)
+        # "Quem é você?" é sobre ele: os fatos do dono só puxariam canal e estudos.
+        sobre_ele = consciencia.pergunta_de_identidade(texto)
+        referencia = "" if (leve or sobre_ele) else await self.recall.contexto_para(texto)
         self._salvar_turno_seguro("user", texto)
 
         # Voz: cada frase pronta já vai sendo falada enquanto o resto é gerado.
@@ -480,15 +484,26 @@ class Sessao:
         ferramentas_usadas = 0
         anteriores = [dict(m) for m in self.historico[:-1]]
 
+        argumentos_por_id: dict[str, str] = {}
+
         async def on_evento(ev: dict) -> None:
             nonlocal ferramentas_usadas
             if ev.get("tipo") == "ferramenta.inicio":
                 ferramentas_usadas += 1
+                argumentos_por_id[str(ev.get("id") or "")] = str(ev.get("argumentos") or "")
+            elif ev.get("tipo") == "ferramenta.fim" and ev.get("ok"):
+                # Diário: só o que rodou de verdade vira "eu fiz".
+                self._anotar("acao", consciencia.acao_do_condor(
+                    str(ev.get("ferramenta") or ""), str(ev.get("rotulo") or ""),
+                    argumentos_por_id.get(str(ev.get("id") or ""), "")))
             await self._evento(ev.pop("tipo"), **ev)
 
         try:
+            # "Quem é você?" responde só à pergunta: com a conversa inteira o
+            # modelo pequeno recitava o que tinha acabado de ouvir.
             resposta = await self.cerebro.responder(
-                self.historico, memoria_relevante=referencia, modo_voz=por_voz,
+                self.historico[-1:] if sobre_ele else self.historico,
+                memoria_relevante=referencia, modo_voz=por_voz,
                 on_token=on_token, on_evento=on_evento, conversa_leve=leve)
         except BaseException:
             if fala is not None:
@@ -514,6 +529,7 @@ class Sessao:
         self.ultimo_contato = time.time()
 
         self.extrator.enfileirar(texto, resposta)
+        self._anotar("opiniao", consciencia.opiniao_do_condor(texto, resposta))
 
         if fala is not None:
             if resposta:
@@ -526,6 +542,38 @@ class Sessao:
         await self._mudar_estado(OUVINDO)
         await self._evento("memoria.stats", **self.memoria.estatisticas())
         await self._evento("custo", **self.memoria.custo_hoje())
+
+    # ── Diário do CONDOR ───────────────────────────────────────────────────
+
+    def _anotar(self, tipo: str, texto: str) -> None:
+        if not texto or not bool(getattr(self.memoria, "unlocked", False)):
+            return
+        try:
+            self.memoria.registrar_diario(tipo, sanitizar_para_memoria(texto))
+        except Exception as exc:
+            log.debug("Diário não anotou: %s", exc)
+
+    def _anotar_fala_do_dono(self, texto: str) -> None:
+        """O que o dono disse sobre o CONDOR e os planos com data que ele comentou."""
+        if contem_segredo(texto):
+            return
+        self._anotar("sobre_mim", consciencia.dono_falou_do_condor(texto))
+        self._anotar("plano", consciencia.plano_do_dono(texto))
+
+    def registrar_imagem_do_chat(self, pedido: str, prompt: str, modelo: str) -> None:
+        """Imagem pedida no chat nasce fora do cérebro: entra na conversa e no
+        diário para ele saber que foi ele que gerou ("essa imagem que você fez")."""
+        pedido = sanitizar_para_memoria(str(pedido or prompt).strip())[:800]
+        resposta = f"Gerei a imagem ({modelo}) a partir de: {str(prompt).strip()[:400]}. Ela está no chat e na Galeria."
+        if not pedido:
+            return
+        self._salvar_turno_seguro("user", pedido)
+        self._salvar_turno_seguro("assistant", resposta)
+        self.historico.extend(({"role": "user", "content": pedido},
+                               {"role": "assistant", "content": resposta}))
+        self._podar_historico()
+        self.ultimo_contato = time.time()
+        self._anotar("acao", f"gerei uma imagem: {str(prompt).strip()[:200]}")
 
     def _registrar_exemplo(self, pedido: str, resposta: str, contexto: str,
                            anteriores: list[dict], por_voz: bool, ferramentas: int) -> str:

@@ -1808,6 +1808,11 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 {"erro": "o gerador local de imagem falhou; confira a instalacao local"},
                 status_code=502,
             )
+        # Pedido feito no chat: entra na conversa e no diário, senão o CONDOR
+        # não sabe que foi ele que gerou ("essa imagem que você fez...").
+        pedido = _texto(payload, "pedido", 2000, obrigatorio=False)
+        if pedido:
+            sessao.registrar_imagem_do_chat(pedido, prompt, str(result.get("model") or "local"))
         return {"ok": True, "prompt": prompt, **result}
 
     @app.get("/api/media/images/status")

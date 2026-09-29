@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS conversas (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_ts ON conversas(ts DESC);
 
+-- Diário do próprio CONDOR: o que ele fez, o que o dono disse sobre ele,
+-- as opiniões que ele formou e os planos que o dono comentou. É a memória
+-- dele sobre si mesmo — a de fatos (acima) é sobre o dono.
+CREATE TABLE IF NOT EXISTS diario (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    tipo   TEXT NOT NULL,
+    texto  TEXT NOT NULL,
+    ts     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_diario_tipo_ts ON diario(tipo, ts DESC);
+
 -- Exemplos para treinar o modelo local com o jeito do dono. Cada resposta
 -- real do cérebro vira um exemplo; o dono avalia (👍/👎) e pode corrigir.
 CREATE TABLE IF NOT EXISTS treino_exemplos (
@@ -1636,6 +1647,61 @@ class Memoria:
                 "acoes": n("SELECT COUNT(*) FROM acoes"),
                 # Trocas esperando o extrator: a interface mostra "aprendendo".
                 "aprendendo": n("SELECT COUNT(*) FROM memoria_pendente"),
+            }
+
+    # ── Diário do CONDOR (memória dele sobre si mesmo) ────────────────────
+
+    TIPOS_DIARIO = ("acao", "sobre_mim", "opiniao", "plano")
+
+    def registrar_diario(self, tipo: str, texto: str) -> bool:
+        """Anota no diário. Repetição idêntica recente não vira linha nova."""
+        texto = " ".join(str(texto or "").split())[:400]
+        if tipo not in self.TIPOS_DIARIO or len(texto) < 3 or not self.unlocked:
+            return False
+        agora = time.time()
+        with self._conn() as conn:
+            if conn.execute(
+                "SELECT 1 FROM diario WHERE tipo=? AND texto=? AND ts>?",
+                (tipo, texto, agora - 6 * 3600),
+            ).fetchone():
+                return False
+            conn.execute("INSERT INTO diario(tipo, texto, ts) VALUES(?,?,?)", (tipo, texto, agora))
+            # O diário não cresce sem fim: fica o último ano de cada tipo, até 2.000.
+            conn.execute(
+                "DELETE FROM diario WHERE tipo=? AND id NOT IN "
+                "(SELECT id FROM diario WHERE tipo=? ORDER BY ts DESC LIMIT 2000)",
+                (tipo, tipo),
+            )
+        return True
+
+    def diario(self, tipos: tuple[str, ...] = TIPOS_DIARIO, limite: int = 10,
+               desde: float = 0.0) -> list[dict]:
+        if not self.unlocked:
+            return []
+        tipos = tuple(t for t in tipos if t in self.TIPOS_DIARIO) or self.TIPOS_DIARIO
+        marcas = ",".join("?" * len(tipos))
+        with self._conn(persistir=False) as conn:
+            rows = conn.execute(
+                f"SELECT tipo, texto, ts FROM diario WHERE tipo IN ({marcas}) AND ts>=? "
+                "ORDER BY ts DESC LIMIT ?",
+                (*tipos, float(desde), max(1, min(int(limite), 200))),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def autocontagem(self) -> dict:
+        """Números reais do que o CONDOR guarda, para ele saber de si."""
+        if not self.unlocked:
+            return {}
+        with self._conn(persistir=False) as conn:
+            def n(q: str) -> int:
+                return int(conn.execute(q).fetchone()[0])
+            primeira = conn.execute("SELECT MIN(ts) FROM conversas").fetchone()[0]
+            return {
+                "fatos": n("SELECT COUNT(*) FROM fatos"),
+                "turnos": n("SELECT COUNT(*) FROM conversas"),
+                "imagens": n("SELECT COUNT(*) FROM imagens"),
+                "diario": n("SELECT COUNT(*) FROM diario"),
+                "desde": float(primeira or 0),
             }
 
     def fluxo_recente(self, limite: int = 10) -> list[dict]:

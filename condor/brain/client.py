@@ -27,6 +27,7 @@ from openai import AsyncOpenAI
 from condor.brain import tools as ferramentas
 from condor.brain.anthropic import AnthropicAPIError, AnthropicMessagesClient
 from condor.brain.offline import responder_offline
+from condor.brain.consciencia import autoconhecimento, pergunta_sobre_o_condor
 from condor.brain.persona import montar_prompt, montar_prompt_leve
 from condor.brain.ollama import embeddings_ollama, responder_ollama
 from condor.media import LocalImageGenerator, is_image_request
@@ -268,6 +269,8 @@ class Cerebro:
         # API externa caiu (sem crédito, sem internet, chave inválida): o
         # modelo local assume por alguns minutos e a API é tentada de novo.
         self._reserva_local_ate = 0.0
+        # Planos já lembrados num cumprimento: o Jarvis lembra uma vez, não sempre.
+        self._lembretes_dados: set[str] = set()
         self._falha_externa = False
         self.ultimo_turno_valido = False
         self.ultimo_modelo_embedding = ""
@@ -642,6 +645,19 @@ class Cerebro:
             resposta = polida
         return resposta
 
+    def _lembrete_do_dia(self) -> str:
+        """Um plano que ele comentou nas últimas 36 h e que ainda não foi lembrado."""
+        try:
+            planos = self._memoria.diario(("plano",), limite=3, desde=time.time() - 36 * 3600)
+        except Exception:
+            return ""
+        for plano in planos:
+            if plano["texto"] not in self._lembretes_dados:
+                self._lembretes_dados.add(plano["texto"])
+                # Só a fala dele: a etiqueta do diário ia parar na resposta.
+                return re.sub(r"^Em \d{2}/\d{2} o dono comentou:\s*", "", plano["texto"])
+        return ""
+
     async def _responder_leve(self, historico: list[dict],
                               on_token: Callable[[str], Awaitable[None]] | None) -> str:
         """Cumprimento/agradecimento: prompt mínimo, sem memória, ferramentas nem
@@ -653,11 +669,16 @@ class Cerebro:
                 break
         if not pedido:
             return ""
+        lembrete = self._lembrete_do_dia()
         texto = await self.completar(
-            montar_prompt_leve(self._cfg.nome_dono), pedido,
+            montar_prompt_leve(self._cfg.nome_dono, lembrete), pedido,
             max_tokens=60, temperatura=0.4,
         )
         texto = " ".join(str(texto or "").split()).strip().strip('"')
+        if lembrete and ("o dono" in texto.casefold() or lembrete[:25].casefold() in texto.casefold()):
+            # Colou a anotação em vez de perguntar: fica só o cumprimento.
+            primeira = re.match(r"^.+?[.!?](?=\s|$)", texto)
+            texto = primeira.group(0) if primeira else texto
         if not texto:
             return ""
         if on_token:
@@ -700,6 +721,9 @@ class Cerebro:
             conhecimento_tecnico=self._engineering.context(pedido_atual),
             ferramentas=bool(schemas) or self.provedor != "local",
             instrucao_turno=instrucao_turno,
+            # Quem ele é, o que consegue e o que fez, com dados reais do banco.
+            autoconhecimento=autoconhecimento(
+                self._memoria, completo=pergunta_sobre_o_condor(pedido_atual)),
         )
         if self.provedor == "claude":
             return await self._responder_claude(
