@@ -284,3 +284,18 @@ def tearDownModule():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EditorCodeInTurnTests(unittest.TestCase):
+    """O CONDOR da aba enxerga o código do editor para poder arrumá-lo."""
+
+    def test_hint_carries_current_editor_code(self):
+        hint = instrucao_programacao({"name": "Arduino Uno"}, "void setup() {}\nvoid loop() { piscar(); }")
+        self.assertIn("piscar();", hint)
+        self.assertIn("devolva o sketch inteiro", hint)
+        self.assertNotIn("CÓDIGO QUE ESTÁ NO EDITOR", instrucao_programacao({"name": "Arduino Uno"}, ""))
+
+    def test_project_id_is_validated_before_reaching_the_prompt(self):
+        from condor.server import _alvo_programacao
+        self.assertEqual(_alvo_programacao({"projeto": "condor-x"})["projeto"], "condor-x")
+        self.assertNotIn("projeto", _alvo_programacao({"projeto": "../../vault"}))

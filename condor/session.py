@@ -48,17 +48,29 @@ def chamou_condor(texto: str) -> bool:
 CONTEXTO_PROGRAMACAO = "programacao"
 
 
-def instrucao_programacao(alvo: dict | None = None) -> str:
-    """Pedido feito na aba Programação: um sketch completo, sem prometer upload."""
+def instrucao_programacao(alvo: dict | None = None, codigo_atual: str = "") -> str:
+    """Pedido feito na aba Programação: um sketch completo, sem prometer upload.
+
+    O código que está no editor vai junto: "arruma isso", "faz piscar mais
+    rápido" e "por que não compila" precisam enxergar o que já está escrito.
+    """
     alvo = alvo if isinstance(alvo, dict) else {}
     nome = " ".join(str(alvo.get("name") or "").split())[:80]
     fqbn = " ".join(str(alvo.get("fqbn") or "").split())[:80]
     placa = " · ".join(parte for parte in (nome, fqbn) if parte) or "Arduino (placa ainda não escolhida)"
-    return (
+    instrucao = (
         "Você está na aba Programação. Escreva UM sketch Arduino completo para a placa "
         f"{placa} em um bloco ```cpp, curto explicando o que faz; não diga que enviou "
         "ao Arduino — o dono clica Enviar."
     )
+    codigo = str(codigo_atual or "").strip()
+    if codigo:
+        instrucao += (
+            "\n\nCÓDIGO QUE ESTÁ NO EDITOR AGORA (se o pedido for sobre ele, corrija ou "
+            "altere este código e devolva o sketch inteiro atualizado):\n```cpp\n"
+            f"{codigo[:6000]}\n```"
+        )
+    return instrucao
 
 
 ROOT = Path(__file__).parent.parent
@@ -331,7 +343,10 @@ class Sessao:
                 ferramentas_usadas += 1
             await self._evento(ev.pop("tipo"), **ev)
 
-        extras = {"instrucao_turno": instrucao_programacao(alvo)} if programacao else {}
+        extras = (
+            {"instrucao_turno": instrucao_programacao(alvo, self._codigo_do_editor(alvo))}
+            if programacao else {}
+        )
         try:
             resposta = await self.cerebro.responder(
                 self.historico, memoria_relevante=referencia, modo_voz=por_voz,
@@ -397,6 +412,15 @@ class Sessao:
         except Exception as exc:
             log.warning("Exemplo de treino não registrado: %s", exc)
             return ""
+
+    def _codigo_do_editor(self, alvo: dict | None) -> str:
+        """Lê do cofre o código salvo do projeto aberto (nunca o que o cliente manda)."""
+        projeto = str((alvo or {}).get("projeto") or "condor-x")
+        try:
+            buffer = self.memoria.code_buffer(projeto) if getattr(self.memoria, "unlocked", False) else None
+        except Exception:
+            buffer = None
+        return str((buffer or {}).get("content") or "")
 
     def _salvar_turno_seguro(self, papel: str, conteudo: str) -> None:
         """Não cria a ilusão de persistência quando o cofre já foi bloqueado."""

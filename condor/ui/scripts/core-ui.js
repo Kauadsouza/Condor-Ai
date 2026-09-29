@@ -426,6 +426,7 @@ const CondorCoreUI = (() => {
     if (chatTurn) { chatAdd('note', 'AGUARDE A RESPOSTA ATUAL'); return; }
     chatAdd('user', text); chatTurn = { bubble: null, text: '' };
     const alvo = chosenTarget ? { fqbn: chosenTarget.fqbn, name: chosenTarget.name, port: chosenTarget.port } : {};
+    alvo.projeto = programProjectId;   // o servidor lê o código salvo deste projeto
     CondorWS.enviar({ tipo: 'texto', texto: text, contexto: 'programacao', alvo });
     setOrb('thinking', 'PENSANDO');
   }

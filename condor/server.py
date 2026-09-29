@@ -2461,10 +2461,15 @@ def _alvo_programacao(valor) -> dict:
     """Só texto curto de nome/porta/fqbn chega ao prompt; nada mais do cliente."""
     if not isinstance(valor, dict):
         return {}
-    return {
+    alvo = {
         chave: " ".join(str(valor.get(chave) or "").split())[:120]
         for chave in ("name", "port", "fqbn") if valor.get(chave)
     }
+    # Só o id do projeto: o código em si o servidor lê do próprio cofre.
+    projeto = str(valor.get("projeto") or "")
+    if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", projeto):
+        alvo["projeto"] = projeto
+    return alvo
 
 
 async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
