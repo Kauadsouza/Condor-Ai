@@ -20,6 +20,10 @@
   let wakeLock = null;
   let somLiberado = false;
   let estado = 'dormindo';
+  // Fluxo de conversa: logo depois que ele responde em voz, dá para seguir
+  // falando sem chamar "Condor" de novo.
+  const JANELA_CONVERSA_MS = 10000;
+  let conversaAte = 0;
 
   // ── Telas ───────────────────────────────────────────────────────────────
 
@@ -105,6 +109,7 @@
     socket.onmessage = (evento) => { try { tratar(JSON.parse(evento.data)); } catch (_) { /* ignora */ } };
     socket.onclose = (evento) => {
       socket = null;
+      if (evento.code !== 1000) setTimeout(() => diag(`conexão caiu (${evento.code})`), 1500);
       if (evento.code === 1008) { iniciar(); return; }        // pareamento revogado ou expirado
       tentativas += 1;
       pintarEstado('dormindo', 'RECONECTANDO');
@@ -121,7 +126,16 @@
   function tratar(msg) {
     switch (msg.tipo) {
       case 'estado': pintarEstado(msg.estado); break;
-      case 'conversa.historico': $('mensagens').innerHTML = ''; (msg.mensagens || []).forEach((m) => bolha(m.role === 'user' ? 'eu' : 'condor', m.content)); rolar(); break;
+      case 'conversa.historico': {
+        // Reconectou no meio de uma resposta: redesenha a conversa sem perder a
+        // bolha que ainda está chegando (antes ela sumia da tela).
+        const emAndamento = bolhaAtual;
+        $('mensagens').innerHTML = '';
+        (msg.mensagens || []).forEach((m) => bolha(m.role === 'user' ? 'eu' : 'condor', m.content));
+        if (emAndamento) $('mensagens').appendChild(emAndamento);
+        rolar();
+        break;
+      }
       case 'conversa.limpa': $('mensagens').innerHTML = ''; break;
       case 'transcricao':
         if (msg.digitado && msg.origem === 'celular') break;       // já apareceu quando você enviou
@@ -164,9 +178,11 @@
 
   function pintarEstado(novo, rotulo) {
     estado = novo || estado;
-    const visual = escutaLigada && estado === 'dormindo' ? 'ouvindo' : estado;
+    const livre = escutaLigada && Date.now() < conversaAte && !CondorAudio.estaTocando();
+    const visual = escutaLigada && (estado === 'dormindo' || livre) ? 'ouvindo' : estado;
     $('orbe').dataset.estado = visual;
-    $('estadoTexto').textContent = rotulo || (escutaLigada && estado === 'dormindo' ? 'DIGA "CONDOR"' : ROTULOS[estado] || estado.toUpperCase());
+    const padrao = livre ? 'PODE FALAR' : (escutaLigada && estado === 'dormindo' ? 'DIGA "CONDOR"' : ROTULOS[estado] || estado.toUpperCase());
+    $('estadoTexto').textContent = rotulo || padrao;
   }
 
   $('formCompor').addEventListener('submit', (evento) => {
@@ -197,6 +213,7 @@
   $('toque').addEventListener('click', async () => {
     try { await CondorAudio.ligar(); somLiberado = true; enviar({ tipo: 'voz.player', ativo: true }); } catch (_) { /* tenta no próximo toque */ }
     $('toque').hidden = true;
+    CondorAudio.retomar();                 // voz que o iOS segurou continua de onde parou
     // Abriu o app, um toque e já está ouvindo "Condor", se a escuta estava ligada da última vez.
     if (!escutaLigada && lembrarEscuta()) await ligarEscuta();
   });
@@ -210,9 +227,19 @@
   }
 
   CondorAudio.ouvinte = (wav, meta) => {
-    if (!enviar({ tipo: 'audio', wav, com_nome: meta.comNome })) sistema('Sem conexão com o PC agora.');
-    else if (!meta.comNome) pintarEstado('pensando');
+    // Dentro da janela de conversa não precisa dizer "Condor" de novo.
+    const comNome = meta.comNome && Date.now() >= conversaAte;
+    if (!enviar({ tipo: 'audio', wav, com_nome: comNome })) sistema('Sem conexão com o PC agora.');
+    else if (!comNome) { conversaAte = 0; pintarEstado('pensando'); }
   };
+  CondorAudio.aoFimFala = () => {
+    if (!escutaLigada) return;
+    conversaAte = Date.now() + JANELA_CONVERSA_MS;
+    pintarEstado(estado);
+    setTimeout(() => pintarEstado(estado), JANELA_CONVERSA_MS + 100);
+  };
+  CondorAudio.aoPrecisarToque = () => { $('toque').hidden = false; };
+  CondorAudio.aoErro = (texto) => diag(texto);
   CondorAudio.aoMudarNivel = (nivel, falando) => {
     $('micBotao').style.setProperty('--nivel', String(nivel));
     $('micBotao').classList.toggle('falando', falando);
@@ -283,6 +310,18 @@
       if (escutaLigada) { await manterTelaAcesa(); try { await CondorAudio.ligarEscuta(); } catch (_) { desligarEscuta(); } }
     }
   });
+
+  // Erro no celular vai para o log do PC: sem isto, "falou e sumiu" não
+  // deixava rastro nenhum para descobrir o motivo.
+  const diagsEnviados = new Set();
+  function diag(texto) {
+    const linha = String(texto || '').slice(0, 280);
+    if (!linha || diagsEnviados.has(linha) || diagsEnviados.size > 40) return;
+    diagsEnviados.add(linha);
+    enviar({ tipo: 'diag', texto: linha });
+  }
+  window.addEventListener('error', (evento) => diag(`erro: ${evento.message} @${evento.lineno}`));
+  window.addEventListener('unhandledrejection', (evento) => diag(`promessa: ${evento.reason && (evento.reason.message || evento.reason)}`));
 
   setInterval(() => enviar({ tipo: 'ping' }), 25000);
   iniciar();

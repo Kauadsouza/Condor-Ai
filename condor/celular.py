@@ -657,6 +657,13 @@ def montar_app_celular(aparelhos: Aparelhos, canal: CanalCelular, pontes: Pontes
         if tipo == "ping":
             await _responder(socket, {"tipo": "pong"})
             return
+        if tipo == "diag":
+            # O que deu errado no celular (áudio bloqueado, conexão caiu): fica
+            # no log do PC para dar para descobrir o motivo depois.
+            texto = " ".join(str(msg.get("texto") or "").split())[:280]
+            if texto:
+                log.info("Celular avisou: %s", texto)
+            return
         if tipo == "escuta":
             # Com o celular ouvindo, o microfone do PC fica quieto: senão os
             # dois ouviam o mesmo "Condor" e respondiam em dobro.

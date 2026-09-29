@@ -14,9 +14,15 @@ const CondorAudio = (() => {
   let ouvinte = null;            // callback(wav, meta)
   let modo = 'parado';           // 'parado' | 'frase' (botão) | 'escuta' (contínua)
   let tocando = 0;
-  let fila = [];
+  let fila = [];               // URLs blob dos trechos de voz, na ordem
   let turnoAtual = '';
-  let fonteAtual = null;
+  let tocandoAgora = false;
+  let player = null;           // um <audio> só: o iOS libera uma vez e ele segue tocando
+  let urlAtual = '';
+  let micJaAbriu = false;
+  let aoFimFala = null;
+  let aoPrecisarToque = null;
+  let aoErro = null;
   let mudoAte = 0;
   let inicioFrase = 0;
 
@@ -35,61 +41,95 @@ const CondorAudio = (() => {
     try { if (navigator.audioSession) navigator.audioSession.type = tipo; } catch (_) { /* Safari antigo */ }
   }
 
+  // WAV de 0,05 s em silêncio: tocar isto dentro do toque libera o <audio> no iOS.
+  const SILENCIO = 'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
+
+  function criarPlayer() {
+    if (player) return;
+    player = new Audio();
+    player.setAttribute('playsinline', '');
+    player.preload = 'auto';
+    player.addEventListener('ended', () => tocarProximo());
+    player.addEventListener('error', () => { if (urlAtual) { avisarErro('trecho de voz não tocou'); tocarProximo(); } });
+  }
+
   async function ligar() {
+    // O contexto de áudio fica só para o microfone; a voz toca no <audio>.
     if (!contexto) {
       const Contexto = window.AudioContext || window.webkitAudioContext;
       contexto = new Contexto({ latencyHint: 'interactive' });
     }
-    // "playback" toca mesmo com o iPhone no silencioso.
-    if (!microfone) sessao('playback');
-    if (contexto.state !== 'running') await contexto.resume();
+    // "playback" toca mesmo com o iPhone no silencioso. Depois que o microfone
+    // abriu não troca mais: trocar o modo no meio cortava a voz do CONDOR.
+    if (!micJaAbriu) sessao('playback');
+    criarPlayer();
+    if (!tocandoAgora) {
+      player.src = SILENCIO;
+      try { await player.play(); } catch (_) { /* libera no próximo toque */ }
+    }
+    if (contexto.state !== 'running') { try { await contexto.resume(); } catch (_) { /* segue */ } }
     return contexto;
   }
 
   // ── Voz do CONDOR ─────────────────────────────────────────────────────
 
-  function base64ParaBuffer(b64) {
+  function base64ParaBlob(b64) {
     const binario = atob(b64);
     const bytes = new Uint8Array(binario.length);
     for (let i = 0; i < binario.length; i += 1) bytes[i] = binario.charCodeAt(i);
-    return bytes.buffer;
+    return new Blob([bytes], { type: 'audio/wav' });
   }
 
-  async function receber(msg) {
-    if (!contexto || !msg.wav) return;
+  function receber(msg) {
+    if (!msg.wav) return;
+    criarPlayer();
     if (msg.turno !== turnoAtual) { parar(); turnoAtual = msg.turno; }
-    try {
-      const buffer = await contexto.decodeAudioData(base64ParaBuffer(msg.wav));
-      if (msg.turno !== turnoAtual) return;
-      fila.push(buffer);
-      if (!fonteAtual) tocarProximo();
-    } catch (_) { /* trecho corrompido: segue o próximo */ }
+    fila.push(URL.createObjectURL(base64ParaBlob(msg.wav)));
+    if (!tocandoAgora) tocarProximo();
+  }
+
+  function soltarUrl() {
+    if (urlAtual) { URL.revokeObjectURL(urlAtual); urlAtual = ''; }
   }
 
   function tocarProximo() {
-    const buffer = fila.shift();
-    if (!buffer) { fonteAtual = null; tocando = 0; mudoAte = performance.now() + 500; avisarNivel(); return; }
-    const fonte = contexto.createBufferSource();
-    fonte.buffer = buffer;
-    fonte.connect(contexto.destination);
-    fonte.onended = () => { if (fonteAtual === fonte) tocarProximo(); };
-    fonteAtual = fonte;
-    tocando = 1;
-    avisarNivel();
-    fonte.start();
+    soltarUrl();
+    const url = fila.shift();
+    if (!url) {
+      const tocava = tocandoAgora;
+      tocandoAgora = false; tocando = 0; mudoAte = performance.now() + 500; avisarNivel();
+      if (tocava && aoFimFala) aoFimFala();
+      return;
+    }
+    urlAtual = url;
+    tocandoAgora = true; tocando = 1; avisarNivel();
+    player.src = url;
+    player.play().catch((erro) => {
+      // Bloqueado pelo iOS (voltou do segundo plano, por exemplo): guarda o
+      // trecho e pede um toque para seguir de onde parou.
+      fila.unshift(url); urlAtual = '';
+      tocandoAgora = false; tocando = 0;
+      avisarErro(`voz bloqueada: ${erro && erro.name}`);
+      if (aoPrecisarToque) aoPrecisarToque();
+    });
   }
 
+  function retomar() { if (!tocandoAgora && fila.length) tocarProximo(); }
+
   function parar() {
+    fila.forEach((url) => URL.revokeObjectURL(url));
     fila = [];
-    const fonte = fonteAtual;
-    fonteAtual = null;
+    if (player) { try { player.pause(); } catch (_) { /* ok */ } player.removeAttribute('src'); }
+    soltarUrl();
+    tocandoAgora = false;
     tocando = 0;
-    if (fonte) { try { fonte.stop(); } catch (_) { /* já parou */ } }
     mudoAte = performance.now() + 300;
     avisarNivel();
   }
 
-  const estaTocando = () => Boolean(fonteAtual);
+  function avisarErro(texto) { if (aoErro) aoErro(texto); }
+
+  const estaTocando = () => tocandoAgora;
 
   // ── Microfone ─────────────────────────────────────────────────────────
 
@@ -99,6 +139,7 @@ const CondorAudio = (() => {
     if (microfone) fecharMicrofone();
     await ligar();
     sessao('play-and-record');
+    micJaAbriu = true;
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
@@ -120,7 +161,6 @@ const CondorAudio = (() => {
     microfone.stream.getTracks().forEach((faixa) => faixa.stop());
     try { microfone.fonte.disconnect(); microfone.no.disconnect(); microfone.mudo.disconnect(); } catch (_) { /* ok */ }
     microfone = null;
-    sessao('playback');
   }
 
   function reiniciarFrase() {
@@ -132,7 +172,7 @@ const CondorAudio = (() => {
     limiteDaFrase();
     if (modo === 'parado') return;
     // Enquanto o CONDOR fala, não escuta (a própria voz dispararia a escuta).
-    if (modo === 'escuta' && (fonteAtual || performance.now() < mudoAte)) { reiniciarFrase(); return; }
+    if (modo === 'escuta' && (tocandoAgora || performance.now() < mudoAte)) { reiniciarFrase(); return; }
     const ms = (amostras.length / contexto.sampleRate) * 1000;
     let soma = 0;
     for (let i = 0; i < amostras.length; i += 1) soma += amostras[i] * amostras[i];
@@ -240,12 +280,15 @@ const CondorAudio = (() => {
   }
 
   return {
-    ligar, receber, parar, ativo: () => Boolean(contexto && contexto.state === 'running'), estaTocando, ouvirFrase, cancelarFrase, ligarEscuta, desligarEscuta,
+    ligar, receber, parar, retomar, ativo: () => Boolean(contexto && contexto.state === 'running'), estaTocando, ouvirFrase, cancelarFrase, ligarEscuta, desligarEscuta,
     paraWav,
     get modo() { return modo; },
     set ouvinte(fn) { ouvinte = fn; },
     set aoMudarNivel(fn) { aoMudarNivel = fn; },
     set aoFimFrase(fn) { aoFimFrase = fn; },
+    set aoFimFala(fn) { aoFimFala = fn; },
+    set aoPrecisarToque(fn) { aoPrecisarToque = fn; },
+    set aoErro(fn) { aoErro = fn; },
     get tocando() { return tocando; },
   };
 })();
