@@ -1,6 +1,5 @@
 """Consciência do CONDOR: ele sabe que tem memória, o que consegue fazer e o que
 fez — com dados reais do banco, não com o que um modelo genérico diria."""
-import asyncio
 import os
 from pathlib import Path
 import sys
@@ -54,6 +53,25 @@ class DiarioTests(Base):
         self.assertFalse(self.memoria.registrar_diario("acao", "abri o spotify"))
         self.assertEqual(self.memoria.diario(), [])
         self.memoria.unlock(self.chave)
+
+
+class LimpezaTabelasAntigasTests(Base):
+    def test_old_system_tables_go_away_and_real_memory_stays(self):
+        with self.memoria._conn() as conn:
+            conn.execute("CREATE TABLE hub_notes (id TEXT)")
+            conn.execute("INSERT INTO hub_notes VALUES ('nota antiga do hub')")
+            conn.execute("CREATE TABLE memory_episodes (id TEXT)")
+        self.memoria.salvar_fato("pessoal", "nome", "O dono se chama Kauã")
+        self.memoria.salvar_turno("user", "oi")
+        self.memoria.registrar_diario("acao", "gerei uma imagem: gato")
+        self.memoria.lock()
+        self.memoria.unlock(self.chave)
+        with self.memoria._conn(persistir=False) as conn:
+            tabelas = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertFalse({"hub_notes", "memory_episodes"} & tabelas)
+        self.assertEqual(self.memoria.autocontagem()["fatos"], 1)
+        self.assertEqual(self.memoria.historico(5)[0]["content"], "oi")
+        self.assertEqual(len(self.memoria.diario()), 1)
 
 
 class DetectoresTests(unittest.TestCase):

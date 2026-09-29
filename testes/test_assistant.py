@@ -1,5 +1,4 @@
 """Behavior and security checks for the conversational desktop experience."""
-import asyncio
 import json
 import os
 from pathlib import Path

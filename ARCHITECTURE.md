@@ -50,9 +50,7 @@ Condor Core Identity v1        <- estavel, versionada, nao editavel pelo modelo
        |
 Memoria local cifrada          <- Owner / Project / conversas recentes
        |
-World State + Episodes         <- fonte / confianca / validade / historico
-       |
-Durable Task Engine            <- checkpoints e retomada apos reinicio
+Consciencia (QUEM EU SOU)      <- capacidades reais + diario do CONDOR
        |
 Context Builder                <- somente contexto relevante e sem segredos
        |
@@ -244,7 +242,7 @@ portateis de Python e formatos abertos.
 8. concluido: CX-M01 Design Studio com Concept A, asas relativas, pose, A/B/C abstratos e estado cifrado compartilhado;
 9. concluido: Propulsion Placement Lab abstrato L1/L2, layouts cifrados, falhas e M01;
 10. futuro: importacao de CFD, FEA e dados experimentais com origem verificavel;
-11. futuro: segundo equipamento Condor em hardware proprio via WireGuard;
+11. concluido: CONDOR no iPhone pelo Tailscale (CONDOR_CELULAR.md);
 12. futuro: sincronizacao cifrada ponta a ponta entre identidades autorizadas;
 13. regra permanente: modulos fisicos apenas inertes e seguros. O projeto nao inclui dispositivo
    vestivel com chama, gas pressurizado ou agente incendiario.

@@ -36,22 +36,17 @@ from condor.core import (
     AIGateway,
     CondorOrchestrator,
     ContextEngine,
-    DeviceMesh,
-    DurableTaskEngine,
     EventBus,
     ProjectEngine,
-    WorldStateLedger,
 )
-from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge, GestureEngine, GesturePCControl
-from condor.development import ArduinoToolchain, detect_language, human_model_contract
+from condor.devices import ActionSafetyLayer, DeviceBridge, GestureEngine, GesturePCControl
+from condor.development import ArduinoToolchain, detect_language
 from condor.engine import PropulsionLabEngine
 from condor.engine.contracts import CANDIDATE_ZONES, MODEL_LEVEL, PROPULSION_GROUPS
 from condor.memory.db import Memoria
 from condor.memory.extractor import (
-    CATEGORIAS_VALIDAS,
     Extrator,
     contem_segredo,
-    normalizar_chave,
     sanitizar_para_memoria,
 )
 from condor.memory.recall import Recall
@@ -222,16 +217,12 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     recall.ligar_cerebro(cerebro)
     extrator = Extrator(memoria, cerebro, config, event_bus)
     project_engine = ProjectEngine(memoria, context_engine, event_bus)
-    world_state = WorldStateLedger(memoria, event_bus)
-    task_engine = DurableTaskEngine(memoria, event_bus)
-    device_mesh = DeviceMesh(memoria, event_bus)
     propulsion_lab = PropulsionLabEngine()
     safety_layer = ActionSafetyLayer()
     device_bridge = DeviceBridge(memoria, event_bus, safety_layer)
     gesture_engine = GestureEngine()
     gesture_pc = GesturePCControl()
     arduino_toolchain = ArduinoToolchain()
-    camera_bridge = CameraBridge(memoria, event_bus, provider._visao)
     orchestrator = CondorOrchestrator(
         memoria, context_engine, event_bus, project_engine, device_bridge
     )
@@ -294,13 +285,9 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     app.state.context_engine = context_engine
     app.state.ai_gateway = cerebro
     app.state.project_engine = project_engine
-    app.state.world_state = world_state
-    app.state.task_engine = task_engine
-    app.state.device_mesh = device_mesh
     app.state.device_bridge = device_bridge
     app.state.gesture_engine = gesture_engine
     app.state.gesture_pc = gesture_pc
-    app.state.camera_bridge = camera_bridge
     app.state.face_guard = face_guard
     app.state.orchestrator = orchestrator
     app.state.canal_celular = canal_celular
@@ -880,12 +867,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         )
         return {"ok": True, "removidas": removidas}
 
-    @app.get("/api/memoria/grafo")
-    async def api_grafo():
-        if response := _memoria_pronta():
-            return response
-        return {**memoria.grafo(), "estatisticas": memoria.estatisticas()}
-
     @app.get("/api/memoria/mapa")
     async def api_mapa_memoria():
         if response := _memoria_pronta():
@@ -903,54 +884,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if response := _memoria_pronta():
             return response
         return {"fatos": memoria.fatos_recentes(limite, categoria)}
-
-    @app.post("/api/memoria/perfil")
-    async def api_importar_perfil(payload: dict):
-        """Importa fatos explicitos do Owner em lote e confirma o estado gravado."""
-        if response := _memoria_pronta():
-            return response
-        raw_facts = payload.get("facts")
-        if not isinstance(raw_facts, list) or not raw_facts:
-            return JSONResponse({"erro": "facts deve ser uma lista nao vazia"}, status_code=400)
-        facts: list[dict] = []
-        for item in raw_facts[:100]:
-            if not isinstance(item, dict):
-                continue
-            category = str(item.get("categoria") or "pessoal").lower()
-            key = normalizar_chave(str(item.get("chave") or ""))
-            value = str(item.get("valor") or "").strip()
-            if category not in CATEGORIAS_VALIDAS or not key or len(value) < 4:
-                continue
-            if contem_segredo(value):
-                return JSONResponse(
-                    {"erro": f"conteudo sensivel recusado em {key}"}, status_code=400
-                )
-            try:
-                confidence = max(0.0, min(1.0, float(item.get("confianca", 1.0))))
-            except (TypeError, ValueError):
-                confidence = 1.0
-            facts.append({
-                "categoria": category,
-                "chave": key,
-                "valor": value[:2000],
-                "confianca": confidence,
-                "origem": "perfil_owner_confirmado",
-            })
-        if not facts:
-            return JSONResponse({"erro": "nenhum fato valido recebido"}, status_code=400)
-        confirmed = memoria.salvar_fatos_lote(facts, "perfil_owner_confirmado")
-        await event_bus.publish(
-            "MEMORY_PROFILE_IMPORTED",
-            {"facts": len(confirmed), "stats": memoria.estatisticas()},
-            source="owner_profile",
-        )
-        return {
-            "ok": len(confirmed) == len(facts),
-            "received": len(facts),
-            "verified": len(confirmed),
-            "keys": [item["chave"] for item in confirmed],
-            "stats": memoria.estatisticas(),
-        }
 
     @app.delete("/api/memoria/fatos/{fato_id}")
     async def api_esquecer(fato_id: int):
@@ -996,144 +929,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 "cloud_required": False,
                 "external_connectors_optional": True,
             },
-            "durable_tasks": (
-                {"resumable": len(task_engine.resumable())} if memoria.unlocked
-                else {"locked": True}
-            ),
-            "device_mesh": (
-                device_mesh.status() if memoria.unlocked else {"locked": True}
-            ),
             "gesture": gesture_engine.status(),
-            "wearable": "not_connected",
             "permissions": permissions,
             "permission_requests": permission_requests,
         }
-
-    @app.get("/api/core/world")
-    async def api_world_state(limite: int = 100, incluir_antigas: bool = False):
-        if response := _memoria_pronta():
-            return response
-        return world_state.snapshot(
-            limit=max(1, min(limite, 250)), include_outdated=incluir_antigas
-        )
-
-    @app.post("/api/core/world/episodes")
-    async def api_world_episode(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            return {"episode": await world_state.remember_episode(payload)}
-        except (TypeError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-
-    @app.post("/api/core/world/beliefs")
-    async def api_world_belief(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            return {"belief": await world_state.assert_belief(payload)}
-        except (TypeError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-
-    @app.get("/api/core/tasks")
-    async def api_durable_tasks(status: str | None = None, limite: int = 100):
-        if response := _memoria_pronta():
-            return response
-        if status and status not in DurableTaskEngine.STATUS:
-            return JSONResponse({"erro": "status de tarefa inválido"}, status_code=400)
-        return {"tasks": memoria.list_durable_tasks(limite, status)}
-
-    @app.post("/api/core/tasks")
-    async def api_durable_task_create(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            return {"task": await task_engine.create(payload)}
-        except (TypeError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-
-    @app.get("/api/core/tasks/{task_id}")
-    async def api_durable_task_detail(task_id: str):
-        if response := _memoria_pronta():
-            return response
-        task = memoria.durable_task(task_id[:80])
-        if task is None:
-            return JSONResponse({"erro": "tarefa não encontrada"}, status_code=404)
-        return {"task": task}
-
-    @app.patch("/api/core/tasks/{task_id}")
-    async def api_durable_task_update(task_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            return {
-                "task": await task_engine.transition(
-                    task_id[:80], _texto(payload, "status", 24)
-                )
-            }
-        except KeyError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=404)
-        except (TypeError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-
-    @app.post("/api/core/tasks/{task_id}/checkpoints")
-    async def api_durable_task_checkpoint(task_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            return {"checkpoint": await task_engine.checkpoint(task_id[:80], payload)}
-        except KeyError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=404)
-        except (TypeError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-
-    @app.get("/api/core/device-mesh")
-    async def api_device_mesh_status():
-        if response := _memoria_pronta():
-            return response
-        return device_mesh.status()
-
-    @app.post("/api/core/device-mesh/register")
-    async def api_device_mesh_register(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            return {"device": await device_mesh.register(payload)}
-        except (TypeError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-
-    @app.post("/api/core/device-mesh/{device_id}/trust")
-    async def api_device_mesh_trust(device_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            return {
-                "device": await device_mesh.set_trust(
-                    device_id[:80], _texto(payload, "state", 24)
-                )
-            }
-        except KeyError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=404)
-        except (TypeError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-
-    @app.get("/api/context")
-    async def api_context_get():
-        return {"context": context_engine.snapshot()}
-
-    @app.get("/api/human-model")
-    async def api_human_model():
-        return human_model_contract()
-
-    @app.patch("/api/context")
-    async def api_context_update(payload: dict):
-        allowed = ContextEngine.FIELDS - {"updated_at"}
-        changes = {key: value for key, value in payload.items() if key in allowed}
-        if set(payload) - allowed:
-            return JSONResponse({"erro": "campo de contexto inválido"}, status_code=400)
-        context = context_engine.update(**changes)
-        await event_bus.publish("CONTEXT_UPDATED", {"changes": changes}, source="api", project_id=context.get("project_id"))
-        return {"context": context}
 
     @app.get("/api/projects/{project_id}")
     async def api_project_snapshot(project_id: str):
@@ -1262,12 +1061,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             context_engine.update(device_id=None, device_name=None, connection_state="disconnected")
         return {**result, "context": context_engine.snapshot()}
 
-    @app.post("/api/devices/{device_id}/commands/plan")
-    async def api_device_command_plan(device_id: str, payload: dict):
-        if response := _memoria_pronta():
-            return response
-        return await device_bridge.plan_command(device_id[:80], payload)
-
     @app.post("/api/devices/commands/route")
     async def api_device_command_route(payload: dict):
         if response := _memoria_pronta():
@@ -1336,20 +1129,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return {"buffer": buffer, "detected": detected, "context": context}
         except ValueError as exc:
             return JSONResponse({"erro": str(exc)}, status_code=400)
-
-    @app.get("/api/programming/arduino/status")
-    async def api_programming_arduino_status():
-        detection, toolchain = await asyncio.gather(
-            arduino_toolchain.detect_boards(), arduino_toolchain.status()
-        )
-        return {**toolchain, **detection}
-
-    @app.get("/api/programming/auto-target")
-    async def api_programming_auto_target():
-        try:
-            return {"available": True, "target": await arduino_toolchain.automatic_target()}
-        except (ValueError, RuntimeError) as exc:
-            return {"available": False, "target": None, "reason": str(exc)}
 
     @app.post("/api/programming/auto-run")
     async def api_programming_auto_run(payload: dict):
@@ -1606,38 +1385,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         except ValueError as exc:
             return JSONResponse({"erro": str(exc)}, status_code=400)
 
-    @app.get("/api/cameras")
-    async def api_cameras():
-        return {
-            "bridge": "disabled_by_owner",
-            "camera_policy": "biometric_authentication_only",
-            "sources": [],
-        }
-
-    @app.post("/api/cameras")
-    async def api_camera_create(payload: dict):
-        return JSONResponse(
-            {"erro": "cameras desativadas fora da biometria facial"}, status_code=403
-        )
-
-    @app.post("/api/cameras/{camera_id}/events")
-    async def api_camera_event(camera_id: str, payload: dict):
-        return JSONResponse(
-            {"erro": "cameras desativadas fora da biometria facial"}, status_code=403
-        )
-
-    @app.post("/api/cameras/{camera_id}/frame")
-    async def api_camera_frame(camera_id: str, payload: dict):
-        return JSONResponse(
-            {"erro": "cameras desativadas fora da biometria facial"}, status_code=403
-        )
-
-    @app.get("/api/alerts")
-    async def api_alerts(limite: int = 50):
-        if response := _memoria_pronta():
-            return response
-        return {"alerts": memoria.security_alerts(limite)}
-
     @app.get("/api/permissions")
     async def api_permissions():
         if response := _memoria_pronta():
@@ -1756,21 +1503,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             source="local_image",
             transient={"image": item},
         )
-        await world_state.remember_episode({
-            "kind": "created_image",
-            "summary": (
-                sanitizar_para_memoria(prompt)[:4000] or "imagem gerada localmente"
-            ),
-            "source": "local_image",
-            "confidence": 1.0,
-            "metadata": {
-                "model": result["model"],
-                "width": result["width"],
-                "height": result["height"],
-                "image_id": item["id"],
-                "stored_bitmap": "encrypted_gallery",
-            },
-        })
         return {**result, "image": item}
 
     orchestrator.ligar_imagem(gerar_e_guardar)
@@ -1815,10 +1547,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if pedido:
             sessao.registrar_imagem_do_chat(pedido, prompt, str(result.get("model") or "local"))
         return {"ok": True, "prompt": prompt, **result}
-
-    @app.get("/api/media/images/status")
-    async def api_image_status():
-        return cerebro.image_generator_state
 
     # ── Trava de presenca facial local ───────────────────────────────────
 
@@ -2037,16 +1765,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         await event_bus.publish("FACE_GUARD_PROFILE_REMOVED", {}, source="security")
         return {"ok": True, "status": face_guard.status()}
 
-    @app.get("/api/biometrics")
-    async def api_biometrics():
-        permission = next((item for item in memoria.permissions() if item["capability"] == "health_data"), None) if memoria.unlocked else None
-        return {
-            "connected": False,
-            "authorized": bool(permission and permission["allowed"]),
-            "readings": [],
-            "medical_diagnosis": False,
-        }
-
     @app.get("/api/condor-x/regions/{regiao}/items")
     async def api_condor_x_region_items(regiao: str):
         if response := _memoria_pronta():
@@ -2208,12 +1926,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         except (TypeError, ValueError) as exc:
             return JSONResponse({"erro": str(exc)}, status_code=400)
 
-    @app.get("/api/condor-x/propulsion/runs")
-    async def api_condor_x_propulsion_runs(layout_id: str | None = None, limit: int = 25):
-        if response := _memoria_pronta():
-            return response
-        return {"runs": memoria.condor_x_propulsion_runs(layout_id[:80] if layout_id else None, limit)}
-
     @app.post("/api/voice/transcribe")
     async def api_voice_transcribe(request: Request, dispatch: bool = True):
         """Push-to-talk local; áudio bruto nunca sai do loopback deste PC."""
@@ -2267,10 +1979,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if not audio:
             return JSONResponse({"erro": "voz local indisponivel; confira o modelo Piper"}, status_code=503)
         return Response(audio, media_type="audio/wav")
-
-    @app.get("/api/acoes")
-    async def api_acoes(limite: int = 40):
-        return {"acoes": memoria.acoes_recentes(limite)}
 
     @app.get("/api/saude")
     async def api_saude():
@@ -2329,11 +2037,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "connector_issues": connector_issues,
             "sistema": sistema["saida"],
         }
-
-    @app.post("/api/dormir")
-    async def api_dormir():
-        await sessao.dormir("pedido pela interface")
-        return {"ok": True}
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):

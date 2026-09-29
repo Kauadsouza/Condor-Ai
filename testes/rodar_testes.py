@@ -56,11 +56,10 @@ from condor.actions import executor
 from condor.actions.guard import Guarda
 from condor.config import Config, salvar_config
 from condor.core import (
-    AIGateway, CondorOrchestrator, ContextEngine, DeviceMesh,
-    DurableTaskEngine, EventBus, ProjectEngine, WorldStateLedger,
+    AIGateway, CondorOrchestrator, ContextEngine, EventBus, ProjectEngine,
 )
-from condor.development import ArduinoToolchain, detect_language, human_model_contract
-from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge
+from condor.development import ArduinoToolchain, detect_language
+from condor.devices import ActionSafetyLayer, DeviceBridge
 from condor.devices.bridge import SerialPort
 from condor.engine import PropulsionLabEngine
 from condor.engine.contracts import CANDIDATE_ZONES, normalize_layout
@@ -1740,59 +1739,6 @@ class LocalMindTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CondorCoreTests(unittest.IsolatedAsyncioTestCase):
-    async def test_local_brain_keeps_temporal_world_tasks_and_safe_device_mesh(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "central-brain.enc"
-            key = os.urandom(32)
-            memory = Memoria(path); memory.inicializar(); memory.unlock(key)
-            events = EventBus(memory)
-            world = WorldStateLedger(memory, events)
-            tasks = DurableTaskEngine(memory, events)
-            mesh = DeviceMesh(memory, events)
-
-            episode = await world.remember_episode({
-                "kind": "decision", "summary": "Geração de imagem deve ser local",
-                "source": "owner", "confidence": 1.0,
-            })
-            self.assertEqual(episode["kind"], "decision")
-            old = await world.assert_belief({
-                "subject": "condor", "predicate": "image_provider",
-                "value": "external", "source": "legacy", "confidence": 0.5,
-            })
-            current = await world.assert_belief({
-                "subject": "condor", "predicate": "image_provider",
-                "value": "local", "source": "owner", "confidence": 1.0,
-            })
-            self.assertEqual(current["supersedes_id"], old["id"])
-            versions = memory.list_beliefs(include_outdated=True)
-            self.assertEqual({item["status"] for item in versions}, {"confirmed", "outdated"})
-
-            task = await tasks.create({
-                "title": "Validar geração local", "objective": "Criar PNG sem rede",
-                "priority": 90,
-            })
-            await tasks.transition(task["id"], "running")
-            await tasks.checkpoint(task["id"], {
-                "step": "modelo instalado", "status": "completed", "evidence": ["sha256"],
-            })
-            self.assertEqual(memory.durable_task(task["id"])["checkpoints"][0]["status"], "completed")
-            self.assertEqual(tasks.resumable()[0]["id"], task["id"])
-
-            device = await mesh.register({
-                "name": "Telefone do Owner", "kind": "phone",
-                "public_key": "A" * 64, "capabilities": ["chat", "capture", "status"],
-            })
-            self.assertEqual(device["trust_state"], "pending")
-            with self.assertRaisesRegex(ValueError, "insegura"):
-                await mesh.register({
-                    "name": "Inseguro", "kind": "phone", "public_key": "B" * 64,
-                    "capabilities": ["shell"],
-                })
-            memory.lock()
-            encrypted = path.read_text("utf-8")
-            self.assertNotIn("Geração de imagem deve ser local", encrypted)
-            reopened = Memoria(path); reopened.inicializar(); reopened.unlock(key)
-            self.assertEqual(reopened.durable_task(task["id"])["status"], "running")
 
     async def test_image_intent_and_generator_are_local_only(self):
         self.assertTrue(is_image_request("Condor, cria uma img de um pássaro verde"))
@@ -1948,35 +1894,6 @@ class CondorCoreTests(unittest.IsolatedAsyncioTestCase):
                 "value": "A API key secreta e sk-1234567890abcdefghijkl.", "confidence": 1,
             })
             self.assertFalse(blocked_secret["ok"])
-
-    async def test_camera_bridge_keeps_endpoint_private_and_emits_local_alert(self):
-        class Vision:
-            async def analisar(self, image_b64, pedido):
-                self.received = (image_b64, pedido)
-                return '{"person_present":true,"confidence":0.91,"summary":"pessoa"}'
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "camera-memory.enc"
-            memory = Memoria(path)
-            memory.inicializar()
-            memory.unlock(os.urandom(32))
-            bus = EventBus(memory)
-            received = []
-            bus.subscribe("SECURITY_ALERT", lambda event: received.append(event))
-            bridge = CameraBridge(memory, bus, Vision())
-            camera = await bridge.add_source(
-                "Entrada", "rtsp", "rtsp://usuario:senha@192.168.1.20/stream", "Porta"
-            )
-            self.assertNotIn("endpoint", camera)
-            result = await bridge.analyze_frame(camera["id"], "aW1hZ2Vt")
-            self.assertTrue(result["person_present"])
-            self.assertFalse(result["stored_frame"])
-            self.assertEqual(len(received), 1)
-            self.assertIn("Confirme a imagem", result["alert"]["summary"])
-            memory.lock()
-            encrypted = path.read_text("utf-8")
-            self.assertNotIn("usuario:senha", encrypted)
-            self.assertNotIn("192.168.1.20", encrypted)
 
     async def test_device_scan_never_executes_serial_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2208,16 +2125,6 @@ class CondorCoreTests(unittest.IsolatedAsyncioTestCase):
         decision = ActionSafetyLayer().evaluate({"risk_level": 4, "command": "move actuator"})
         self.assertFalse(decision.allowed)
         self.assertTrue(decision.requires_confirmation)
-
-    def test_human_model_has_layers_joints_and_individual_fingers(self):
-        model = human_model_contract()
-        self.assertEqual(model["default_layer"], "silhouette")
-        self.assertEqual(len(model["layers"]), 6)
-        fingers = model["hands"]["right"]["digits"]
-        self.assertEqual([finger["id"] for finger in fingers], ["thumb", "index", "middle", "ring", "little"])
-        self.assertEqual(len(fingers[1]["bones"]), 3)
-        self.assertIn("wrist", model["joint_movements"])
-
 
 class PropulsionLabTests(unittest.TestCase):
     @staticmethod

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
 import platform
 import sys
 import urllib.request
-from pathlib import Path
 
 from condor.config import carregar_config
 from condor.media.local_image import LocalImageGenerator

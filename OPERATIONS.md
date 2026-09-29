@@ -53,6 +53,5 @@ Esse fluxo restaura o programa e os modelos, mas cria um estado privado vazio.
 Para manter memoria e configuracoes antigas, transporte `~/.condor` somente por
 um meio cifrado e nunca inclua essa pasta no repositorio.
 
-Nao abra as portas 7777 ou 11434 no roteador. WireGuard somente sera ativado
-quando existir outro equipamento proprio e houver autorizacao para gerar as
-chaves nesse equipamento.
+Nao abra as portas 7777 ou 11434 no roteador. O acesso pelo celular passa pelo
+Tailscale (rede privada da conta do dono); veja CONDOR_CELULAR.md.

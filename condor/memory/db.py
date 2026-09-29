@@ -344,83 +344,6 @@ CREATE TABLE IF NOT EXISTS core_events (
 );
 CREATE INDEX IF NOT EXISTS idx_core_events_time ON core_events(timestamp DESC);
 
-CREATE TABLE IF NOT EXISTS memory_episodes (
-    id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    source TEXT NOT NULL,
-    project_id TEXT,
-    device_id TEXT,
-    confidence REAL NOT NULL DEFAULT 1.0,
-    occurred_at REAL NOT NULL,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_memory_episodes_time
-ON memory_episodes(occurred_at DESC);
-CREATE INDEX IF NOT EXISTS idx_memory_episodes_project
-ON memory_episodes(project_id, occurred_at DESC);
-
-CREATE TABLE IF NOT EXISTS world_beliefs (
-    id TEXT PRIMARY KEY,
-    subject TEXT NOT NULL,
-    predicate TEXT NOT NULL,
-    value TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'confirmed',
-    confidence REAL NOT NULL DEFAULT 1.0,
-    source TEXT NOT NULL,
-    valid_from REAL NOT NULL,
-    valid_until REAL,
-    supersedes_id TEXT REFERENCES world_beliefs(id) ON DELETE SET NULL,
-    evidence_json TEXT NOT NULL DEFAULT '[]',
-    created REAL NOT NULL,
-    updated REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_world_beliefs_active
-ON world_beliefs(subject, predicate, status, updated DESC);
-
-CREATE TABLE IF NOT EXISTS durable_tasks (
-    id TEXT PRIMARY KEY,
-    project_id TEXT,
-    title TEXT NOT NULL,
-    objective TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    priority INTEGER NOT NULL DEFAULT 50,
-    source TEXT NOT NULL DEFAULT 'owner',
-    due_at REAL,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created REAL NOT NULL,
-    updated REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_durable_tasks_status
-ON durable_tasks(status, priority DESC, updated DESC);
-
-CREATE TABLE IF NOT EXISTS task_checkpoints (
-    id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL REFERENCES durable_tasks(id) ON DELETE CASCADE,
-    step TEXT NOT NULL,
-    status TEXT NOT NULL,
-    summary TEXT NOT NULL DEFAULT '',
-    evidence_json TEXT NOT NULL DEFAULT '[]',
-    created REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_task_checkpoints_task
-ON task_checkpoints(task_id, created ASC);
-
-CREATE TABLE IF NOT EXISTS device_identities (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    public_key TEXT NOT NULL UNIQUE,
-    trust_state TEXT NOT NULL DEFAULT 'pending',
-    capabilities_json TEXT NOT NULL DEFAULT '[]',
-    created REAL NOT NULL,
-    last_seen REAL,
-    updated REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_device_identities_trust
-ON device_identities(trust_state, updated DESC);
-
 CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -488,29 +411,6 @@ CREATE TABLE IF NOT EXISTS face_identity_profile (
     created REAL NOT NULL,
     updated REAL NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS camera_sources (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    protocol TEXT NOT NULL,
-    endpoint TEXT NOT NULL,
-    zone TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'configured',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created REAL NOT NULL,
-    updated REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS security_alerts (
-    id TEXT PRIMARY KEY,
-    camera_id TEXT REFERENCES camera_sources(id) ON DELETE SET NULL,
-    event_type TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    confidence REAL,
-    acknowledged INTEGER NOT NULL DEFAULT 0,
-    created REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_security_alerts_time ON security_alerts(created DESC);
 
 """
 
@@ -683,9 +583,21 @@ class Memoria:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
+    # Tabelas de sistemas que saíram do CONDOR (ARTX Hub, nuvem Vercel/Supabase,
+    # estado do mundo, tarefas duráveis, malha de dispositivos e câmera RTSP).
+    # Nada mais lê nem escreve nelas; a ordem respeita as chaves estrangeiras.
+    TABELAS_ANTIGAS = (
+        "hub_tasks", "hub_missions", "hub_notes", "hub_projects",
+        "cloud_sync_map", "cloud_notes",
+        "task_checkpoints", "durable_tasks", "world_beliefs", "memory_episodes",
+        "device_identities", "security_alerts", "camera_sources",
+    )
+
     def inicializar(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            for tabela in self.TABELAS_ANTIGAS:
+                conn.execute(f"DROP TABLE IF EXISTS {tabela}")
             permission_columns = {
                 str(row["name"]) for row in conn.execute("PRAGMA table_info(permissions)")
             }
@@ -1724,232 +1636,6 @@ class Memoria:
             item[field.removesuffix("_json")] = fallback
         return item
 
-    def record_episode(
-        self, kind: str, summary: str, source: str, *,
-        project_id: str | None = None, device_id: str | None = None,
-        confidence: float = 1.0, occurred_at: float | None = None,
-        metadata: dict | None = None,
-    ) -> dict:
-        now = time.time()
-        item_id = self._id("episode")
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO memory_episodes
-                   (id,kind,summary,source,project_id,device_id,confidence,
-                    occurred_at,metadata_json,created)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                (item_id, kind, summary, source, project_id, device_id,
-                 confidence, occurred_at or now,
-                 json.dumps(metadata or {}, ensure_ascii=False), now),
-            )
-            row = conn.execute(
-                "SELECT * FROM memory_episodes WHERE id=?", (item_id,)
-            ).fetchone()
-        return self._json_field(row, "metadata_json", {})
-
-    def list_episodes(
-        self, limit: int = 50, *, project_id: str | None = None,
-        kind: str | None = None,
-    ) -> list[dict]:
-        clauses: list[str] = []
-        params: list = []
-        if project_id:
-            clauses.append("project_id=?")
-            params.append(project_id)
-        if kind:
-            clauses.append("kind=?")
-            params.append(kind)
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(max(1, min(int(limit), 250)))
-        with self._conn() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM memory_episodes{where} "
-                "ORDER BY occurred_at DESC LIMIT ?", tuple(params)
-            ).fetchall()
-        return [self._json_field(row, "metadata_json", {}) for row in rows]
-
-    def save_belief(
-        self, subject: str, predicate: str, value: str, *, source: str,
-        status: str = "confirmed", confidence: float = 1.0,
-        evidence: list | None = None, valid_from: float | None = None,
-        valid_until: float | None = None,
-    ) -> dict:
-        """Registra uma versão; uma mudança nunca apaga a crença anterior."""
-        now = time.time()
-        evidence_json = json.dumps(evidence or [], ensure_ascii=False)
-        with self._conn() as conn:
-            previous = conn.execute(
-                """SELECT * FROM world_beliefs
-                   WHERE subject=? AND predicate=?
-                     AND status IN ('confirmed','inferred','conflicted')
-                   ORDER BY updated DESC LIMIT 1""",
-                (subject, predicate),
-            ).fetchone()
-            if previous is not None and previous["value"] == value:
-                conn.execute(
-                    """UPDATE world_beliefs SET status=?, confidence=?, source=?,
-                       valid_until=?, evidence_json=?, updated=? WHERE id=?""",
-                    (status, confidence, source, valid_until, evidence_json,
-                     now, previous["id"]),
-                )
-                item_id = previous["id"]
-            else:
-                previous_id = previous["id"] if previous is not None else None
-                if previous is not None:
-                    conn.execute(
-                        """UPDATE world_beliefs SET status='outdated',
-                           valid_until=COALESCE(valid_until,?), updated=? WHERE id=?""",
-                        (now, now, previous_id),
-                    )
-                item_id = self._id("belief")
-                conn.execute(
-                    """INSERT INTO world_beliefs
-                       (id,subject,predicate,value,status,confidence,source,
-                        valid_from,valid_until,supersedes_id,evidence_json,created,updated)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (item_id, subject, predicate, value, status, confidence,
-                     source, valid_from or now, valid_until, previous_id,
-                     evidence_json, now, now),
-                )
-            row = conn.execute(
-                "SELECT * FROM world_beliefs WHERE id=?", (item_id,)
-            ).fetchone()
-        return self._json_field(row, "evidence_json", [])
-
-    def list_beliefs(
-        self, limit: int = 100, *, subject: str | None = None,
-        include_outdated: bool = False,
-    ) -> list[dict]:
-        clauses = [] if include_outdated else ["status != 'outdated'"]
-        params: list = []
-        if subject:
-            clauses.append("subject=?")
-            params.append(subject)
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(max(1, min(int(limit), 500)))
-        with self._conn() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM world_beliefs{where} ORDER BY updated DESC LIMIT ?",
-                tuple(params),
-            ).fetchall()
-        return [self._json_field(row, "evidence_json", []) for row in rows]
-
-    def create_durable_task(
-        self, title: str, objective: str, *, project_id: str | None = None,
-        priority: int = 50, source: str = "owner", due_at: float | None = None,
-        metadata: dict | None = None,
-    ) -> dict:
-        now = time.time()
-        item_id = self._id("work")
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO durable_tasks
-                   (id,project_id,title,objective,status,priority,source,due_at,
-                    metadata_json,created,updated)
-                   VALUES(?,?,?,?,'pending',?,?,?,?,?,?)""",
-                (item_id, project_id, title, objective, priority, source,
-                 due_at, json.dumps(metadata or {}, ensure_ascii=False), now, now),
-            )
-            row = conn.execute("SELECT * FROM durable_tasks WHERE id=?", (item_id,)).fetchone()
-        return self._json_field(row, "metadata_json", {})
-
-    def update_durable_task(self, task_id: str, status: str) -> dict | None:
-        with self._conn() as conn:
-            changed = conn.execute(
-                "UPDATE durable_tasks SET status=?, updated=? WHERE id=?",
-                (status, time.time(), task_id),
-            )
-            if not changed.rowcount:
-                return None
-            row = conn.execute("SELECT * FROM durable_tasks WHERE id=?", (task_id,)).fetchone()
-        return self._json_field(row, "metadata_json", {})
-
-    def add_task_checkpoint(
-        self, task_id: str, step: str, status: str, summary: str = "",
-        evidence: list | None = None,
-    ) -> dict:
-        now = time.time()
-        item_id = self._id("checkpoint")
-        with self._conn() as conn:
-            if conn.execute("SELECT 1 FROM durable_tasks WHERE id=?", (task_id,)).fetchone() is None:
-                raise KeyError("tarefa não encontrada")
-            conn.execute(
-                """INSERT INTO task_checkpoints
-                   (id,task_id,step,status,summary,evidence_json,created)
-                   VALUES(?,?,?,?,?,?,?)""",
-                (item_id, task_id, step, status, summary,
-                 json.dumps(evidence or [], ensure_ascii=False), now),
-            )
-            conn.execute("UPDATE durable_tasks SET updated=? WHERE id=?", (now, task_id))
-            row = conn.execute("SELECT * FROM task_checkpoints WHERE id=?", (item_id,)).fetchone()
-        return self._json_field(row, "evidence_json", [])
-
-    def list_durable_tasks(self, limit: int = 100, status: str | None = None) -> list[dict]:
-        params: list = []
-        where = ""
-        if status:
-            where = " WHERE status=?"
-            params.append(status)
-        params.append(max(1, min(int(limit), 500)))
-        with self._conn() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM durable_tasks{where} "
-                "ORDER BY priority DESC, updated DESC LIMIT ?", tuple(params)
-            ).fetchall()
-        return [self._json_field(row, "metadata_json", {}) for row in rows]
-
-    def durable_task(self, task_id: str) -> dict | None:
-        with self._conn() as conn:
-            row = conn.execute("SELECT * FROM durable_tasks WHERE id=?", (task_id,)).fetchone()
-            if row is None:
-                return None
-            checkpoints = conn.execute(
-                "SELECT * FROM task_checkpoints WHERE task_id=? ORDER BY created ASC", (task_id,)
-            ).fetchall()
-        item = self._json_field(row, "metadata_json", {})
-        item["checkpoints"] = [self._json_field(cp, "evidence_json", []) for cp in checkpoints]
-        return item
-
-    def register_device_identity(
-        self, name: str, kind: str, public_key: str, capabilities: list[str]
-    ) -> dict:
-        now = time.time()
-        with self._conn() as conn:
-            existing = conn.execute(
-                "SELECT id FROM device_identities WHERE public_key=?", (public_key,)
-            ).fetchone()
-            item_id = existing["id"] if existing else self._id("peer")
-            conn.execute(
-                """INSERT INTO device_identities
-                   (id,name,kind,public_key,trust_state,capabilities_json,created,last_seen,updated)
-                   VALUES(?,?,?,?,'pending',?,?,?,?)
-                   ON CONFLICT(public_key) DO UPDATE SET name=excluded.name,
-                     kind=excluded.kind, capabilities_json=excluded.capabilities_json,
-                     last_seen=excluded.last_seen, updated=excluded.updated""",
-                (item_id, name, kind, public_key,
-                 json.dumps(capabilities, ensure_ascii=False), now, now, now),
-            )
-            row = conn.execute("SELECT * FROM device_identities WHERE public_key=?", (public_key,)).fetchone()
-        return self._json_field(row, "capabilities_json", [])
-
-    def set_device_trust(self, device_id: str, trust_state: str) -> dict | None:
-        with self._conn() as conn:
-            changed = conn.execute(
-                "UPDATE device_identities SET trust_state=?, updated=? WHERE id=?",
-                (trust_state, time.time(), device_id),
-            )
-            if not changed.rowcount:
-                return None
-            row = conn.execute("SELECT * FROM device_identities WHERE id=?", (device_id,)).fetchone()
-        return self._json_field(row, "capabilities_json", [])
-
-    def list_device_identities(self) -> list[dict]:
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM device_identities ORDER BY updated DESC"
-            ).fetchall()
-        return [self._json_field(row, "capabilities_json", []) for row in rows]
-
     # ── Identificadores ───────────────────────────────────────────────────
 
     @staticmethod
@@ -2678,65 +2364,3 @@ class Memoria:
         return cursor.rowcount == 1
 
     # ── Camera Bridge e alertas locais ───────────────────────────────────
-
-    def create_camera_source(self, name: str, protocol: str, endpoint: str, zone: str) -> dict:
-        agora = time.time()
-        camera_id = self._id("camera")
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO camera_sources
-                   (id,name,protocol,endpoint,zone,status,enabled,created,updated)
-                   VALUES(?,?,?,?,?,'configured',1,?,?)""",
-                (camera_id, name, protocol, endpoint, zone, agora, agora),
-            )
-        return next(item for item in self.camera_sources() if item["id"] == camera_id)
-
-    def camera_sources(self) -> list[dict]:
-        with self._conn() as conn:
-            result = []
-            for row in conn.execute(
-                "SELECT id,name,protocol,zone,status,enabled,created,updated FROM camera_sources ORDER BY updated DESC"
-            ).fetchall():
-                item = dict(row)
-                item["enabled"] = bool(item["enabled"])
-                result.append(item)
-            return result
-
-    def camera_source_private(self, camera_id: str) -> dict | None:
-        with self._conn() as conn:
-            row = conn.execute("SELECT * FROM camera_sources WHERE id=?", (camera_id,)).fetchone()
-            return dict(row) if row else None
-
-    def update_camera_status(self, camera_id: str, status: str) -> bool:
-        with self._conn() as conn:
-            return conn.execute(
-                "UPDATE camera_sources SET status=?, updated=? WHERE id=?",
-                (status, time.time(), camera_id),
-            ).rowcount > 0
-
-    def create_security_alert(
-        self, camera_id: str | None, event_type: str, summary: str, confidence: float | None
-    ) -> dict:
-        alert_id = self._id("alert")
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO security_alerts
-                   (id,camera_id,event_type,summary,confidence,acknowledged,created)
-                   VALUES(?,?,?,?,?,0,?)""",
-                (alert_id, camera_id, event_type, summary, confidence, time.time()),
-            )
-            row = conn.execute("SELECT * FROM security_alerts WHERE id=?", (alert_id,)).fetchone()
-            item = dict(row)
-            item["acknowledged"] = bool(item["acknowledged"])
-            return item
-
-    def security_alerts(self, limit: int = 50) -> list[dict]:
-        with self._conn() as conn:
-            return [
-                {**dict(row), "acknowledged": bool(row["acknowledged"])}
-                for row in conn.execute(
-                    "SELECT * FROM security_alerts ORDER BY created DESC LIMIT ?",
-                    (max(1, min(limit, 200)),),
-                ).fetchall()
-            ]
-
