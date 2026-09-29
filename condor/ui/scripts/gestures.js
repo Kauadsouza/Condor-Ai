@@ -1,7 +1,7 @@
 /** Controle gestual local: aponta, segura e arrasta somente dentro do Condor. */
 const CondorGestures = (() => {
   const $ = (id) => document.getElementById(id);
-  const BLOCKED_GESTURE_ACTIONS = '#programRun,#deviceCommandSend,#systemPermissionSubmit,[data-permission-decision],[data-device-disconnect],button[type="submit"]';
+  const BLOCKED_GESTURE_ACTIONS = '#programRun,#programConfirmYes,#deviceCommandSend,#deviceCommandConfirmYes,#systemPermissionSubmit,[data-permission-decision],[data-device-disconnect],button[type="submit"]';
   let stream = null;
   let token = '';
   let active = false;

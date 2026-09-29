@@ -6,16 +6,23 @@ const CondorCoreUI = (() => {
   let saveTimer = null;
   let permissionTarget = null;
   let permissionCooldownTimer = null;
-  let arduinoDetection = null;
-  let detectedDevices = [];
+  let programSaving = false;
+  const TARGET_KEY = 'condor.programacao.alvo';
+  let chosenTarget = null;
+  let scanTargets = [];
+  let commonBoards = [];
   let activeCommandDeviceId = '';
-  let automaticTarget = null;
   let deviceScanBusy = false;
-  let deviceScanTimer = null;
+  let wsOnline = false;
+  let chatTurn = null;
+  let micRecorder = null;
+  let micStream = null;
+  let micParts = [];
+  let micTimer = null;
   const commands = [
     { label: 'Abrir Condor X · Modelo 01', hint: 'PROJETO', run: () => openProject() },
     { label: 'Abrir programação e conexões', hint: 'ÁREA', run: () => CondorRouter.ir('programacao') },
-    { label: 'Procurar Arduino / Serial', hint: 'CONEXÕES', run: () => { CondorRouter.ir('programacao'); scanDevices(); } },
+    { label: 'Pesquisar Arduino / Serial', hint: 'CONEXÕES', run: () => { CondorRouter.ir('programacao'); scanDevices(); } },
     { label: 'Abrir laboratório', hint: 'EXPERIMENTOS', run: () => CondorRouter.ir('laboratorio') },
     { label: 'Abrir sistema', hint: 'ESTADO', run: () => CondorRouter.ir('sistema') },
     { label: 'Conversar com o Condor', hint: 'CHAT', run: () => CondorRouter.ir('conversacao') },
@@ -67,19 +74,20 @@ const CondorCoreUI = (() => {
   function setSaveState(text, className = '') { const element = document.getElementById('programSaveState'); element.textContent = text; element.className = `code-save-state ${className}`.trim(); }
 
   async function saveProgram() {
-    clearTimeout(saveTimer); updateProgramVisual(); setSaveState('SALVANDO', 'saving');
+    clearTimeout(saveTimer); saveTimer = null; programSaving = true; updateProgramVisual(); setSaveState('SALVANDO', 'saving');
     try {
       const data = await safeFetch('/api/programming/buffer', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: programProjectId, name: document.getElementById('programFile').value, content: document.getElementById('programBuffer').value }) });
       document.getElementById('programFile').value = data.buffer.name; document.getElementById('programLanguage').textContent = `AUTO · ${label(data.detected.language)}`; document.getElementById('programRevision').textContent = `R${data.buffer.revision}`;
       setSaveState('SINCRONIZADO', 'saved'); status.context = data.context; renderContext(data.context); renderSystem(); return data;
     } catch (error) { setSaveState(error.message.toUpperCase()); throw error; }
+    finally { programSaving = false; }
   }
 
   function scheduleSave() { updateProgramVisual(); setSaveState('ALTERADO', 'saving'); clearTimeout(saveTimer); saveTimer = setTimeout(() => saveProgram().catch(() => {}), 700); }
 
   async function loadProgram() {
     await loadStatus(); programProjectId = status?.context?.project_id || 'condor-x'; document.getElementById('programProject').textContent = label(status?.context?.project_name, 'CONDOR X');
-    await loadArduinoStatus();
+    renderTarget();
     if (loadedProgramProject === programProjectId) return;
     try {
       const data = await safeFetch(`/api/programming/buffer?project_id=${encodeURIComponent(programProjectId)}`); const buffer = data.buffer;
@@ -211,94 +219,276 @@ const CondorCoreUI = (() => {
     document.getElementById('gestureVisual').innerHTML = [signalStep('ENTRADA', gestureReady ? 'CÂMERA LOCAL' : 'INDISPONÍVEL', gestureReady), signalStep('ANÁLISE DE MÃO', gestureReady ? 'PRONTA' : 'AUSENTE', gestureReady), signalStep('ESCOPO', 'SÓ CONDOR', gestureReady)].join('');
   }
 
-  function renderDevices() {
-    const bridge = status?.device_bridge; if (!bridge) return;
-    document.getElementById('deviceBridgeState').textContent = label(bridge.bridge); document.getElementById('deviceTransports').innerHTML = Object.entries(bridge.transport || {}).map(([name, state]) => `<div class="core-status-row"><span>${label(name)}</span><b class="${String(state).includes('not_') ? 'off' : ''}">${label(state)}</b></div>`).join(''); document.getElementById('deviceFamilies').innerHTML = ['USB / SERIAL', 'BLUETOOTH · BUSCA', 'WI-FI'].map((name) => `<span>${name}</span>`).join('');
-    const connected = bridge.connected?.[0]; document.getElementById('connectedDevice').innerHTML = connected ? `<strong>${escapeHtml(connected.name)}</strong><span>${escapeHtml(label(connected.connection))}</span><button type="button" data-device-disconnect="${escapeHtml(connected.id)}">DESCONECTAR</button>` : '<strong>NENHUM DISPOSITIVO</strong><span>SEM CONEXÃO ATIVA</span>';
+  // ── Dispositivos: só alvos úteis (portas seriais e placas Arduino) ──────────
+
+  function loadChosenTarget() {
+    try { const saved = JSON.parse(localStorage.getItem(TARGET_KEY) || 'null'); return saved && saved.port ? saved : null; } catch (_) { return null; }
   }
 
-  function renderArduinoTargets(arduino = {}, auto = null) {
-    arduinoDetection = arduino;
-    automaticTarget = auto?.available ? auto.target : null;
-    const target = document.getElementById('programAutoTarget');
-    target.classList.toggle('ready', Boolean(automaticTarget));
-    target.querySelector('span').textContent = automaticTarget
-      ? `ALVO AUTOMÁTICO · ${automaticTarget.name}`
-      : `SEM ALVO ÚNICO · ${auto?.reason || (arduino.installed ? 'CONECTE UMA PLACA COMPATÍVEL' : 'ARDUINO CLI AUSENTE')}`;
+  function setChosenTarget(target) {
+    chosenTarget = target ? { port: String(target.port || ''), fqbn: String(target.fqbn || ''), name: String(target.name || target.port || '') } : null;
+    try { if (chosenTarget) localStorage.setItem(TARGET_KEY, JSON.stringify(chosenTarget)); else localStorage.removeItem(TARGET_KEY); } catch (_) { /* só conveniência */ }
+    renderTarget(); renderConnected();
   }
 
-  async function loadArduinoStatus() {
-    try { const [data, auto] = await Promise.all([safeFetch('/api/programming/arduino/status'), safeFetch('/api/programming/auto-target')]); renderArduinoTargets(data, auto); document.getElementById('programExecutionState').textContent = auto.available ? `ROTEADOR PRONTO · ${auto.target.name}` : (data.installed ? 'AGUARDANDO ALVO COMPATÍVEL' : 'ARDUINO CLI AUSENTE'); }
-    catch (error) { document.getElementById('programExecutionState').textContent = 'ARDUINO INDISPONÍVEL'; }
+  function renderTarget() {
+    const target = document.getElementById('programTarget');
+    target.classList.toggle('ready', Boolean(chosenTarget?.fqbn));
+    target.querySelector('span').textContent = chosenTarget
+      ? `${chosenTarget.name} · ${chosenTarget.port}${chosenTarget.fqbn ? '' : ' · SEM MODELO'}`
+      : 'NENHUMA PLACA ESCOLHIDA';
+  }
+
+  /** Junta portas seriais e placas do arduino-cli; ignora HID, áudio e afins. */
+  function buildTargets(data = {}) {
+    const boardsByPort = new Map();
+    (data.arduino?.detected || []).forEach((item) => { if (item.port) boardsByPort.set(item.port, item); });
+    const targets = (data.serial_ports || []).map((port) => {
+      const board = boardsByPort.get(port.port)?.boards?.[0]; boardsByPort.delete(port.port);
+      const bluetooth = port.family === 'Serial Bluetooth' || /bluetooth|bthenum/i.test(`${port.description} ${port.hardware_id}`);
+      return { port: port.port, name: board?.name || port.description || port.port, fqbn: board?.fqbn || '', bluetooth, serial: true };
+    });
+    boardsByPort.forEach((item) => {
+      const board = item.boards?.[0];
+      if (board) targets.push({ port: item.port, name: board.name, fqbn: board.fqbn, bluetooth: false, serial: false });
+    });
+    return targets.sort((a, b) => Number(a.bluetooth) - Number(b.bluetooth) || Number(!a.fqbn) - Number(!b.fqbn) || a.port.localeCompare(b.port));
+  }
+
+  function renderScanResults() {
+    const list = document.getElementById('serialPortList');
+    if (!scanTargets.length) { list.innerHTML = '<div class="core-empty">NENHUMA PLACA OU PORTA SERIAL</div>'; return; }
+    list.innerHTML = scanTargets.map((target, index) => {
+      const active = chosenTarget?.port === target.port;
+      const boardPicker = !target.fqbn && !target.bluetooth
+        ? `<select data-board-for="${index}" aria-label="Modelo da placa"><option value="">MODELO DA PLACA...</option>${commonBoards.map((board) => `<option value="${escapeHtml(board.fqbn)}">${escapeHtml(board.name)}</option>`).join('')}</select>`
+        : '';
+      return `<article class="serial-card ${active ? 'active' : ''} ${target.bluetooth ? 'bluetooth' : ''}"><div class="serial-card-head"><strong>${escapeHtml(target.name)}</strong><small>${escapeHtml(target.port)}${target.bluetooth ? ' · BLUETOOTH' : ''}</small></div><span>${escapeHtml(target.fqbn || 'PLACA NÃO IDENTIFICADA')}</span>${boardPicker}<button class="device-card-button" type="button" data-device-connect="${index}">${active ? 'CONECTADO' : 'CONECTAR'}</button></article>`;
+    }).join('');
+  }
+
+  async function scanDevices() {
+    if (deviceScanBusy) return; deviceScanBusy = true;
+    const button = document.getElementById('deviceScan'); const list = document.getElementById('serialPortList');
+    button.disabled = true; button.textContent = 'PESQUISANDO...'; list.innerHTML = '';
+    try {
+      const data = await safeFetch('/api/devices/scan', { method: 'POST' });
+      commonBoards = data.arduino?.common_boards || commonBoards;
+      scanTargets = buildTargets(data); renderScanResults();
+    } catch (error) { list.innerHTML = `<div class="core-empty">${escapeHtml(error.message)}</div>`; }
+    finally { deviceScanBusy = false; button.disabled = false; button.textContent = 'PESQUISAR DISPOSITIVOS'; }
+  }
+
+  async function connectTarget(index) {
+    const found = scanTargets[index]; if (!found) return;
+    const target = { ...found };
+    const picker = document.querySelector(`[data-board-for="${index}"]`);
+    if (picker?.value) { target.fqbn = picker.value; target.name = picker.selectedOptions[0].textContent; }
+    setChosenTarget(target); renderScanResults();
+    if (!target.serial) return;
+    try {
+      await safeFetch('/api/devices/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: target.port, baud_rate: 115200, project_id: programProjectId }) });
+    } catch (error) {
+      // A gravação não precisa da serial aberta; o alvo continua escolhido.
+      document.getElementById('programExecutionState').textContent = /serial/i.test(error.message) ? 'SERIAL BLOQUEADA · PERMITA EM SISTEMA' : `SERIAL · ${error.message.toUpperCase()}`;
+    }
+    await loadStatus();
+  }
+
+  async function disconnectDevice(deviceId) {
+    const device = (status?.device_bridge?.connected || []).find((item) => item.id === deviceId);
+    try { await safeFetch(`/api/devices/${encodeURIComponent(deviceId)}/disconnect`, { method: 'POST' }); } catch (_) { /* segue limpando o alvo */ }
+    if (device && chosenTarget && String(device.connection || '').startsWith(`serial:${chosenTarget.port}@`)) setChosenTarget(null);
+    renderScanResults(); await loadStatus();
+  }
+
+  function renderConnected() {
+    const host = document.getElementById('connectedDevice'); if (!host) return;
+    const connected = status?.device_bridge?.connected || [];
+    const isTarget = (device) => chosenTarget && String(device.connection || '').startsWith(`serial:${chosenTarget.port}@`);
+    const rows = connected.map((device) => `<div class="device-live-row"><strong>${escapeHtml(device.name)}</strong><span>${escapeHtml(label(device.connection))}${isTarget(device) && chosenTarget.fqbn ? ` · ${escapeHtml(chosenTarget.fqbn)}` : ''}</span><button type="button" data-device-disconnect="${escapeHtml(device.id)}">DESCONECTAR</button></div>`);
+    if (chosenTarget && !connected.some(isTarget)) rows.push(`<div class="device-live-row"><strong>${escapeHtml(chosenTarget.name)}</strong><span>${escapeHtml(chosenTarget.port)} · ${escapeHtml(chosenTarget.fqbn || 'SEM MODELO')}</span><button type="button" data-target-clear>DESCONECTAR</button></div>`);
+    host.innerHTML = rows.join('') || '<strong>NENHUM CONECTADO</strong>';
+    const card = document.getElementById('deviceCommandCard'); card.hidden = connected.length === 0;
+    activeCommandDeviceId = connected[0]?.id || '';
+    document.getElementById('deviceCommandTarget').textContent = connected[0] ? `ALVO · ${label(connected[0].name)}` : 'ALVO · NENHUM';
+  }
+
+  /** Confirmação dentro da página (o pywebview não mostra o confirm nativo). */
+  function confirmInline(id, text) {
+    const box = document.getElementById(id); const yes = document.getElementById(`${id}Yes`); const no = document.getElementById(`${id}No`);
+    if (typeof box._resolve === 'function') box._resolve(false);
+    document.getElementById(`${id}Text`).textContent = text; box.hidden = false; yes.focus();
+    return new Promise((resolve) => {
+      box._resolve = (value) => { box.hidden = true; box._resolve = null; yes.onclick = null; no.onclick = null; resolve(value); };
+      yes.onclick = () => box._resolve(true); no.onclick = () => box._resolve(false);
+    });
   }
 
   function showRunOutput(text, type = '') {
     const output = document.getElementById('programRunOutput'); output.hidden = false; output.className = `program-output ${type}`.trim(); output.textContent = text;
   }
 
-  async function runArduino() {
-    const button = document.getElementById('programRun');
-    if (detectLanguage(document.getElementById('programBuffer').value).language !== 'arduino') { showRunOutput('RUN FÍSICO BLOQUEADO\nO código precisa conter setup() e loop().', 'error'); return; }
-    await loadArduinoStatus();
-    if (!automaticTarget) { showRunOutput('ROTEAMENTO INTERROMPIDO\nNão existe um único alvo compatível. Conecte somente a placa que deve receber este firmware.', 'error'); return; }
-    if (!window.confirm(`Compilar e gravar ${automaticTarget.name}?\n\nO Condor detectou o destino automaticamente. A placa será reprogramada com o código atual.`)) return;
-    button.disabled = true; button.textContent = 'COMPILANDO'; document.getElementById('programExecutionState').textContent = 'COMPILANDO'; showRunOutput(`ALVO AUTOMÁTICO · ${automaticTarget.name}\n\nCompilando código...`);
+  /** Mostra só as linhas de erro (ou o fim) da saída do arduino-cli. */
+  function compactOutput(text) {
+    const lines = String(text || '').split('\n').map((line) => line.trimEnd()).filter(Boolean);
+    const errors = lines.filter((line) => /error|erro|fatal/i.test(line));
+    return (errors.length ? errors : lines.slice(-12)).slice(0, 12).join('\n') || 'Sem detalhes.';
+  }
+
+  function arduinoReady(action) {
+    if (detectLanguage(document.getElementById('programBuffer').value).language !== 'arduino') { showRunOutput('O código precisa ter setup() e loop().', 'error'); return false; }
+    if (action === 'run' && !chosenTarget?.port) { showRunOutput('Pesquise e conecte uma placa primeiro.', 'error'); return false; }
+    if (!chosenTarget?.fqbn) { showRunOutput('Conecte uma placa e escolha o modelo dela.', 'error'); return false; }
+    return true;
+  }
+
+  function setArduinoBusy(busy, text) {
+    document.getElementById('programRun').disabled = busy; document.getElementById('programVerify').disabled = busy;
+    if (text) document.getElementById('programExecutionState').textContent = text;
+  }
+
+  async function verifyArduino() {
+    if (!arduinoReady('verify')) return;
+    setArduinoBusy(true, 'VERIFICANDO'); showRunOutput(`Compilando para ${chosenTarget.fqbn}...`);
     try {
       await saveProgram();
-      const data = await safeFetch('/api/programming/auto-run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: programProjectId, confirmed: true }) });
-      if (!data.success) { const compileFailed = data.phase === 'compile'; const phase = compileFailed ? 'COMPILAÇÃO FALHOU · NADA FOI GRAVADO' : 'GRAVAÇÃO FALHOU'; const details = (compileFailed ? data.compile?.output : data.upload?.output) || 'Sem detalhes.'; showRunOutput(`${phase}\n\n${details}`, 'error'); document.getElementById('programExecutionState').textContent = phase; return; }
-      showRunOutput(`GRAVAÇÃO CONCLUÍDA E VERIFICADA\n\n${data.upload?.output || 'Arduino respondeu sem mensagens adicionais.'}`, 'success'); document.getElementById('programExecutionState').textContent = 'ARDUINO ATUALIZADO'; await loadStatus();
-    } catch (error) { showRunOutput(`RUN INTERROMPIDO\n\n${error.message}`, 'error'); document.getElementById('programExecutionState').textContent = 'RUN INTERROMPIDO'; }
-    finally { button.disabled = false; button.textContent = '▶ ENVIAR AO ALVO'; }
+      const data = await safeFetch('/api/programming/arduino/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: programProjectId, fqbn: chosenTarget.fqbn }) });
+      if (data.success) { showRunOutput('COMPILA SEM ERROS', 'success'); setArduinoBusy(false, 'VERIFICADO'); return; }
+      showRunOutput(`ERRO DE COMPILAÇÃO\n\n${compactOutput(data.compile?.output)}`, 'error'); setArduinoBusy(false, 'ERRO DE COMPILAÇÃO');
+    } catch (error) { showRunOutput(`NÃO VERIFICADO\n${error.message}`, 'error'); setArduinoBusy(false, 'NÃO VERIFICADO'); }
   }
 
-  function renderDetectedDevices() {
-    const list = document.getElementById('serialPortList');
-    document.getElementById('deviceScanCount').textContent = `${detectedDevices.length} DETECTADO${detectedDevices.length === 1 ? '' : 'S'}`;
-    const commandable = detectedDevices.filter((item) => item.commandable);
-    if (!activeCommandDeviceId && commandable.length === 1) activeCommandDeviceId = commandable[0].device_id;
-    if (activeCommandDeviceId && !commandable.some((item) => item.device_id === activeCommandDeviceId)) activeCommandDeviceId = commandable.length === 1 ? commandable[0].device_id : '';
-    const target = detectedDevices.find((item) => item.device_id === activeCommandDeviceId);
-    document.getElementById('deviceCommandTarget').textContent = target ? `ALVO · ${label(target.name)}` : (commandable.length > 1 ? 'ALVO · ESCOLHA PELO NOME' : 'ALVO · AUTOMÁTICO');
-    document.getElementById('connectedDevice').innerHTML = target ? `<strong>${escapeHtml(target.name)}</strong><span>${escapeHtml(label(target.connection))} · ROTEADOR ATIVO</span>` : '<strong>NENHUM DISPOSITIVO COMANDÁVEL</strong><span>DISPOSITIVOS SOMENTE LEITURA CONTINUAM VISÍVEIS</span>';
-    list.innerHTML = detectedDevices.length ? detectedDevices.map((device) => {
-      const capabilities = (device.capabilities || []).map(label).join(' · ');
-      const active = device.device_id === activeCommandDeviceId;
-      return `<article class="serial-card ${active ? 'active' : ''}"><div class="serial-card-head"><strong>${escapeHtml(device.name)}</strong><small>${escapeHtml(label(device.kind))}</small></div><span>${escapeHtml(capabilities || 'PRESENÇA')}</span>${device.commandable ? `<button class="device-card-button" type="button" data-device-target="${escapeHtml(device.device_id)}">${active ? 'ALVO ATIVO' : 'USAR PARA COMANDOS'}</button>` : '<span>SOMENTE DETECÇÃO · SEM ADAPTADOR DE COMANDO</span>'}</article>`;
-    }).join('') : '<div class="core-empty">NENHUM DISPOSITIVO PRESENTE DETECTADO</div>';
-  }
-
-  async function scanDevices({ quiet = false } = {}) {
-    if (deviceScanBusy) return; deviceScanBusy = true;
-    const list = document.getElementById('serialPortList'); if (!quiet) list.innerHTML = '<div class="core-empty">ATUALIZANDO INVENTÁRIO...</div>';
+  async function runArduino() {
+    if (!arduinoReady('run')) return;
+    const target = { ...chosenTarget };
+    if (!await confirmInline('programConfirm', `Gravar em ${target.name} (${target.port})? O programa atual da placa será substituído.`)) return;
+    setArduinoBusy(true, 'GRAVANDO'); showRunOutput(`${target.name} · compilando e gravando...`);
     try {
-      const data = await safeFetch('/api/devices/scan', { method: 'POST' }); detectedDevices = data.devices || []; renderDetectedDevices(); renderArduinoTargets(data.arduino || arduinoDetection || {}, await safeFetch('/api/programming/auto-target'));
-    } catch (error) { if (!quiet) list.innerHTML = `<div class="core-empty">${escapeHtml(error.message)}</div>`; }
-    finally { deviceScanBusy = false; }
+      await saveProgram();
+      const data = await safeFetch('/api/programming/arduino/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: programProjectId, port: target.port, fqbn: target.fqbn, confirmed: true }) });
+      if (!data.success) {
+        const compileFailed = data.phase === 'compile'; const phase = compileFailed ? 'ERRO DE COMPILAÇÃO · NADA FOI GRAVADO' : 'FALHA NA GRAVAÇÃO';
+        showRunOutput(`${phase}\n\n${compactOutput(compileFailed ? data.compile?.output : data.upload?.output)}`, 'error'); setArduinoBusy(false, phase); return;
+      }
+      showRunOutput(`GRAVADO EM ${target.name}`, 'success'); setArduinoBusy(false, 'GRAVADO'); await loadStatus();
+    } catch (error) {
+      if (error.status === 403) { showRunOutput('GRAVAÇÃO BLOQUEADA\nPermita "arduino upload" em Sistema.', 'error'); setArduinoBusy(false, 'BLOQUEADO'); await loadStatus(); return; }
+      showRunOutput(`NÃO GRAVADO\n${error.message}`, 'error'); setArduinoBusy(false, 'NÃO GRAVADO');
+    }
   }
-
-  function chooseDeviceTarget(deviceId) { activeCommandDeviceId = deviceId; renderDetectedDevices(); }
 
   async function sendDeviceCommand() {
     const command = document.getElementById('deviceCommand').value.trim(); const state = document.getElementById('deviceCommandState'); const button = document.getElementById('deviceCommandSend');
-    if (!command) { state.textContent = 'ESCREVA UM COMANDO'; return; }
-    button.disabled = true; state.textContent = 'ANALISANDO ROTA E SEGURANÇA';
+    if (!command) { state.textContent = 'ESCREVA UM TEXTO'; return; }
+    button.disabled = true; state.textContent = 'VERIFICANDO';
+    const route = (confirmed, deviceId) => safeFetch('/api/devices/commands/route', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: programProjectId, device_id: deviceId, command, confirmed }) });
     try {
-      const plan = await safeFetch('/api/devices/commands/route', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: programProjectId, device_id: activeCommandDeviceId, command, confirmed: false }) });
-      if (plan.requires_confirmation && !window.confirm(`Enviar este comando para ${plan.device.name}?\n\n${command.slice(0, 300)}`)) { state.textContent = 'ENVIO CANCELADO'; return; }
-      const result = plan.executed ? plan : await safeFetch('/api/devices/commands/route', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: programProjectId, device_id: plan.device.device_id, command, confirmed: true }) });
-      state.textContent = result.executed ? `ENVIADO · ${result.bytes} BYTES` : 'NÃO EXECUTADO'; document.getElementById('deviceCommand').value = ''; await loadStatus();
-    } catch (error) { state.textContent = `BLOQUEADO · ${error.message.toUpperCase()}`; }
+      const plan = await route(false, activeCommandDeviceId);
+      if (plan.requires_confirmation && !await confirmInline('deviceCommandConfirm', `Enviar para ${plan.device.name}?`)) { state.textContent = 'CANCELADO'; return; }
+      const result = plan.executed ? plan : await route(true, plan.device.device_id);
+      state.textContent = result.executed ? `ENVIADO · ${result.bytes} BYTES` : 'NÃO ENVIADO'; document.getElementById('deviceCommand').value = ''; await loadStatus();
+    } catch (error) { state.textContent = error.status === 403 ? 'SERIAL BLOQUEADA · PERMITA EM SISTEMA' : error.message.toUpperCase(); }
     finally { button.disabled = false; }
   }
 
-  function askCondorToWrite() {
-    const target = detectedDevices.find((item) => item.device_id === activeCommandDeviceId);
-    const request = `Condor, escreva no editor de Programação um sistema completo e seguro para ${target?.name || 'o dispositivo detectado automaticamente'}. Use o contexto do projeto atual, explique as suposições e salve usando condor_salvar_codigo. Não envie nem grave no hardware; deixe pronto para minha revisão.`;
-    CondorRouter.ir('conversacao'); CondorConversa.solicitarEnvio(request);
+  // ── Condor dentro da aba: conversa, voz e código para o editor ──────────────
+
+  /** Último bloco ```cpp/ino/c (ou o último com setup()) de uma resposta. */
+  function extractSketch(text) {
+    const blocks = [...String(text || '').matchAll(/```([\w+#-]*)[^\n]*\n([\s\S]*?)```/g)];
+    const typed = blocks.filter((block) => /^(cpp|c\+\+|ino|arduino|c)$/i.test(block[1]));
+    const chosen = typed.length ? typed : blocks.filter((block) => /\bvoid\s+setup\s*\(/.test(block[2]));
+    const last = chosen[chosen.length - 1];
+    return last ? `${last[2].replace(/\s+$/, '')}\n` : '';
   }
 
-  async function loadStatus() { try { status = await safeFetch('/api/core/status'); renderContext(status.context); renderSystem(); renderDevices(); renderInteractions(); await CondorFaceGuard.status(); } catch (_) { /* tela bloqueada controla o acesso */ } }
+  /** No chat o código aparece resumido; ele vai inteiro para o editor. */
+  function chatVisibleText(text) {
+    return String(text || '').replace(/```[\s\S]*?```/g, '[código → editor]').replace(/```[\s\S]*$/, '[escrevendo código...]').trim();
+  }
+
+  function chatAdd(kind, text) {
+    const log = document.getElementById('programChatLog'); const item = document.createElement('div');
+    item.className = `prog-msg ${kind}`; item.textContent = text; log.append(item); log.scrollTop = log.scrollHeight; return item;
+  }
+
+  function setOrb(state, text) { document.getElementById('programOrb').dataset.state = state; document.getElementById('programChatState').textContent = text; }
+
+  function sendChat(raw) {
+    const text = String(raw || '').trim(); if (!text) return;
+    if (!wsOnline) { chatAdd('note', 'SEM CONEXÃO COM O NÚCLEO'); return; }
+    if (chatTurn) { chatAdd('note', 'AGUARDE A RESPOSTA ATUAL'); return; }
+    chatAdd('user', text); chatTurn = { bubble: null, text: '' };
+    const alvo = chosenTarget ? { fqbn: chosenTarget.fqbn, name: chosenTarget.name, port: chosenTarget.port } : {};
+    CondorWS.enviar({ tipo: 'texto', texto: text, contexto: 'programacao', alvo });
+    setOrb('thinking', 'PENSANDO');
+  }
+
+  function chatToken(message) {
+    if (message.contexto !== 'programacao') return;
+    if (!chatTurn) chatTurn = { bubble: null, text: '' };
+    if (!chatTurn.bubble) chatTurn.bubble = chatAdd('condor', '');
+    chatTurn.text += message.texto || ''; chatTurn.bubble.textContent = chatVisibleText(chatTurn.text);
+    document.getElementById('programChatLog').scrollTop = 1e9; setOrb('speaking', 'ESCREVENDO');
+  }
+
+  function chatFinished(message) {
+    if (message.contexto !== 'programacao') return;
+    const text = message.texto || chatTurn?.text || '';
+    const bubble = chatTurn?.bubble || chatAdd('condor', ''); bubble.textContent = chatVisibleText(text) || '...';
+    chatTurn = null; setOrb('idle', 'PRONTO');
+    const code = extractSketch(text); if (!code) return;
+    clearTimeout(saveTimer); document.getElementById('programBuffer').value = code; updateProgramVisual();
+    saveProgram().then(() => chatAdd('note', 'CÓDIGO NO EDITOR · REVISE E CLIQUE ENVIAR')).catch(() => chatAdd('note', 'CÓDIGO NO EDITOR · NÃO SALVO'));
+  }
+
+  function chatFailed(message) {
+    if (message.contexto !== 'programacao') return;
+    chatTurn = null; setOrb('idle', 'PRONTO'); chatAdd('note', String(message.mensagem || 'Falhou.').toUpperCase());
+  }
+
+  function setMicPressed(pressed) { document.getElementById('programChatMic').setAttribute('aria-pressed', pressed ? 'true' : 'false'); }
+
+  async function toggleMic() {
+    if (micRecorder) { if (micRecorder.state === 'recording') micRecorder.stop(); return; }
+    if (chatTurn) { chatAdd('note', 'AGUARDE A RESPOSTA ATUAL'); return; }
+    if (typeof CondorMedia !== 'undefined' && !await CondorMedia.ensurePermission('microphone', 'Ouvir o pedido feito na aba Programação.', 'programming_chat')) return;
+    if (!navigator.mediaDevices || !window.MediaRecorder) { chatAdd('note', 'SEM CAPTURA DE ÁUDIO'); return; }
+    try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false }); }
+    catch (_) { chatAdd('note', 'MICROFONE BLOQUEADO'); return; }
+    const preferred = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find((type) => MediaRecorder.isTypeSupported(type));
+    micRecorder = new MediaRecorder(micStream, preferred ? { mimeType: preferred } : undefined); micParts = [];
+    micRecorder.addEventListener('dataavailable', (event) => { if (event.data.size) micParts.push(event.data); });
+    micRecorder.addEventListener('stop', transcribeMic, { once: true });
+    micRecorder.start(250); micTimer = setTimeout(() => { if (micRecorder?.state === 'recording') micRecorder.stop(); }, 20000);
+    setMicPressed(true); setOrb('listening', 'OUVINDO · CLIQUE PARA ENVIAR');
+  }
+
+  async function transcribeMic() {
+    clearTimeout(micTimer); if (micStream) micStream.getTracks().forEach((track) => track.stop());
+    const type = micRecorder?.mimeType || 'audio/webm'; const audio = new Blob(micParts, { type });
+    micRecorder = null; micStream = null; micParts = []; setMicPressed(false);
+    if (audio.size < 256) { setOrb('idle', 'PRONTO'); chatAdd('note', 'NÃO OUVI NADA'); return; }
+    setOrb('thinking', 'TRANSCREVENDO');
+    try {
+      await CondorSession.ready;
+      const response = await fetch('/api/voice/transcribe?dispatch=false', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': type }, body: audio });
+      const data = await response.json(); if (!response.ok) throw new Error(data.erro || 'não entendi a fala');
+      setOrb('idle', 'PRONTO'); sendChat(data.texto);
+    } catch (error) { setOrb('idle', 'PRONTO'); chatAdd('note', String(error.message || error).toUpperCase()); }
+  }
+
+  /** Código salvo por outra origem (Condor no chat, outra janela): recarrega. */
+  function onCodeBufferUpdated(event) {
+    if (event.project_id && event.project_id !== programProjectId) return;
+    const revision = Number(event.payload?.revision || 0);
+    const shown = Number(String(document.getElementById('programRevision').textContent).replace(/\D/g, '') || 0);
+    if (!revision || revision === shown || saveTimer || programSaving) return;
+    loadedProgramProject = null; loadProgram();
+  }
+
+  async function loadStatus() { try { status = await safeFetch('/api/core/status'); renderContext(status.context); renderSystem(); renderConnected(); renderInteractions(); await CondorFaceGuard.status(); } catch (_) { /* tela bloqueada controla o acesso */ } }
   async function loadEvents() { try { const data = await safeFetch('/api/events?limite=30'); document.getElementById('systemEvents').innerHTML = data.events.length ? data.events.map((event) => `<article><div><strong>${escapeHtml(label(event.type))}</strong><span>${escapeHtml(label(event.source))}</span></div><span>${new Date(event.timestamp * 1000).toLocaleTimeString('pt-BR')}</span></article>`).join('') : '<div class="core-empty">NENHUM EVENTO</div>'; } catch (_) { /* cofre bloqueado */ } }
 
   function experimentCard(item) { return `<article class="experiment-card"><strong>${escapeHtml(item.title)}</strong><span>${item.origin === 'condor' ? 'CONDOR' : 'KAUÃ'} · ${new Date(item.updated * 1000).toLocaleDateString('pt-BR')}</span></article>`; }
@@ -317,12 +507,18 @@ const CondorCoreUI = (() => {
 
   function init() {
     setTimeout(() => document.getElementById('coreBoot').classList.add('done'), 1450); document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openPalette(); } if (event.key === 'Escape') closePalette(); });
-    document.getElementById('deviceScan').addEventListener('click', () => scanDevices()); document.getElementById('serialPortList').addEventListener('click', (event) => { const button = event.target.closest('[data-device-target]'); if (button) chooseDeviceTarget(button.dataset.deviceTarget); });
-    document.getElementById('programBuffer').addEventListener('input', scheduleSave); document.getElementById('programFile').addEventListener('change', scheduleSave); document.getElementById('programRun').addEventListener('click', runArduino); document.getElementById('programAskCondor').addEventListener('click', askCondorToWrite); document.getElementById('deviceCommandSend').addEventListener('click', sendDeviceCommand); document.getElementById('labNew').addEventListener('click', () => { document.getElementById('labForm').hidden = false; document.getElementById('labTitle').focus(); }); document.getElementById('labAskCondor').addEventListener('click', askCondorExperiment); document.getElementById('labForm').addEventListener('submit', createExperiment); document.getElementById('systemRefresh').addEventListener('click', async () => { await loadStatus(); await loadEvents(); }); document.getElementById('systemAiConfig').addEventListener('click', toggleAiConfig); document.getElementById('systemAiProvider').addEventListener('change', syncAiProviderFields); document.getElementById('systemAiForm').addEventListener('submit', saveAiConfig); document.getElementById('systemPermissions').addEventListener('click', (event) => { const button = event.target.closest('[data-permission-capability]'); if (button) showPermission(button); }); document.getElementById('systemPermissionForm').addEventListener('submit', savePermission);
+    chosenTarget = loadChosenTarget(); renderTarget();
+    document.getElementById('deviceScan').addEventListener('click', () => scanDevices()); document.getElementById('serialPortList').addEventListener('click', (event) => { const button = event.target.closest('[data-device-connect]'); if (button) connectTarget(Number(button.dataset.deviceConnect)); });
+    document.getElementById('connectedDevice').addEventListener('click', (event) => { const button = event.target.closest('[data-device-disconnect]'); if (button) disconnectDevice(button.dataset.deviceDisconnect); else if (event.target.closest('[data-target-clear]')) { setChosenTarget(null); renderScanResults(); } });
+    document.getElementById('programChatForm').addEventListener('submit', (event) => { event.preventDefault(); const input = document.getElementById('programChatInput'); sendChat(input.value); input.value = ''; }); document.getElementById('programChatMic').addEventListener('click', toggleMic);
+    CondorWS.ao('ws.ligado', () => { wsOnline = true; }); CondorWS.ao('ws.caiu', () => { wsOnline = false; if (chatTurn) chatFailed({ contexto: 'programacao', mensagem: 'Conexão caiu.' }); });
+    CondorWS.ao('resposta.token', chatToken); CondorWS.ao('resposta.fim', chatFinished); CondorWS.ao('erro', chatFailed);
+    CondorWS.ao('ferramenta.inicio', (message) => { if (message.contexto === 'programacao' && chatTurn) setOrb('thinking', label(message.rotulo, 'TRABALHANDO')); });
+    document.getElementById('programBuffer').addEventListener('input', scheduleSave); document.getElementById('programFile').addEventListener('change', scheduleSave); document.getElementById('programRun').addEventListener('click', runArduino); document.getElementById('programVerify').addEventListener('click', verifyArduino); document.getElementById('deviceCommandSend').addEventListener('click', sendDeviceCommand); document.getElementById('labNew').addEventListener('click', () => { document.getElementById('labForm').hidden = false; document.getElementById('labTitle').focus(); }); document.getElementById('labAskCondor').addEventListener('click', askCondorExperiment); document.getElementById('labForm').addEventListener('submit', createExperiment); document.getElementById('systemRefresh').addEventListener('click', async () => { await loadStatus(); await loadEvents(); }); document.getElementById('systemAiConfig').addEventListener('click', toggleAiConfig); document.getElementById('systemAiProvider').addEventListener('change', syncAiProviderFields); document.getElementById('systemAiForm').addEventListener('submit', saveAiConfig); document.getElementById('systemPermissions').addEventListener('click', (event) => { const button = event.target.closest('[data-permission-capability]'); if (button) showPermission(button); }); document.getElementById('systemPermissionForm').addEventListener('submit', savePermission);
     document.getElementById('commandInput').addEventListener('input', (event) => renderCommands(event.target.value)); document.getElementById('commandResults').addEventListener('click', (event) => { const target = event.target.closest('[data-command-index]'); if (!target) return; closePalette(); commands[Number(target.dataset.commandIndex)]?.run(); }); document.getElementById('commandPalette').addEventListener('click', (event) => { if (event.target.id === 'commandPalette') closePalette(); });
-    CondorWS.ao('core.event', (message) => { const type = message.event?.type || ''; if (['CONTEXT_UPDATED', 'PART_SELECTED', 'PROJECT_OPENED', 'CODE_BUFFER_UPDATED', 'DEVICE_CONNECTED', 'DEVICE_DISCONNECTED', 'EXPERIMENT_CREATED', 'PERMISSION_REQUESTED', 'PERMISSION_GRANTED', 'PERMISSION_REVOKED'].includes(type)) loadStatus(); if (CondorRouter.atual() === 'sistema') loadEvents(); if (CondorRouter.atual() === 'laboratorio' && type.startsWith('EXPERIMENT_')) loadExperiments(); }); loadStatus();
+    CondorWS.ao('core.event', (message) => { const type = message.event?.type || ''; if (type === 'CODE_BUFFER_UPDATED' && loadedProgramProject) onCodeBufferUpdated(message.event); if (['CONTEXT_UPDATED', 'PART_SELECTED', 'PROJECT_OPENED', 'CODE_BUFFER_UPDATED', 'DEVICE_CONNECTED', 'DEVICE_DISCONNECTED', 'EXPERIMENT_CREATED', 'PERMISSION_REQUESTED', 'PERMISSION_GRANTED', 'PERMISSION_REVOKED'].includes(type)) loadStatus(); if (CondorRouter.atual() === 'sistema') loadEvents(); if (CondorRouter.atual() === 'laboratorio' && type.startsWith('EXPERIMENT_')) loadExperiments(); }); loadStatus();
   }
 
-  function atualizar(screen) { if (screen === 'programacao') { loadProgram(); scanDevices(); if (!deviceScanTimer) deviceScanTimer = setInterval(() => { if (CondorRouter.atual() === 'programacao') scanDevices({ quiet: true }); }, 4000); } if (screen === 'laboratorio') { loadStatus().then(loadExperiments); } if (screen === 'sistema') { loadStatus(); loadEvents(); } }
-  return { init, atualizar, openProject, loadStatus };
+  function atualizar(screen) { if (screen === 'programacao') loadProgram(); if (screen === 'laboratorio') { loadStatus().then(loadExperiments); } if (screen === 'sistema') { loadStatus(); loadEvents(); } }
+  return { init, atualizar, openProject, loadStatus, extractSketch };
 })();

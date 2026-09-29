@@ -160,17 +160,52 @@ class ArduinoToolchain:
         return candidates[0]
 
     @staticmethod
-    def _validate(content: str, port: str, fqbn: str, available_ports: set[str]) -> None:
+    def _validate_content(content: str) -> None:
         if not content.strip():
             raise ValueError("o editor está vazio")
         if len(content.encode("utf-8")) > 500_000:
             raise ValueError("código excede 500 KB")
         if not re.search(r"\bvoid\s+setup\s*\(", content) or not re.search(r"\bvoid\s+loop\s*\(", content):
             raise ValueError("o código Arduino precisa conter setup() e loop()")
-        if port not in available_ports:
-            raise ValueError("porta selecionada não está conectada; procure novamente")
+
+    @staticmethod
+    def _validate_fqbn(fqbn: str) -> None:
         if not _FQBN.fullmatch(fqbn):
             raise ValueError("modelo de placa inválido")
+
+    @classmethod
+    def _validate(cls, content: str, port: str, fqbn: str, available_ports: set[str]) -> None:
+        cls._validate_content(content)
+        if port not in available_ports:
+            raise ValueError("porta selecionada não está conectada; procure novamente")
+        cls._validate_fqbn(fqbn)
+
+    @staticmethod
+    def _sketch_name(sketch_name: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_]", "_", Path(sketch_name).stem)[:60].strip("_") or "condor_sketch"
+
+    async def _compile(self, content: str, safe_name: str, fqbn: str, temporary: str) -> tuple[dict[str, Any], Path, Path]:
+        sketch_dir = Path(temporary) / safe_name
+        build_dir = Path(temporary) / "build"
+        sketch_dir.mkdir()
+        build_dir.mkdir()
+        (sketch_dir / f"{safe_name}.ino").write_text(content, encoding="utf-8", newline="\n")
+        result = await self._invoke([
+            "compile", "--fqbn", fqbn, "--build-path", str(build_dir),
+            "--no-color", str(sketch_dir),
+        ], timeout=180)
+        return result, sketch_dir, build_dir
+
+    async def compile_only(self, *, content: str, sketch_name: str, fqbn: str) -> dict[str, Any]:
+        """VERIFICAR: só compila; nenhuma porta é aberta e nada vai para a placa."""
+        if not self.installed:
+            raise RuntimeError("Arduino CLI não está instalado")
+        self._validate_content(content)
+        self._validate_fqbn(fqbn)
+        async with self._lock:
+            with tempfile.TemporaryDirectory(prefix="condor-arduino-") as temporary:
+                compile_result, _, _ = await self._compile(content, self._sketch_name(sketch_name), fqbn, temporary)
+        return {"success": bool(compile_result["ok"]), "phase": "compile", "compile": compile_result, "upload": None}
 
     async def compile_and_upload(
         self, *, content: str, sketch_name: str, port: str, fqbn: str,
@@ -179,18 +214,10 @@ class ArduinoToolchain:
         if not self.installed:
             raise RuntimeError("Arduino CLI não está instalado")
         self._validate(content, port, fqbn, available_ports)
-        safe_name = re.sub(r"[^A-Za-z0-9_]", "_", Path(sketch_name).stem)[:60].strip("_") or "condor_sketch"
+        safe_name = self._sketch_name(sketch_name)
         async with self._lock:
             with tempfile.TemporaryDirectory(prefix="condor-arduino-") as temporary:
-                sketch_dir = Path(temporary) / safe_name
-                build_dir = Path(temporary) / "build"
-                sketch_dir.mkdir()
-                build_dir.mkdir()
-                (sketch_dir / f"{safe_name}.ino").write_text(content, encoding="utf-8", newline="\n")
-                compile_result = await self._invoke([
-                    "compile", "--fqbn", fqbn, "--build-path", str(build_dir),
-                    "--no-color", str(sketch_dir),
-                ], timeout=180)
+                compile_result, sketch_dir, build_dir = await self._compile(content, safe_name, fqbn, temporary)
                 if not compile_result["ok"]:
                     return {"success": False, "phase": "compile", "compile": compile_result, "upload": None}
                 upload_result = await self._invoke([

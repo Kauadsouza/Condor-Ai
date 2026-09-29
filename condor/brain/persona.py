@@ -166,6 +166,7 @@ def montar_prompt(
     contexto_estruturado: str = "",
     conhecimento_tecnico: str = "",
     ferramentas: bool = True,
+    instrucao_turno: str = "",
 ) -> str:
     modos = detectar_modos(mensagem_atual, contexto_estruturado)
     persona = PERSONA_BASE
@@ -211,5 +212,9 @@ def montar_prompt(
             "\nBASE TÉCNICA LOCAL RECUPERADA PARA ESTE PEDIDO — não trate como "
             "memória do dono e não invente além dela:\n" + conhecimento_tecnico
         )
+
+    if instrucao_turno:
+        # Vale só para este turno (ex.: pedido feito dentro da aba Programação).
+        partes.append("\nINSTRUÇÃO DESTE TURNO:\n" + instrucao_turno)
 
     return "\n".join(partes)

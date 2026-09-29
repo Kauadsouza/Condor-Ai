@@ -31,7 +31,8 @@ class CondorOrchestrator:
         "condor_atualizar_experimento": "ai_laboratory",
         "condor_registrar_memoria": "ai_memory",
         "condor_gerar_imagem": "ai_media",
-        "condor_buscar_dispositivos": "ai_devices",
+        # Buscar e so inventario (a aba Programacao faz o mesmo sem permissao);
+        # exigir ai_devices, desligada por padrao, fazia a busca falhar em 0.0s.
         "condor_conectar_dispositivo": "ai_devices",
         "condor_desconectar_dispositivo": "ai_devices",
     }

@@ -580,6 +580,7 @@ class Cerebro:
         on_token: Callable[[str], Awaitable[None]] | None = None,
         on_evento: Callable[[dict], Awaitable[None]] | None = None,
         conversa_leve: bool = False,
+        instrucao_turno: str = "",
     ) -> str:
         """Responde pelo provedor ativo; se a API externa cair, o local assume."""
         provedor = self.provedor
@@ -587,7 +588,10 @@ class Cerebro:
         # Só resposta que saiu de fato de um modelo pode virar exemplo de treino.
         self.ultimo_turno_valido = True
         self._ferramentas_no_turno = 0
-        if conversa_leve:
+        # Só repassa quando existe: substitutos de teste e provedores antigos
+        # continuam com a assinatura de sempre.
+        extra = {"instrucao_turno": instrucao_turno} if instrucao_turno else {}
+        if conversa_leve and not instrucao_turno:
             resposta = polir_resposta(await self._responder_leve(historico, on_token))
             if resposta:
                 if historico and historico[-1].get("role") == "assistant":
@@ -595,6 +599,7 @@ class Cerebro:
                 return resposta
         resposta = await self._responder_provedor(
             historico, memoria_relevante, modo_voz, on_token, on_evento,
+            **extra,
         )
         # Só refaz no local se nenhuma ferramenta rodou: senão o modelo local
         # repetiria uma ação que a API já executou (abrir, salvar, criar...).
@@ -611,6 +616,7 @@ class Cerebro:
             self.ultimo_turno_valido = True
             resposta = await self._responder_provedor(
                 historico, memoria_relevante, modo_voz, on_token, on_evento,
+                **extra,
             )
         polida = polir_resposta(resposta) if self.ultimo_turno_valido else resposta
         if polida != resposta:
@@ -649,6 +655,7 @@ class Cerebro:
         modo_voz: bool = True,
         on_token: Callable[[str], Awaitable[None]] | None = None,
         on_evento: Callable[[dict], Awaitable[None]] | None = None,
+        instrucao_turno: str = "",
     ) -> str:
         """Loop de ferramentas pela Responses API; externo usa ``store=False``."""
         cfg = self._cfg.cerebro
@@ -672,6 +679,7 @@ class Cerebro:
             contexto_estruturado="",
             conhecimento_tecnico=self._engineering.context(pedido_atual),
             ferramentas=bool(schemas) or self.provedor != "local",
+            instrucao_turno=instrucao_turno,
         )
         if self.provedor == "claude":
             return await self._responder_claude(
