@@ -3108,7 +3108,7 @@ class InterfaceBoundaryTests(unittest.TestCase):
         self.assertIn('id="programSaveState"', interface)
         self.assertIn('id="connectedDevice"', interface)
         self.assertIn('id="labAskCondor"', interface)
-        self.assertIn('id="systemContext"', interface)
+        self.assertNotIn('id="systemContextCard"', interface)   # o dono tirou o card "Contexto ativo"
         self.assertIn('id="systemAiForm" hidden', interface)
         self.assertIn('id="systemOpenAiKey" type="password"', interface)
         self.assertIn('id="systemClaudeKey" type="password"', interface)

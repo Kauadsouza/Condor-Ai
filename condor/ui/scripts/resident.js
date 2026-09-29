@@ -9,7 +9,7 @@
   }
   async function refresh() {
     const state=await api('/api/assistant/status');
-    el('residentState').textContent= !state.unlocked ? 'Núcleo ligado · desbloqueie seu cofre.' : `${state.modelo} · ${state.integrity_ok ? 'Integridade validada' : 'Atualização aguardando validação do dono'}. Disponível com o Windows ativo; suspensão e desligamento interrompem o núcleo.`;
+    el('residentState').textContent= !state.unlocked ? 'Cofre bloqueado.' : `${state.modelo} · ${state.integrity_ok ? 'atualizado' : 'versão nova: digite sua palavra de acesso'}`;
     el('residentKeepOpen').checked=state.keep_window_open;
     el('residentKeepOpen').disabled=!state.unlocked;
     el('residentIntegrityForm').hidden=state.integrity_ok!==false;
