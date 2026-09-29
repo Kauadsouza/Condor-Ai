@@ -48,7 +48,7 @@ UI_CELULAR = CODE_ROOT / "condor" / "celular_ui"
 COOKIE = "__Host-condor_celular"
 TOKEN_DIAS = 180
 # Celular esquecido numa gaveta: sem uso por 14 dias, precisa parear de novo.
-OCIOSO_DIAS = 14
+OCIOSO_DIAS = 60
 CONVITE_SEGUNDOS = 5 * 60
 CONVITE_TENTATIVAS = 5
 MAX_APARELHOS = 8
@@ -240,6 +240,11 @@ class CanalCelular:
             tarefa = asyncio.ensure_future(_fechar(ws))
             _EM_VOO.add(tarefa)
             tarefa.add_done_callback(_EM_VOO.discard)
+
+    @property
+    def escutando(self) -> bool:
+        """Algum celular está com a escuta "Condor" ligada agora."""
+        return any(getattr(ws.state, "escuta", False) for ws in self._sockets)
 
     @property
     def tem_player(self) -> bool:
@@ -651,6 +656,11 @@ def montar_app_celular(aparelhos: Aparelhos, canal: CanalCelular, pontes: Pontes
         tipo = msg.get("tipo")
         if tipo == "ping":
             await _responder(socket, {"tipo": "pong"})
+            return
+        if tipo == "escuta":
+            # Com o celular ouvindo, o microfone do PC fica quieto: senão os
+            # dois ouviam o mesmo "Condor" e respondiam em dobro.
+            socket.state.escuta = msg.get("ativa") is True
             return
         if tipo == "voz.player":
             socket.state.voz_player = msg.get("ativo") is True

@@ -124,9 +124,11 @@ class AparelhosTests(unittest.TestCase):
     def test_idle_phone_must_pair_again(self):
         convite = self.aparelhos.novo_convite()
         token, _ = self.aparelhos.parear(convite["codigo"], lambda: True, "iPhone")
-        self.agora[0] += 13 * 86400
+        self.agora[0] += 59 * 86400
         self.assertIsNotNone(self.aparelhos.validar(token))          # uso renova
-        self.agora[0] += 15 * 86400
+        self.agora[0] += 59 * 86400
+        self.assertIsNotNone(self.aparelhos.validar(token))
+        self.agora[0] += 61 * 86400
         self.assertIsNone(self.aparelhos.validar(token))
 
 
@@ -252,9 +254,12 @@ class AppCelularTests(unittest.TestCase):
             ws.send_text(json.dumps({"tipo": "audio", "wav": wav_b64(), "com_nome": True}))
             ws.send_text(json.dumps({"tipo": "audio", "wav": "não é áudio"}))
             self.assertEqual(json.loads(ws.receive_text())["tipo"], "erro")
+            ws.send_text(json.dumps({"tipo": "escuta", "ativa": True}))
             ws.send_text(json.dumps({"tipo": "senha", "texto": SENHA}))
             ws.send_text(json.dumps({"tipo": "ping"}))
             self.assertEqual(json.loads(ws.receive_text())["tipo"], "pong")
+            self.assertTrue(self.canal.escutando)
+        self.assertFalse(self.canal.escutando)                # celular saiu: PC volta a ouvir
         self.assertEqual(self.nucleo.textos, ["Condor, que horas são?"])
         self.assertEqual(self.nucleo.audios[0][1], True)
         self.assertEqual(self.nucleo.senhas, [SENHA])
@@ -352,6 +357,47 @@ class SessaoCelularTests(unittest.IsolatedAsyncioTestCase):
         fala = sessao._nova_fala()
         self.assertIs(fala._entregar, no_pc)
         fala.cancelar()
+
+    async def test_pc_mic_stays_quiet_while_the_phone_listens(self):
+        sessao = self._sessao()
+        processados = []
+
+        class Escuta:
+            voltou = 0
+
+            def voltar_a_ouvir(self):
+                self.voltou += 1
+
+        class Ouvidos:
+            async def transcrever(self, _wav):
+                return "Condor, abre o Spotify"
+
+        async def processar(texto, por_voz, **kw):
+            processados.append(texto)
+
+        async def mudar(_novo):
+            pass
+
+        async def evento(*_a, **_k):
+            pass
+
+        sessao.escuta = Escuta()
+        sessao.ouvidos = Ouvidos()
+        sessao.processar = processar
+        sessao._mudar_estado = mudar
+        sessao._evento = evento
+        escutando = [True]
+
+        async def entregar(_msg):
+            pass
+
+        sessao.ligar_celular(lambda: True, entregar, lambda: escutando[0])
+        await sessao._processar_voz(b"wav", confirmar_nome=True)
+        self.assertEqual(processados, [])                 # o celular responde, não o PC
+        self.assertEqual(sessao.escuta.voltou, 1)          # e o microfone do PC volta a ouvir
+        escutando[0] = False
+        await sessao._processar_voz(b"wav", confirmar_nome=True)
+        self.assertEqual(processados, ["Condor, abre o Spotify"])
 
     async def test_phone_turn_without_phone_player_stays_silent(self):
         sessao = self._sessao()

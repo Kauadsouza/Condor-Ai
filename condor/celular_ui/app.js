@@ -97,7 +97,11 @@
   function conectar() {
     if (socket && socket.readyState <= 1) return;
     socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-    socket.onopen = () => { tentativas = 0; if (somLiberado) enviar({ tipo: 'voz.player', ativo: true }); };
+    socket.onopen = () => {
+      tentativas = 0;
+      if (somLiberado) enviar({ tipo: 'voz.player', ativo: true });
+      enviar({ tipo: 'escuta', ativa: escutaLigada });
+    };
     socket.onmessage = (evento) => { try { tratar(JSON.parse(evento.data)); } catch (_) { /* ignora */ } };
     socket.onclose = (evento) => {
       socket = null;
@@ -193,7 +197,17 @@
   $('toque').addEventListener('click', async () => {
     try { await CondorAudio.ligar(); somLiberado = true; enviar({ tipo: 'voz.player', ativo: true }); } catch (_) { /* tenta no próximo toque */ }
     $('toque').hidden = true;
+    // Abriu o app, um toque e já está ouvindo "Condor", se a escuta estava ligada da última vez.
+    if (!escutaLigada && lembrarEscuta()) await ligarEscuta();
   });
+
+  function lembrarEscuta(valor) {
+    try {
+      if (valor === undefined) return localStorage.getItem('condor.escuta') === '1';
+      localStorage.setItem('condor.escuta', valor ? '1' : '0');
+    } catch (_) { /* navegação privada: só não lembra */ }
+    return false;
+  }
 
   CondorAudio.ouvinte = (wav, meta) => {
     if (!enviar({ tipo: 'audio', wav, com_nome: meta.comNome })) sistema('Sem conexão com o PC agora.');
@@ -228,21 +242,28 @@
   });
 
   $('escutaBotao').addEventListener('click', async () => {
-    if (escutaLigada) { desligarEscuta(); return; }
+    if (escutaLigada) { desligarEscuta(); lembrarEscuta(false); return; }
+    await ligarEscuta();
+  });
+
+  async function ligarEscuta() {
     try {
       await CondorAudio.ligar(); somLiberado = true; enviar({ tipo: 'voz.player', ativo: true });
       await CondorAudio.ligarEscuta();
       escutaLigada = true;
+      lembrarEscuta(true);
+      enviar({ tipo: 'escuta', ativa: true });
       $('escutaBotao').setAttribute('aria-pressed', 'true');
       await manterTelaAcesa();
       pintarEstado(estado);
     } catch (erro) {
       sistema(`Microfone indisponível: ${erro.message || erro}.`);
     }
-  });
+  }
 
   function desligarEscuta() {
     escutaLigada = false;
+    enviar({ tipo: 'escuta', ativa: false });
     CondorAudio.desligarEscuta();
     $('escutaBotao').setAttribute('aria-pressed', 'false');
     soltarTela();

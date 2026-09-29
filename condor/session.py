@@ -151,6 +151,7 @@ class Sessao:
         # iPhone que perguntou, e não para as caixas do PC.
         self._canal_turno = ""
         self._celular_toca: Callable[[], bool] = lambda: False
+        self._celular_escutando: Callable[[], bool] = lambda: False
         self._entregar_celular: Callable[[dict], Awaitable[None]] | None = None
 
         guarda.registrar_pedido_senha(self._pedir_senha)
@@ -176,9 +177,12 @@ class Sessao:
         self._enviar_camera = enviar
 
     def ligar_celular(self, toca: Callable[[], bool],
-                      entregar: Callable[[dict], Awaitable[None]]) -> None:
+                      entregar: Callable[[dict], Awaitable[None]],
+                      escutando: Callable[[], bool] | None = None) -> None:
         """Como mandar a voz de um turno pedido pelo celular de volta a ele."""
         self._celular_toca = toca
+        if escutando is not None:
+            self._celular_escutando = escutando
         self._entregar_celular = entregar
 
     def _nova_fala(self) -> FalaEmFluxo | None:
@@ -260,6 +264,11 @@ class Sessao:
 
     async def _processar_voz(self, wav: bytes, confirmar_nome: bool = False) -> None:
         try:
+            if getattr(self, "_celular_escutando", lambda: False)():
+                # Ele está falando com o celular (escuta ligada lá): o celular
+                # responde; o PC não responde a mesma frase pelas caixas.
+                log.info("Celular escutando; o microfone do PC fica quieto.")
+                return
             if confirmar_nome:
                 # Detector sem chave: "com dor" e "Condor" soam iguais. Só
                 # responde se o Whisper confirmar que o nome foi dito, e sem

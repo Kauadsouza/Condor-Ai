@@ -276,7 +276,8 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         await canal_celular.transmitir(msg)
 
     sessao.ligar_avisos(_avisar)
-    sessao.ligar_celular(lambda: canal_celular.tem_player, canal_celular.entregar_voz)
+    sessao.ligar_celular(lambda: canal_celular.tem_player, canal_celular.entregar_voz,
+                         lambda: canal_celular.escutando)
     sessao.ligar_player(lambda: conexoes.tem_player, conexoes.transmitir_players)
     sessao.ligar_janelas(lambda: conexoes.total > 0)
     sessao.ligar_camera(conexoes.enviar_para_um)
