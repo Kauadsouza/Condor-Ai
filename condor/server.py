@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from condor.actions.guard import Guarda
 from condor.brain.client import Cerebro
+from condor.brain.ollama import modelos_instalados
 from condor.cloud_sync import CloudError, CloudSyncClient
 from condor.config import Config, salvar_config
 from condor.core import (
@@ -772,6 +773,11 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         guarda.auditar("security", "passphrase_rotate", "CONCLUIDA", True, True)
         return {"ok": True}
 
+    @app.get("/api/modelos-locais")
+    async def api_local_models():
+        instalados = await modelos_instalados(config.cerebro.endpoint_local)
+        return {"disponivel": instalados is not None, "modelos": instalados or []}
+
     @app.post("/api/seguranca/segredos")
     async def api_security_secrets(payload: dict):
         if sessao._ocupado.locked():
@@ -790,8 +796,16 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                 brain_data["modelo_claude"] = _texto(payload, "claude_model", 120, False) or brain_data["modelo_claude"]
             if "local_endpoint" in payload:
                 brain_data["endpoint_local"] = _texto(payload, "local_endpoint", 500, False)
-            if "local_model" in payload:
+            if "local_model" in payload and _texto(payload, "local_model", 200, False) != brain_data["modelo_local"]:
                 brain_data["modelo_local"] = _texto(payload, "local_model", 200, False)
+                # Modelo que o Ollama não tem deixava o chat mudo. Se o Ollama
+                # não responder, não dá pra saber: salva e o teste do conector avisa.
+                instalados = await modelos_instalados(brain_data["endpoint_local"])
+                if instalados is not None and brain_data["modelo_local"] not in instalados:
+                    return JSONResponse(
+                        {"erro": f"o modelo {brain_data['modelo_local']} não está instalado no Ollama"},
+                        status_code=400,
+                    )
             brain_data["compartilhar_memoria_com_conector"] = True
             brain_data["aprendizado_automatico_por_conector"] = True
             config.cerebro = type(config.cerebro)(**brain_data)

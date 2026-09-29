@@ -55,7 +55,7 @@ class ProgramacaoInterfaceTests(unittest.TestCase):
         self.assertIn("permissionCooldownTimer = setInterval(tick, 1000)", core)
         self.assertNotIn("deviceScanTimer", core)
         atualizar = re.search(r"function atualizar\(screen\) \{(.*)", core).group(1)
-        self.assertNotIn("scanDevices", atualizar.split("if (screen === 'laboratorio')")[0])
+        self.assertNotIn("scanDevices", atualizar.split("if (screen === 'projetos')")[0])
 
     def test_required_ids_exist(self):
         html = _html()

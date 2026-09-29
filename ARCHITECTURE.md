@@ -110,8 +110,8 @@ Engine        |          |            |
   e devolve citacoes/URLs; no provedor local, `buscar_web` e `ler_site` formam um
   fallback publico. Conteudo de pagina permanece dado nao confiavel e nunca
   amplia permissoes do Condor;
-- `CondorOrchestrator`: liga a IA ao estado real de Projetos, Programacao,
-  Laboratorio, Memoria e Dispositivos. Toda operacao valida o cofre, a permissao
+- `CondorOrchestrator`: liga a IA ao estado real de Projetos (com os experimentos), Programacao,
+  Memoria e Dispositivos. Toda operacao valida o cofre, a permissao
   da capacidade e os limites de entrada antes de alterar o snapshot cifrado;
 - `ProjectEngine`: projetos, pecas, rascunhos, versoes e integracao explicita;
 - `DeviceBridge`: contratos modulares para Serial, Bluetooth e Wi-Fi;
@@ -212,8 +212,8 @@ na propria regiao selecionada. Programacao concentra o editor com deteccao
 automatica de linguagem e buffer cifrado por projeto, descoberta e conexao
 Serial/Arduino explicita pelo Device Bridge e o estado visual de voz e gestos.
 Camera Bridge nao aparece nessa area; nao existem abas paralelas de
-Desenvolvimento, Corpo ou Dispositivos. Laboratorio organiza experimentos e
-Sistema mostra permissoes, contexto ativo e eventos sem duplicar explicacoes.
+Desenvolvimento, Corpo ou Dispositivos. Os experimentos ficam dentro de Projetos e
+Sistema mostra conectores, permissoes e a validacao de integridade.
 Chat, push-to-talk e ativacao por voz entram pela mesma `Sessao`, portanto usam
 o mesmo `AIGateway`, contexto e orquestrador. O provedor nao recebe acesso geral
 ao processo: ele escolhe somente ferramentas tipadas do catalogo; comandos

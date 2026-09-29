@@ -53,13 +53,23 @@ class GesturePCControlTests(unittest.TestCase):
             "volume_mais", "volume_menos",
         })
         fake = FakeExecutor()
-        control = GesturePCControl(fake)
+        control = GesturePCControl(fake, janela_ativa=lambda: ("Spotify.exe", "Spotify Premium"))
         for action in GESTURE_PC_ACTIONS:
             self.assertTrue(control.run(action)["ok"])
         self.assertEqual(fake.calls, [
             ("atalho", "playpause"), ("atalho", "nexttrack"), ("atalho", "prevtrack"),
             ("rolar", 3), ("rolar", -3), ("atalho", "volumeup"), ("atalho", "volumedown"),
         ])
+
+    def test_swipe_turns_the_slide_when_a_presentation_is_in_front(self):
+        for processo, titulo in (("POWERPNT.EXE", "Aula.pptx - PowerPoint"),
+                                 ("chrome.exe", "Pitch - Apresentações Google - Google Chrome")):
+            fake = FakeExecutor()
+            control = GesturePCControl(fake, janela_ativa=lambda p=processo, t=titulo: (p, t))
+            control.run("proximo")
+            control.run("anterior")
+            control.run("playpause")
+            self.assertEqual(fake.calls, [("atalho", "right"), ("atalho", "left"), ("atalho", "playpause")])
 
     def test_unknown_or_raw_key_actions_are_rejected(self):
         control = GesturePCControl(FakeExecutor())

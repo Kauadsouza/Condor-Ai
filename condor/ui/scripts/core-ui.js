@@ -23,7 +23,7 @@ const CondorCoreUI = (() => {
     { label: 'Abrir Condor X · Modelo 01', hint: 'PROJETO', run: () => openProject() },
     { label: 'Abrir programação e conexões', hint: 'ÁREA', run: () => CondorRouter.ir('programacao') },
     { label: 'Pesquisar Arduino / Serial', hint: 'CONEXÕES', run: () => { CondorRouter.ir('programacao'); scanDevices(); } },
-    { label: 'Abrir laboratório', hint: 'EXPERIMENTOS', run: () => CondorRouter.ir('laboratorio') },
+    { label: 'Experimentos do projeto', hint: 'PROJETOS', run: () => CondorRouter.ir('projetos') },
     { label: 'Abrir sistema', hint: 'ESTADO', run: () => CondorRouter.ir('sistema') },
     { label: 'Conversar com o Condor', hint: 'CHAT', run: () => CondorRouter.ir('conversacao') },
   ];
@@ -150,7 +150,23 @@ const CondorCoreUI = (() => {
 
   function syncAiProviderFields() { const selected = document.getElementById('systemAiProvider').value; document.querySelectorAll('[data-provider-field]').forEach((field) => { field.hidden = selected !== 'auto' && field.dataset.providerField !== selected; }); }
 
-  function toggleAiConfig() { const form = document.getElementById('systemAiForm'); form.hidden = !form.hidden; document.getElementById('systemAiMessage').textContent = ''; if (!form.hidden) { syncAiProviderFields(); document.getElementById('systemAiProvider').focus(); } }
+  function toggleAiConfig() { const form = document.getElementById('systemAiForm'); form.hidden = !form.hidden; document.getElementById('systemAiMessage').textContent = ''; if (!form.hidden) { syncAiProviderFields(); markInstalledModels(); document.getElementById('systemAiProvider').focus(); } }
+
+  // Só dá pra escolher o que o Ollama tem baixado: modelo ausente deixava o chat
+  // mudo. O "CONDOR TREINADO" só aparece depois de instalado.
+  async function markInstalledModels() {
+    let data; try { data = await safeFetch('/api/modelos-locais'); } catch (_) { return; }
+    if (!data.disponivel) return;
+    const installed = new Set(data.modelos);
+    const select = document.getElementById('systemLocalModel');
+    Array.from(select.options).forEach((option) => {
+      if (!option.dataset.label) option.dataset.label = option.textContent;
+      const ok = installed.has(option.value);
+      option.disabled = !ok && option.value !== select.value;
+      option.hidden = !ok && option.value === 'condor-treinado' && option.value !== select.value;
+      option.textContent = ok ? option.dataset.label : `${option.dataset.label} · NÃO INSTALADO`;
+    });
+  }
   async function saveAiConfig(event) {
     event.preventDefault(); const submit = event.currentTarget.querySelector('button[type="submit"]'); const message = document.getElementById('systemAiMessage');
     const providerMode = document.getElementById('systemAiProvider').value; const payload = { provider_mode: providerMode };
@@ -504,7 +520,7 @@ const CondorCoreUI = (() => {
     } catch (_) { /* cofre bloqueado */ }
   }
   async function createExperiment(event) { event.preventDefault(); await safeFetch('/api/lab/experiments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: status?.context?.project_id || 'condor-x', title: document.getElementById('labTitle').value, objective: document.getElementById('labObjective').value, origin: 'owner' }) }); event.target.reset(); event.target.hidden = true; await loadExperiments(); await loadStatus(); }
-  function askCondorExperiment() { CondorRouter.ir('conversacao'); const input = document.getElementById('textInput'); input.value = 'Condor, analise o projeto atual e proponha um experimento seguro para o Laboratório.'; input.focus(); }
+  function askCondorExperiment() { CondorRouter.ir('conversacao'); const input = document.getElementById('textInput'); input.value = 'Condor, analise o projeto atual e proponha um experimento seguro para ele.'; input.focus(); }
 
   function renderCommands(query = '') { const normalized = query.trim().toLowerCase(); const visible = commands.filter((command) => command.label.toLowerCase().includes(normalized)); document.getElementById('commandResults').innerHTML = visible.map((command) => `<button type="button" data-command-index="${commands.indexOf(command)}"><span>${command.label}</span><small>${command.hint}</small></button>`).join(''); }
   function openPalette() { document.getElementById('commandPalette').hidden = false; renderCommands(); requestAnimationFrame(() => document.getElementById('commandInput').focus()); }
@@ -521,9 +537,9 @@ const CondorCoreUI = (() => {
     CondorWS.ao('ferramenta.inicio', (message) => { if (message.contexto === 'programacao' && chatTurn) setOrb('thinking', label(message.rotulo, 'TRABALHANDO')); });
     document.getElementById('programBuffer').addEventListener('input', scheduleSave); document.getElementById('programFile').addEventListener('change', scheduleSave); document.getElementById('programRun').addEventListener('click', runArduino); document.getElementById('programVerify').addEventListener('click', verifyArduino); document.getElementById('deviceCommandSend').addEventListener('click', sendDeviceCommand); document.getElementById('labNew').addEventListener('click', () => { document.getElementById('labForm').hidden = false; document.getElementById('labTitle').focus(); }); document.getElementById('labAskCondor').addEventListener('click', askCondorExperiment); document.getElementById('labForm').addEventListener('submit', createExperiment); document.getElementById('systemRefresh').addEventListener('click', () => loadStatus()); document.getElementById('systemAiConfig').addEventListener('click', toggleAiConfig); document.getElementById('systemAiProvider').addEventListener('change', syncAiProviderFields); document.getElementById('systemAiForm').addEventListener('submit', saveAiConfig); document.getElementById('systemPermissions').addEventListener('click', (event) => { const button = event.target.closest('[data-permission-capability]'); if (button) showPermission(button); }); document.getElementById('systemPermissionForm').addEventListener('submit', savePermission);
     document.getElementById('commandInput').addEventListener('input', (event) => renderCommands(event.target.value)); document.getElementById('commandResults').addEventListener('click', (event) => { const target = event.target.closest('[data-command-index]'); if (!target) return; closePalette(); commands[Number(target.dataset.commandIndex)]?.run(); }); document.getElementById('commandPalette').addEventListener('click', (event) => { if (event.target.id === 'commandPalette') closePalette(); });
-    CondorWS.ao('core.event', (message) => { const type = message.event?.type || ''; if (type === 'CODE_BUFFER_UPDATED' && loadedProgramProject) onCodeBufferUpdated(message.event); if (['CONTEXT_UPDATED', 'PART_SELECTED', 'PROJECT_OPENED', 'CODE_BUFFER_UPDATED', 'DEVICE_CONNECTED', 'DEVICE_DISCONNECTED', 'EXPERIMENT_CREATED', 'PERMISSION_REQUESTED', 'PERMISSION_GRANTED', 'PERMISSION_REVOKED'].includes(type)) loadStatus(); if (CondorRouter.atual() === 'laboratorio' && type.startsWith('EXPERIMENT_')) loadExperiments(); }); loadStatus();
+    CondorWS.ao('core.event', (message) => { const type = message.event?.type || ''; if (type === 'CODE_BUFFER_UPDATED' && loadedProgramProject) onCodeBufferUpdated(message.event); if (['CONTEXT_UPDATED', 'PART_SELECTED', 'PROJECT_OPENED', 'CODE_BUFFER_UPDATED', 'DEVICE_CONNECTED', 'DEVICE_DISCONNECTED', 'EXPERIMENT_CREATED', 'PERMISSION_REQUESTED', 'PERMISSION_GRANTED', 'PERMISSION_REVOKED'].includes(type)) loadStatus(); if (CondorRouter.atual() === 'projetos' && type.startsWith('EXPERIMENT_')) loadExperiments(); }); loadStatus();
   }
 
-  function atualizar(screen) { if (screen === 'programacao') loadProgram(); if (screen === 'laboratorio') { loadStatus().then(loadExperiments); } if (screen === 'sistema') loadStatus(); }
+  function atualizar(screen) { if (screen === 'programacao') loadProgram(); if (screen === 'projetos') { loadStatus().then(loadExperiments); } if (screen === 'sistema') loadStatus(); }
   return { init, atualizar, openProject, loadStatus, extractSketch };
 })();

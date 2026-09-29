@@ -43,7 +43,7 @@ const CondorRouter = (() => {
     else if (tela === 'cell') CondorCell.atualizar();
     else if (tela === 'memoria') CondorMemoria.atualizar();
     else if (tela === 'galeria') CondorGaleria.atualizar();
-    else if (tela === 'projetos') CondorProjetos.atualizar();
+    else if (tela === 'projetos') { CondorProjetos.atualizar(); CondorCoreUI.atualizar(tela); }
     else CondorCoreUI.atualizar(tela);
   }
 

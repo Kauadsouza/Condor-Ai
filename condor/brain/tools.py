@@ -192,7 +192,7 @@ ESQUEMAS.extend([
     _f("condor_restaurar_codigo", "Restaura uma revisao anterior como uma nova revisao do projeto.",
        {"project_id": _TXT, "revision": _NUM}, ["project_id", "revision"]),
     _f("condor_criar_experimento",
-       "Cria no Laboratorio um experimento proposto, ligado ao projeto atual.",
+       "Cria um experimento proposto dentro do projeto atual (aba Projetos).",
        {"project_id": _TXT, "title": _TXT, "objective": _TXT}, ["project_id", "title"]),
     _f("condor_atualizar_experimento",
        "Move um experimento entre proposed, testing e done sem inventar resultado.",

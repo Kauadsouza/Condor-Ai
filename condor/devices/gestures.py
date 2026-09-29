@@ -304,9 +304,11 @@ class GesturePCControl:
 
     MAX_PER_SECOND = 8
 
-    def __init__(self, executor_module=None, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, executor_module=None, clock: Callable[[], float] = time.monotonic,
+                 janela_ativa: Callable[[], tuple[str, str]] | None = None) -> None:
         self._executor = executor_module
         self._clock = clock
+        self._janela_ativa = janela_ativa or _janela_em_primeiro_plano
         self._lock = threading.Lock()
         self._recent: deque[float] = deque()
 
@@ -333,4 +335,39 @@ class GesturePCControl:
         kind, value = GESTURE_PC_ACTIONS[action]
         if kind == "rolar":
             return executor.rolar(int(value))
+        # Deslizar numa apresentação passa o slide; no resto, troca a música.
+        if action in _SETAS_DE_SLIDE and _e_apresentacao(*self._janela_ativa()):
+            return executor.atalho(_SETAS_DE_SLIDE[action])
         return executor.atalho(str(value))
+
+
+_SETAS_DE_SLIDE = {"proximo": "right", "anterior": "left"}
+_PROCESSOS_DE_SLIDE = {"powerpnt.exe", "pptview.exe", "soffice.bin", "simpress.exe"}
+_TITULOS_DE_SLIDE = ("powerpoint", "apresentações google", "google slides", "apresentação de slides",
+                     "slide show")
+
+
+def _e_apresentacao(processo: str, titulo: str) -> bool:
+    titulo = titulo.lower()
+    return processo.lower() in _PROCESSOS_DE_SLIDE or any(t in titulo for t in _TITULOS_DE_SLIDE)
+
+
+def _janela_em_primeiro_plano() -> tuple[str, str]:
+    """(processo, título) da janela em foco; vazio fora do Windows ou em erro."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        janela = user32.GetForegroundWindow()
+        if not janela:
+            return "", ""
+        tamanho = user32.GetWindowTextLengthW(janela)
+        buffer = ctypes.create_unicode_buffer(tamanho + 1)
+        user32.GetWindowTextW(janela, buffer, tamanho + 1)
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(janela, ctypes.byref(pid))
+        import psutil
+        return psutil.Process(pid.value).name(), buffer.value
+    except Exception:
+        return "", ""

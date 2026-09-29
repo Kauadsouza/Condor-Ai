@@ -42,6 +42,27 @@ def _loopback(endpoint: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+async def modelos_instalados(endpoint: str) -> list[str] | None:
+    """Modelos que o Ollama tem baixados; None quando não deu pra perguntar."""
+    try:
+        url = f"{_loopback(endpoint)}/api/tags"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3), trust_env=False) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            modelos = response.json().get("models") or []
+    except (ValueError, httpx.HTTPError):
+        return None
+    nomes = set()
+    for item in modelos:
+        nome = str(item.get("name") or "")
+        if nome:
+            nomes.add(nome)
+            # "condor-treinado:latest" também responde por "condor-treinado"
+            if nome.endswith(":latest"):
+                nomes.add(nome[: -len(":latest")])
+    return sorted(nomes)
+
+
 async def embeddings_ollama(*, endpoint: str, model: str, textos: list[str]) -> list[list[float]]:
     """Vetores normalizados (cosseno = produto escalar) pelo /api/embed local."""
     url = f"{_loopback(endpoint)}/api/embed"

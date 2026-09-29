@@ -3627,6 +3627,41 @@ class WakeWordTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(escuta.ativa)
 
 
+class LocalModelsTests(unittest.IsolatedAsyncioTestCase):
+    """Só dá pra escolher modelo que o Ollama tem; sem Ollama, não dá pra afirmar nada."""
+
+    async def test_lists_installed_models_with_latest_alias(self):
+        import httpx
+        from unittest import mock
+        from condor.brain import ollama
+
+        def responder(request):
+            self.assertEqual(request.url.path, "/api/tags")
+            return httpx.Response(200, json={"models": [
+                {"name": "qwen3:4b-instruct"}, {"name": "condor-treinado:latest"}, {"name": ""},
+            ]})
+
+        real = httpx.AsyncClient
+        with mock.patch.object(ollama.httpx, "AsyncClient",
+                               lambda **kw: real(transport=httpx.MockTransport(responder), **kw)):
+            nomes = await ollama.modelos_instalados("http://127.0.0.1:11434/v1")
+        self.assertEqual(nomes, ["condor-treinado", "condor-treinado:latest", "qwen3:4b-instruct"])
+
+    async def test_unknown_when_ollama_is_down_or_not_local(self):
+        import httpx
+        from unittest import mock
+        from condor.brain import ollama
+
+        def caiu(_request):
+            raise httpx.ConnectError("recusado")
+
+        real = httpx.AsyncClient
+        with mock.patch.object(ollama.httpx, "AsyncClient",
+                               lambda **kw: real(transport=httpx.MockTransport(caiu), **kw)):
+            self.assertIsNone(await ollama.modelos_instalados("http://127.0.0.1:11434/v1"))
+        self.assertIsNone(await ollama.modelos_instalados("http://example.com:11434/v1"))
+
+
 class TrainingDatasetTests(unittest.TestCase):
     """Só respostas reais e úteis viram treino; correção do dono vale mais."""
 
