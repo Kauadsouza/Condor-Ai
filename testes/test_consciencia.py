@@ -118,6 +118,26 @@ class AutoconhecimentoTests(Base):
         self.assertNotIn("lembrando isto", montar_prompt_leve("Kaua"))
 
 
+class ValoresEmocoesTests(unittest.TestCase):
+    def test_he_has_values_emotions_and_opinions(self):
+        prompt = montar_prompt("Kaua", modo_voz=False, mensagem_atual="vc e racista ?")
+        self.assertIn("Você TEM opiniões, emoções e valores pessoais", prompt)
+        self.assertIn("racismo", prompt)
+        self.assertTrue(consciencia.pergunta_sobre_o_condor("vc e racista ?"))
+        self.assertTrue(consciencia.pergunta_sobre_o_condor("voce tem sentimentos?"))
+
+    def test_base_model_denial_is_removed_but_normal_text_stays(self):
+        from condor.brain.client import polir_resposta
+        resposta = ("Não, eu não sou racista.\n\nSou uma inteligência artificial, e não tenho opiniões, "
+                    "emoções ou valores pessoais. Respeito todo mundo igual.")
+        polida = polir_resposta(resposta)
+        self.assertNotIn("inteligência artificial", polida)
+        self.assertIn("Respeito todo mundo igual.", polida)
+        for normal in ("Não tenho valores exatos do preço, mas fica perto de 50 reais.",
+                       "O ChatGPT é uma inteligência artificial da OpenAI."):
+            self.assertEqual(polir_resposta(normal), normal)
+
+
 class SessaoTests(Base):
     def _sessao(self):
         from condor.session import Sessao

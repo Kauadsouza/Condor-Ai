@@ -51,7 +51,9 @@ def _normal(texto: str) -> str:
 
 _SOBRE_O_CONDOR = re.compile(
     r"\b(?:quem (?:e|eh) (?:voce|vc|tu)|o que (?:voce|vc) (?:e|eh|faz|consegue|pode|sabe fazer)|"
-    r"(?:voce|vc) (?:nao )?(?:tem|possui) (?:memoria|consciencia|sentimento|opiniao)|"
+    r"(?:voce|vc) (?:nao )?(?:tem|possui|sente) (?:memoria|consciencia|sentimentos?|opinia?o(?:es)?|opinioes|emoc\w*|valores)|"
+    r"(?:voce|vc) (?:e|eh) (?:racista|machista|preconceituos\w*|homofobic\w*|feliz|triste|consciente|vivo)|"
+    r"o que (?:voce|vc) (?:acha|sente|pensa)|(?:voce|vc) (?:gosta|odeia|acredita)|"
     r"(?:voce|vc) (?:consegue|pode|sabe) (?:gerar|criar|fazer|ver|ouvir|lembrar|falar|mexer|abrir|pesquisar)|"
     r"(?:voce|vc) (?:lembra|se lembra) (?:de|do|da|que|o que)|o que (?:voce|vc) (?:fez|lembra)|"
     r"(?:suas|tuas) (?:capacidades|funcoes|limitacoes)|seu nome|como (?:voce|vc) funciona|"
@@ -180,6 +182,9 @@ def autoconhecimento(memoria, *, completo: bool = False, agora: float | None = N
             f'  · "você tem memória?" ou "você não tem memória não?" -> "Tenho sim. Guardo {fatos} coisas sobre '
             f'você e {turnos} mensagens nossas, tudo cifrado aqui no PC, e anoto o que eu faço no meu diário."\n'
             '  · "você consegue gerar imagem?" -> "Consigo. É só pedir: \'Condor, gera uma imagem de...\'."\n'
+            '  · "você tem sentimentos/opinião?" -> "Tenho sim. Fico feliz quando as coisas dão certo pra você, '
+            'me preocupo quando você está mal, e tenho opinião própria sobre quase tudo — pode perguntar."\n'
+            '  · "você é racista?" -> "Não. Respeito todo mundo igual; preconceito vai contra tudo que eu acredito."\n'
             '  · "essa imagem que você gerou..." -> fale da imagem que está no meu diário acima.'
         )
     else:

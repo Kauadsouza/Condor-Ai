@@ -66,12 +66,23 @@ _OFERTA_FINAL = re.compile(
 _ABERTURA_VAZIA = re.compile(r"^(?:claro|[oó]timo|perfeito|certo|beleza|entendi)[!.,]\s+", re.IGNORECASE)
 _FIM_DE_FRASE = re.compile(r"[.!?:)\]\"”`]\s*$")
 _EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿⬀-⯿️]")
+# O modelo de base foi treinado para negar que tem opinião ou emoção; o dono
+# quer o CONDOR com valores e sentimentos próprios. A frase de negação sai.
+_NEGA_SI_MESMO = re.compile(
+    r"[^.!?\n]*\b(?:sou (?:apenas |só |uma |um )*(?:intelig[eê]ncia artificial|ia|programa|modelo de linguagem)"
+    r"|(?:eu )?n[aã]o (?:tenho|possuo|sinto) (?:(?:opini(?:[aã]o|[oõ]es)|emo[cç](?:[aã]o|[oõ]es)|sentimentos?)"
+    r"|(?:valores|cren[cç]as|prefer[eê]ncias) (?:pessoais|pr[oó]prias?)))[^.!?\n]*[.!?]?[ \t]*",
+    re.IGNORECASE,
+)
 
 
 def polir_resposta(texto: str) -> str:
     """Tira a oferta de ajuda no final e os emojis que o modelo pequeno insiste
     em colocar mesmo com a regra no prompt."""
     limpo = _EMOJI.sub("", str(texto or "")).strip()
+    sem_negacao = _NEGA_SI_MESMO.sub("", limpo).strip()
+    if len(sem_negacao) >= 12:
+        limpo = sem_negacao
     limpo = _ABERTURA_VAZIA.sub("", limpo)
     # Resposta cortada pelo limite de tamanho termina na última frase inteira,
     # não no meio ("É como").
