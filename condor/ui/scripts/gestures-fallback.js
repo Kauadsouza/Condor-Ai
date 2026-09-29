@@ -5,7 +5,7 @@
  */
 const CondorGestosReserva = (() => {
   const $ = (id) => document.getElementById(id);
-  const BLOCKED_GESTURE_ACTIONS = '#programRun,#deviceCommandSend,#systemPermissionSubmit,[data-permission-decision],[data-device-disconnect],button[type="submit"]';
+  const BLOCKED_GESTURE_ACTIONS = '#programRun,#programConfirmYes,#deviceCommandSend,#deviceCommandConfirmYes,#systemPermissionSubmit,[data-permission-decision],[data-device-disconnect],button[type="submit"]';
   let token = '';
   let video = null;
   let render = () => {};

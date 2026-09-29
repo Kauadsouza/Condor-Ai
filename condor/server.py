@@ -1514,12 +1514,42 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             await event_bus.publish("GESTURE_SESSION_STOPPED", {}, source="gesture_controller")
         return {"ok": True, "stopped": stopped}
 
+    @app.post("/api/programming/arduino/verify")
+    async def api_programming_arduino_verify(payload: dict):
+        """VERIFICAR: compila o código salvo para a placa escolhida, sem gravar."""
+        if response := _memoria_pronta():
+            return response
+        try:
+            project_id = str(payload.get("project_id") or context_engine.snapshot().get("project_id") or "condor-x")[:80]
+            if memoria.get_project(project_id) is None:
+                raise ValueError("projeto não encontrado")
+            buffer = memoria.code_buffer(project_id)
+            if not buffer or buffer.get("language") != "arduino":
+                raise ValueError("salve um código Arduino com setup() e loop() antes de verificar")
+            fqbn = _texto(payload, "fqbn", 160)
+            result = await arduino_toolchain.compile_only(
+                content=str(buffer.get("content") or ""),
+                sketch_name=str(buffer.get("name") or "programa.ino"), fqbn=fqbn,
+            )
+            return {**result, "fqbn": fqbn}
+        except (ValueError, RuntimeError, TypeError) as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+
     @app.post("/api/programming/arduino/run")
     async def api_programming_arduino_run(payload: dict):
         if response := _memoria_pronta():
             return response
+        if not bool(payload.get("confirmed")):
+            return JSONResponse({"erro": "confirmação explícita necessária"}, status_code=409)
         if not memoria.permission_allowed("arduino_upload"):
-            return JSONResponse({"erro": "gravação Arduino bloqueada no painel Sistema"}, status_code=403)
+            request_item = memoria.request_permission(
+                "arduino_upload", "Gravar o código do editor na placa escolhida.",
+                "programming_workspace",
+            )
+            return JSONResponse(
+                {"erro": "gravação Arduino bloqueada no painel Sistema", "permission_request": request_item},
+                status_code=403,
+            )
         try:
             project_id = str(payload.get("project_id") or context_engine.snapshot().get("project_id") or "condor-x")[:80]
             if memoria.get_project(project_id) is None:
@@ -2427,6 +2457,16 @@ _EM_VOO: set[asyncio.Task] = set()
 CAMERA_WS_MAX = 4_300_000
 
 
+def _alvo_programacao(valor) -> dict:
+    """Só texto curto de nome/porta/fqbn chega ao prompt; nada mais do cliente."""
+    if not isinstance(valor, dict):
+        return {}
+    return {
+        chave: " ".join(str(valor.get(chave) or "").split())[:120]
+        for chave in ("name", "port", "fqbn") if valor.get(chave)
+    }
+
+
 async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
     tipo = msg.get("tipo")
 
@@ -2437,6 +2477,10 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
                 "tipo": "erro", "mensagem": "Mensagem excede 8000 caracteres."
             }, ensure_ascii=False))
             return
+        # A aba Programação conversa pelo mesmo socket; o contexto marca o
+        # turno para o painel certo e o alvo diz para qual placa escrever.
+        contexto = "programacao" if msg.get("contexto") == "programacao" else ""
+        alvo = _alvo_programacao(msg.get("alvo")) if contexto else None
         if texto:
             # Solto numa tarefa pra não travar o WebSocket enquanto ele pensa —
             # é o que mantém a interface respondendo durante a resposta.
@@ -2444,13 +2488,18 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
                 try:
                     if msg.get("modo_voz") is True:
                         await sessao.processar(texto, por_voz=True, reproduzir_voz=False)
+                    elif contexto:
+                        await sessao.processar_texto(texto, contexto=contexto, alvo=alvo)
                     else:
                         await sessao.processar_texto(texto)
                 except Exception as exc:
                     log.error("Falha no turno: %s", type(exc).__name__)
                     await sessao._mudar_estado("ouvindo" if sessao.acordado else "dormindo")
                     try:
-                        await socket.send_text(json.dumps({"tipo": "erro", "mensagem": "Não consegui concluir esta resposta. Tente novamente."}))
+                        erro = {"tipo": "erro", "mensagem": "Não consegui concluir esta resposta. Tente novamente."}
+                        if contexto:
+                            erro["contexto"] = contexto
+                        await socket.send_text(json.dumps(erro))
                     except Exception:
                         pass
             tarefa = asyncio.create_task(processar_com_recuperacao())

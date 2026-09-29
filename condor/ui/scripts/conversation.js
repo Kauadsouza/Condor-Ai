@@ -18,6 +18,8 @@ const CondorConversa = (() => {
   let conectado = false;
   const fila = [];
   const LIMITE_FILA = 20;
+  // Turnos pedidos pela aba Programação voltam marcados; só o painel de lá mostra.
+  const deOutroPainel = (m) => Boolean(m && m.contexto === 'programacao');
 
   function init() {
     CondorWS.ao('ws.ligado', () => { conectado=true; });
@@ -65,16 +67,18 @@ const CondorConversa = (() => {
     });
     CondorWS.ao('conversa.historico', carregarHistorico);
     CondorWS.ao('conversa.limpa', limparTela);
-    CondorWS.ao('resposta.token', (m) => acrescentar(m.texto));
+    CondorWS.ao('resposta.token', (m) => { if (!deOutroPainel(m)) acrescentar(m.texto); });
     CondorWS.ao('resposta.fim', (m) => {
+      if (deOutroPainel(m)) return;
       finalizar(m.texto, m.fontes || [], m.treino_id || ''); concluirTurno();
     });
-    CondorWS.ao('ferramenta.inicio', (m) => acaoIniciou(m));
-    CondorWS.ao('ferramenta.fim', (m) => acaoTerminou(m));
+    CondorWS.ao('ferramenta.inicio', (m) => { if (!deOutroPainel(m)) acaoIniciou(m); });
+    CondorWS.ao('ferramenta.fim', (m) => { if (!deOutroPainel(m)) acaoTerminou(m); });
     CondorWS.ao('conector.reserva', (m) => {
       mostrarAviso(`API ${String(m.de || '').toUpperCase()} INDISPONÍVEL · RESPONDENDO COM O MODELO LOCAL`, true);
     });
     CondorWS.ao('erro', (m) => {
+      if (deOutroPainel(m)) return;
       finalizar(m.mensagem || 'Deu ruim aqui.'); concluirTurno();
     });
     // O servidor recusa um pedido novo enquanto termina o anterior. Sem isto a

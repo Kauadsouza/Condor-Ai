@@ -45,6 +45,22 @@ def chamou_condor(texto: str) -> bool:
     palavras = re.findall(r"[a-zà-ÿ]+", str(texto or "").casefold())[:4]
     return "condor" in palavras
 
+CONTEXTO_PROGRAMACAO = "programacao"
+
+
+def instrucao_programacao(alvo: dict | None = None) -> str:
+    """Pedido feito na aba Programação: um sketch completo, sem prometer upload."""
+    alvo = alvo if isinstance(alvo, dict) else {}
+    nome = " ".join(str(alvo.get("name") or "").split())[:80]
+    fqbn = " ".join(str(alvo.get("fqbn") or "").split())[:80]
+    placa = " · ".join(parte for parte in (nome, fqbn) if parte) or "Arduino (placa ainda não escolhida)"
+    return (
+        "Você está na aba Programação. Escreva UM sketch Arduino completo para a placa "
+        f"{placa} em um bloco ```cpp, curto explicando o que faz; não diga que enviou "
+        "ao Arduino — o dono clica Enviar."
+    )
+
+
 ROOT = Path(__file__).parent.parent
 
 DORMINDO = "dormindo"
@@ -83,6 +99,9 @@ class Sessao:
         self._ultimo_aprendizado: dict | None = None
         self._tem_player: Callable[[], bool] = lambda: False
         self._fala: FalaEmFluxo | None = None
+        # Contexto do turno em andamento (ex.: "programacao"); marca as
+        # respostas para que só o painel de origem as mostre.
+        self._contexto_turno = ""
 
         guarda.registrar_pedido_senha(self._pedir_senha)
 
@@ -129,6 +148,8 @@ class Sessao:
         self.voz.calar()
 
     async def _evento(self, tipo: str, **dados) -> None:
+        if self._contexto_turno and tipo.startswith(("resposta.", "ferramenta.")):
+            dados.setdefault("contexto", self._contexto_turno)
         if self._avisar:
             try:
                 await self._avisar({"tipo": tipo, **dados})
@@ -197,147 +218,160 @@ class Sessao:
 
     # ── Entrada de texto (vem da janela) ───────────────────────────────────
 
-    async def processar_texto(self, texto: str) -> None:
+    async def processar_texto(self, texto: str, contexto: str = "",
+                              alvo: dict | None = None) -> None:
         if texto.strip():
-            await self.processar(texto.strip(), por_voz=False)
+            await self.processar(texto.strip(), por_voz=False, contexto=contexto, alvo=alvo)
 
     # ── O caminho comum ────────────────────────────────────────────────────
 
-    async def processar(self, texto: str, por_voz: bool, *, reproduzir_voz: bool = True) -> None:
+    async def processar(self, texto: str, por_voz: bool, *, reproduzir_voz: bool = True,
+                        contexto: str = "", alvo: dict | None = None) -> None:
         # asyncio.Lock e justo: pedidos simultaneos aguardam aqui na ordem em
         # que chegaram. Nada e descartado se voz, outra janela ou uma corrida de
         # rede enviar enquanto o Condor ainda esta fechando a resposta anterior.
         async with self._ocupado:
-            if not self.acordado:
-                await self.acordar()
-            self.ultimo_contato = time.time()
-            await self._mudar_estado(PENSANDO)
-
-            # Fatos pessoais inequívocos são registrados antes da resposta. É
-            # rápido, local e funciona até quando Ollama ou uma API falham.
-            aprendizado = await self.extrator.aprender_local(texto)
-            pedido_de_memoria = pedido_explicito_memoria(texto)
-            verificacao_de_memoria = pergunta_confirmacao_memoria(texto)
-            if (aprendizado.get("saved") or aprendizado.get("unchanged")
-                    or pedido_de_memoria):
-                self._ultimo_aprendizado = dict(aprendizado)
-
-            aprendizado_resposta = aprendizado
-            if verificacao_de_memoria:
-                aprendizado_resposta = dict(self._ultimo_aprendizado or {
-                    "saved": [], "unchanged": [], "complete": False,
-                    "verified_count": 0,
-                })
-                aprendizado_resposta["verification"] = True
-
-            # Credencial digitada no chat nunca segue para modelo/conector e
-            # também não fica escondida dentro do histórico cifrado.
-            # Aprender um fato durante uma conversa normal nao substitui mais a
-            # resposta inteligente. A confirmacao deterministica assume o turno
-            # inteiro apenas quando o dono pediu explicitamente para salvar ou
-            # verificar, quando um segredo foi bloqueado, ou quando nao ha IA.
-            if (aprendizado.get("blocked")
-                    or not bool(getattr(self.memoria, "unlocked", True))
-                    or not self.cerebro.pronto
-                    or pedido_de_memoria
-                    or verificacao_de_memoria):
-                resposta = await responder_offline(
-                    texto, self.memoria, self.guarda, aprendizado=aprendizado_resposta,
-                )
-                fala_dono = sanitizar_para_memoria(texto)
-                fala_condor = sanitizar_para_memoria(resposta)
-                self._salvar_turno_seguro("user", fala_dono)
-                self._salvar_turno_seguro("assistant", fala_condor)
-                self.historico.extend((
-                    {"role": "user", "content": fala_dono},
-                    {"role": "assistant", "content": fala_condor},
-                ))
-                self._podar_historico()
-                if not aprendizado.get("blocked") and not verificacao_de_memoria:
-                    # "Lembra que..." e conversa sem cérebro também são
-                    # analisados: a fila cifrada espera o modelo ficar pronto.
-                    self.extrator.enfileirar(texto, resposta)
-                await self._evento("resposta.fim", texto=resposta, fontes=[])
-                if por_voz and reproduzir_voz and (fala := self._nova_fala()):
-                    await self._falar_ate_o_fim(fala, resposta)
-                await self._mudar_estado(OUVINDO)
-                await self._evento("memoria.stats", **self.memoria.estatisticas())
-                await self._evento("custo", **self.memoria.custo_hoje())
-                return
-
-            self.historico.append({"role": "user", "content": texto})
-            self._podar_historico()
-
-            # A memória é sempre do Condor. O provedor ativo recebe somente os
-            # trechos relevantes recuperados do banco cifrado local.
-            # A fala atual ainda não foi persistida, portanto não reaparece
-            # falsamente dentro de "conversas anteriores" no próprio prompt.
-            # "oi", "valeu", "tudo bem?": resposta curta, sem memória nem
-            # ferramentas. "sim"/"ok" logo depois de uma pergunta dele são
-            # resposta a ela, não papo, e seguem o caminho normal.
-            anterior = next((m.get("content", "") for m in reversed(self.historico[:-1])
-                             if m.get("role") == "assistant"), "")
-            leve = conversa_leve(texto) and not str(anterior).rstrip().endswith("?")
-            referencia = "" if leve else await self.recall.contexto_para(texto)
-            self._salvar_turno_seguro("user", texto)
-
-            # Voz: cada frase pronta já vai sendo falada enquanto o resto é gerado.
-            fala = self._nova_fala() if (por_voz and reproduzir_voz) else None
-
-            async def on_token(t: str) -> None:
-                await self._evento("resposta.token", texto=t)
-                if fala is not None:
-                    fala.alimentar(t)
-
-            ferramentas_usadas = 0
-            anteriores = [dict(m) for m in self.historico[:-1]]
-
-            async def on_evento(ev: dict) -> None:
-                nonlocal ferramentas_usadas
-                if ev.get("tipo") == "ferramenta.inicio":
-                    ferramentas_usadas += 1
-                await self._evento(ev.pop("tipo"), **ev)
-
+            self._contexto_turno = CONTEXTO_PROGRAMACAO if contexto == CONTEXTO_PROGRAMACAO else ""
             try:
-                resposta = await self.cerebro.responder(
-                    self.historico, memoria_relevante=referencia, modo_voz=por_voz,
-                    on_token=on_token, on_evento=on_evento, conversa_leve=leve)
-            except BaseException:
-                if fala is not None:
-                    fala.cancelar()
-                    self._fala = None
-                raise
+                await self._processar_turno(texto, por_voz, reproduzir_voz, alvo)
+            finally:
+                self._contexto_turno = ""
 
-            treino_id = self._registrar_exemplo(
-                texto, resposta, referencia, anteriores, por_voz, ferramentas_usadas,
+    async def _processar_turno(self, texto: str, por_voz: bool, reproduzir_voz: bool,
+                               alvo: dict | None) -> None:
+        programacao = self._contexto_turno == CONTEXTO_PROGRAMACAO
+        if not self.acordado:
+            await self.acordar()
+        self.ultimo_contato = time.time()
+        await self._mudar_estado(PENSANDO)
+
+        # Fatos pessoais inequívocos são registrados antes da resposta. É
+        # rápido, local e funciona até quando Ollama ou uma API falham.
+        aprendizado = await self.extrator.aprender_local(texto)
+        pedido_de_memoria = pedido_explicito_memoria(texto)
+        verificacao_de_memoria = pergunta_confirmacao_memoria(texto)
+        if (aprendizado.get("saved") or aprendizado.get("unchanged")
+                or pedido_de_memoria):
+            self._ultimo_aprendizado = dict(aprendizado)
+
+        aprendizado_resposta = aprendizado
+        if verificacao_de_memoria:
+            aprendizado_resposta = dict(self._ultimo_aprendizado or {
+                "saved": [], "unchanged": [], "complete": False,
+                "verified_count": 0,
+            })
+            aprendizado_resposta["verification"] = True
+
+        # Credencial digitada no chat nunca segue para modelo/conector e
+        # também não fica escondida dentro do histórico cifrado.
+        # Aprender um fato durante uma conversa normal nao substitui mais a
+        # resposta inteligente. A confirmacao deterministica assume o turno
+        # inteiro apenas quando o dono pediu explicitamente para salvar ou
+        # verificar, quando um segredo foi bloqueado, ou quando nao ha IA.
+        if (aprendizado.get("blocked")
+                or not bool(getattr(self.memoria, "unlocked", True))
+                or not self.cerebro.pronto
+                or pedido_de_memoria
+                or verificacao_de_memoria):
+            resposta = await responder_offline(
+                texto, self.memoria, self.guarda, aprendizado=aprendizado_resposta,
             )
-            await self._evento(
-                "resposta.fim", texto=resposta,
-                fontes=list(getattr(self.cerebro, "ultimas_fontes", []) or []),
-                treino_id=treino_id,
-            )
-            resposta_memoria = sanitizar_para_memoria(resposta)
-            self._salvar_turno_seguro("assistant", resposta_memoria)
-            if self.historico and self.historico[-1].get("role") == "assistant":
-                self.historico[-1]["content"] = resposta_memoria
-            else:
-                self.historico.append({"role": "assistant", "content": resposta_memoria})
-                self._podar_historico()
-            self.ultimo_contato = time.time()
-
-            self.extrator.enfileirar(texto, resposta)
-
-            if fala is not None:
-                if resposta:
-                    await self._falar_ate_o_fim(fala, resposta)
-                else:
-                    fala.cancelar()
-                    self._fala = None
-
-            self.ultimo_contato = time.time()
+            fala_dono = sanitizar_para_memoria(texto)
+            fala_condor = sanitizar_para_memoria(resposta)
+            self._salvar_turno_seguro("user", fala_dono)
+            self._salvar_turno_seguro("assistant", fala_condor)
+            self.historico.extend((
+                {"role": "user", "content": fala_dono},
+                {"role": "assistant", "content": fala_condor},
+            ))
+            self._podar_historico()
+            if not aprendizado.get("blocked") and not verificacao_de_memoria:
+                # "Lembra que..." e conversa sem cérebro também são
+                # analisados: a fila cifrada espera o modelo ficar pronto.
+                self.extrator.enfileirar(texto, resposta)
+            await self._evento("resposta.fim", texto=resposta, fontes=[])
+            if por_voz and reproduzir_voz and (fala := self._nova_fala()):
+                await self._falar_ate_o_fim(fala, resposta)
             await self._mudar_estado(OUVINDO)
             await self._evento("memoria.stats", **self.memoria.estatisticas())
             await self._evento("custo", **self.memoria.custo_hoje())
+            return
+
+        self.historico.append({"role": "user", "content": texto})
+        self._podar_historico()
+
+        # A memória é sempre do Condor. O provedor ativo recebe somente os
+        # trechos relevantes recuperados do banco cifrado local.
+        # A fala atual ainda não foi persistida, portanto não reaparece
+        # falsamente dentro de "conversas anteriores" no próprio prompt.
+        # "oi", "valeu", "tudo bem?": resposta curta, sem memória nem
+        # ferramentas. "sim"/"ok" logo depois de uma pergunta dele são
+        # resposta a ela, não papo, e seguem o caminho normal.
+        anterior = next((m.get("content", "") for m in reversed(self.historico[:-1])
+                         if m.get("role") == "assistant"), "")
+        leve = (not programacao and conversa_leve(texto)
+                and not str(anterior).rstrip().endswith("?"))
+        referencia = "" if leve else await self.recall.contexto_para(texto)
+        self._salvar_turno_seguro("user", texto)
+
+        # Voz: cada frase pronta já vai sendo falada enquanto o resto é gerado.
+        fala = self._nova_fala() if (por_voz and reproduzir_voz) else None
+
+        async def on_token(t: str) -> None:
+            await self._evento("resposta.token", texto=t)
+            if fala is not None:
+                fala.alimentar(t)
+
+        ferramentas_usadas = 0
+        anteriores = [dict(m) for m in self.historico[:-1]]
+
+        async def on_evento(ev: dict) -> None:
+            nonlocal ferramentas_usadas
+            if ev.get("tipo") == "ferramenta.inicio":
+                ferramentas_usadas += 1
+            await self._evento(ev.pop("tipo"), **ev)
+
+        extras = {"instrucao_turno": instrucao_programacao(alvo)} if programacao else {}
+        try:
+            resposta = await self.cerebro.responder(
+                self.historico, memoria_relevante=referencia, modo_voz=por_voz,
+                on_token=on_token, on_evento=on_evento, conversa_leve=leve, **extras)
+        except BaseException:
+            if fala is not None:
+                fala.cancelar()
+                self._fala = None
+            raise
+
+        treino_id = self._registrar_exemplo(
+            texto, resposta, referencia, anteriores, por_voz, ferramentas_usadas,
+        )
+        await self._evento(
+            "resposta.fim", texto=resposta,
+            fontes=list(getattr(self.cerebro, "ultimas_fontes", []) or []),
+            treino_id=treino_id,
+        )
+        resposta_memoria = sanitizar_para_memoria(resposta)
+        self._salvar_turno_seguro("assistant", resposta_memoria)
+        if self.historico and self.historico[-1].get("role") == "assistant":
+            self.historico[-1]["content"] = resposta_memoria
+        else:
+            self.historico.append({"role": "assistant", "content": resposta_memoria})
+            self._podar_historico()
+        self.ultimo_contato = time.time()
+
+        self.extrator.enfileirar(texto, resposta)
+
+        if fala is not None:
+            if resposta:
+                await self._falar_ate_o_fim(fala, resposta)
+            else:
+                fala.cancelar()
+                self._fala = None
+
+        self.ultimo_contato = time.time()
+        await self._mudar_estado(OUVINDO)
+        await self._evento("memoria.stats", **self.memoria.estatisticas())
+        await self._evento("custo", **self.memoria.custo_hoje())
 
     def _registrar_exemplo(self, pedido: str, resposta: str, contexto: str,
                            anteriores: list[dict], por_voz: bool, ferramentas: int) -> str:
