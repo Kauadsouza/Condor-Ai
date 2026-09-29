@@ -71,6 +71,24 @@ class GesturePCControlTests(unittest.TestCase):
             control.run("playpause")
             self.assertEqual(fake.calls, [("atalho", "right"), ("atalho", "left"), ("atalho", "playpause")])
 
+    def test_swipe_knows_more_presentation_apps_pdfs_and_music(self):
+        casos = {
+            ("chrome.exe", "Pitch deck - Canva - Google Chrome"): ("right", "left"),
+            ("msedge.exe", "Roadmap - Prezi"): ("right", "left"),
+            ("wpp.exe", "Aula.pptx - WPS Presentation"): ("right", "left"),
+            ("soffice.bin", "Aula.odp - LibreOffice Impress"): ("right", "left"),
+            ("msedge.exe", "contrato.pdf - Microsoft Edge"): ("pagedown", "pageup"),
+            ("AcroRd32.exe", "Adobe Acrobat Reader"): ("pagedown", "pageup"),
+            ("Spotify.exe", "Artista - Slides of Love"): ("nexttrack", "prevtrack"),
+            ("Code.exe", "gestures.py - CONDOR"): ("nexttrack", "prevtrack"),
+        }
+        for (processo, titulo), (frente, tras) in casos.items():
+            fake = FakeExecutor()
+            control = GesturePCControl(fake, janela_ativa=lambda p=processo, t=titulo: (p, t))
+            control.run("proximo")
+            control.run("anterior")
+            self.assertEqual(fake.calls, [("atalho", frente), ("atalho", tras)], titulo)
+
     def test_unknown_or_raw_key_actions_are_rejected(self):
         control = GesturePCControl(FakeExecutor())
         for action in ("win+r", "alt+f4", "enter", "PLAYPAUSE", "", None, 3, ["playpause"]):

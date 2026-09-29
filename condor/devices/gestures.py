@@ -336,20 +336,49 @@ class GesturePCControl:
         if kind == "rolar":
             return executor.rolar(int(value))
         # Deslizar numa apresentação passa o slide; no resto, troca a música.
-        if action in _SETAS_DE_SLIDE and _e_apresentacao(*self._janela_ativa()):
-            return executor.atalho(_SETAS_DE_SLIDE[action])
+        if action in _SETAS_DE_SLIDE:
+            tipo = _tipo_de_janela(*self._janela_ativa())
+            if tipo == "slides":
+                return executor.atalho(_SETAS_DE_SLIDE[action])
+            if tipo == "pdf":
+                return executor.atalho(_PAGINAS_DE_PDF[action])
         return executor.atalho(str(value))
 
 
 _SETAS_DE_SLIDE = {"proximo": "right", "anterior": "left"}
-_PROCESSOS_DE_SLIDE = {"powerpnt.exe", "pptview.exe", "soffice.bin", "simpress.exe"}
-_TITULOS_DE_SLIDE = ("powerpoint", "apresentações google", "google slides", "apresentação de slides",
-                     "slide show")
+_PAGINAS_DE_PDF = {"proximo": "pagedown", "anterior": "pageup"}
+
+# Apresentação: seta para os lados passa o slide (apresentando ou editando).
+_PROCESSOS_DE_SLIDE = {"powerpnt.exe", "pptview.exe", "soffice.bin", "simpress.exe", "wpp.exe",
+                       "prezi.exe", "canva.exe", "pitch.exe"}
+_TITULOS_DE_SLIDE = (
+    "powerpoint", "apresentações google", "google slides", "apresentação de slides", "slide show",
+    "canva", "prezi", "pitch.com", "gamma", "keynote", "figma slides", "wps presentation",
+    "libreoffice impress", "apresentação", "presentation", "slides",
+)
+# PDF: a próxima/anterior página (em modo contínuo a seta para o lado não anda).
+_PROCESSOS_DE_PDF = {"acrord32.exe", "acrobat.exe", "sumatrapdf.exe", "foxitpdfreader.exe",
+                     "foxitreader.exe", "pdfxedit.exe"}
+_TITULOS_DE_PDF = (".pdf", "adobe acrobat", "sumatrapdf", "foxit")
+_PROCESSOS_DE_MUSICA = {"spotify.exe", "music.ui.exe", "applemusic.exe", "vlc.exe", "deezer.exe",
+                        "wmplayer.exe", "itunes.exe"}
+
+
+def _tipo_de_janela(processo: str, titulo: str) -> str:
+    """ "slides", "pdf" ou "" (qualquer outra: o deslizar troca a música)."""
+    processo, titulo = processo.lower(), titulo.lower()
+    # Player mostra o nome da música no título: "Slides" numa faixa não é slide.
+    if processo in _PROCESSOS_DE_MUSICA:
+        return ""
+    if processo in _PROCESSOS_DE_SLIDE or any(t in titulo for t in _TITULOS_DE_SLIDE):
+        return "slides"
+    if processo in _PROCESSOS_DE_PDF or any(t in titulo for t in _TITULOS_DE_PDF):
+        return "pdf"
+    return ""
 
 
 def _e_apresentacao(processo: str, titulo: str) -> bool:
-    titulo = titulo.lower()
-    return processo.lower() in _PROCESSOS_DE_SLIDE or any(t in titulo for t in _TITULOS_DE_SLIDE)
+    return _tipo_de_janela(processo, titulo) == "slides"
 
 
 def _janela_em_primeiro_plano() -> tuple[str, str]:
