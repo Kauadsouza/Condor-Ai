@@ -541,6 +541,7 @@ DEFAULT_PERMISSIONS = (
     ("microphone", 0, "local"),
     ("camera", 0, "local"),
     ("gesture_camera", 0, "local"),
+    ("gesture_pc_control", 0, "local"),
     ("serial", 0, "device"),
     ("arduino_upload", 1, "physical"),
     ("bluetooth", 0, "device"),

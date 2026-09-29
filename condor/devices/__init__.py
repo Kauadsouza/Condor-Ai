@@ -2,7 +2,7 @@
 
 from .bridge import DeviceBridge
 from .camera import CameraBridge
-from .gestures import GestureEngine
+from .gestures import GestureEngine, GesturePCControl
 from .safety import ActionSafetyLayer, RiskLevel
 
-__all__ = ["ActionSafetyLayer", "CameraBridge", "DeviceBridge", "GestureEngine", "RiskLevel"]
+__all__ = ["ActionSafetyLayer", "CameraBridge", "DeviceBridge", "GestureEngine", "GesturePCControl", "RiskLevel"]

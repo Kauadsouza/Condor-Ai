@@ -125,7 +125,10 @@ const CondorCoreUI = (() => {
     if (status.device_bridge?.bridge !== 'online') problemTiles.push(stateTile('DEVICE BRIDGE', status.device_bridge?.bridge, 'PONTE LOCAL', false));
     if (!voiceReady) problemTiles.push(stateTile('VOZ', 'incompleta', 'STT + TTS LOCAL', false));
     if (status.vision !== 'ready') problemTiles.push(stateTile('VISÃO', status.vision, 'MODELO LOCAL', false));
-    if ((status.gesture?.state || status.gesture) !== 'ready') problemTiles.push(stateTile('GESTOS', status.gesture?.state || status.gesture, 'ENTRADA DE MÃO', false));
+    // Só o MediaPipe conta como "gestos prontos"; a reserva OpenCV aparece
+    // como problema porque reconhece mal e não controla o PC.
+    const gesture = typeof status.gesture === 'object' && status.gesture ? status.gesture : { state: status.gesture };
+    if (!gesture.mediapipe?.available) problemTiles.push(stateTile('GESTOS', gesture.state === 'ready' ? 'só reserva' : gesture.state, gesture.mediapipe?.reason ? `MEDIAPIPE: ${label(gesture.mediapipe.reason)}` : 'MEDIAPIPE AUSENTE', false));
     if (!connected) problemTiles.push(stateTile('CONEXÃO ATIVA', 'nenhuma', 'SEM DISPOSITIVO CONECTADO', false));
     const statusHost = document.getElementById('systemStatus'); statusHost.hidden = problemTiles.length === 0; statusHost.innerHTML = problemTiles.join('');
     const requests = status.permission_requests || []; const permissionCard = document.getElementById('systemPermissionCard'); permissionCard.hidden = requests.length === 0;
@@ -206,9 +209,11 @@ const CondorCoreUI = (() => {
 
   function signalStep(name, value, online) { return `<div class="signal-step"><span>${name}</span><b class="${online ? '' : 'off'}">${value}</b></div>`; }
   function renderInteractions() {
-    if (!status) return; const voice = status.voice || {}; const gestureState = status.gesture?.state || status.gesture; const gestureReady = gestureState === 'ready';
+    if (!status) return; const voice = status.voice || {}; const gesture = typeof status.gesture === 'object' && status.gesture ? status.gesture : {}; const mediapipe = Boolean(gesture.mediapipe?.available); const gestureReady = (gesture.state || status.gesture) === 'ready';
     document.getElementById('voiceVisual').innerHTML = [signalStep('OUVIDOS', voice.stt ? 'PRONTO' : 'OFF', voice.stt), signalStep('VOZ', voice.tts ? 'PRONTA' : 'OFF', voice.tts), signalStep('ATIVAÇÃO', voice.wake_word ? 'CONDOR' : 'OFF', voice.wake_word)].join('');
-    document.getElementById('gestureVisual').innerHTML = [signalStep('ENTRADA', gestureReady ? 'CÂMERA LOCAL' : 'INDISPONÍVEL', gestureReady), signalStep('ANÁLISE DE MÃO', gestureReady ? 'PRONTA' : 'AUSENTE', gestureReady), signalStep('ESCOPO', 'SÓ CONDOR', gestureReady)].join('');
+    // Com os gestos ligados, o próprio controle gestual escreve o estado ao vivo.
+    if (typeof CondorGestures !== 'undefined' && CondorGestures.ativo()) return;
+    document.getElementById('gestureVisual').innerHTML = [signalStep('ENTRADA', gestureReady ? 'CÂMERA LOCAL' : 'INDISPONÍVEL', gestureReady), signalStep('MOTOR', mediapipe ? `MEDIAPIPE ${escapeHtml(gesture.mediapipe.version || '')}`.trim() : gestureReady ? 'SÓ RESERVA' : 'AUSENTE', mediapipe), signalStep('QUADROS', mediapipe ? 'FICAM NA JANELA' : 'SÓ LOCAL', gestureReady)].join('');
   }
 
   function renderDevices() {

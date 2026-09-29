@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import logging
+import mimetypes
 import os
 import platform
 import re
@@ -36,7 +37,7 @@ from condor.core import (
     ProjectEngine,
     WorldStateLedger,
 )
-from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge, GestureEngine
+from condor.devices import ActionSafetyLayer, CameraBridge, DeviceBridge, GestureEngine, GesturePCControl
 from condor.development import ArduinoToolchain, detect_language, human_model_contract
 from condor.engine import PropulsionLabEngine
 from condor.engine.contracts import CANDIDATE_ZONES, MODEL_LEVEL, PROPULSION_GROUPS
@@ -63,6 +64,11 @@ from condor.voice.tts import Voz
 from condor.voice.wake import Escuta
 
 log = logging.getLogger("condor.servidor")
+
+# O Windows tira o tipo MIME do registro e costuma nao conhecer .wasm; com
+# nosniff, o WebAssembly.instantiateStreaming do MediaPipe exige application/wasm.
+mimetypes.add_type("application/wasm", ".wasm")
+mimetypes.add_type("application/octet-stream", ".task")
 
 ROOT = CODE_ROOT
 CADX_PARTIAL_BASELINE_MANIFEST = (
@@ -197,6 +203,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     safety_layer = ActionSafetyLayer()
     device_bridge = DeviceBridge(memoria, event_bus, safety_layer)
     gesture_engine = GestureEngine()
+    gesture_pc = GesturePCControl()
     arduino_toolchain = ArduinoToolchain()
     camera_bridge = CameraBridge(memoria, event_bus, provider._visao)
     orchestrator = CondorOrchestrator(
@@ -252,6 +259,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     app.state.device_mesh = device_mesh
     app.state.device_bridge = device_bridge
     app.state.gesture_engine = gesture_engine
+    app.state.gesture_pc = gesture_pc
     app.state.camera_bridge = camera_bridge
     app.state.face_guard = face_guard
     app.state.orchestrator = orchestrator
@@ -387,7 +395,9 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if path.startswith(("/api", "/ui")):
             resposta.headers["Cache-Control"] = "no-store, must-revalidate"
             resposta.headers["Pragma"] = "no-cache"
-        script_sources = "'self'"
+        # 'wasm-unsafe-eval' libera so a compilacao de WebAssembly (o MediaPipe
+        # dos gestos); eval() de JavaScript continua proibido.
+        script_sources = "'self' 'wasm-unsafe-eval'"
         resposta.headers["Content-Security-Policy"] = (
             f"default-src 'self'; script-src {script_sources}; "
             "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; "
@@ -1419,12 +1429,17 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if not memoria.permission_allowed("gesture_camera"):
             return JSONResponse({"erro": "permissão gestual necessária"}, status_code=403)
         camera_label = str(payload.get("camera_label") or "")[:200]
-        if not face_guard.physical_camera_label(camera_label):
+        # Rótulo vazio é comum quando o WebView ainda não expôs o nome do
+        # dispositivo; só recusamos quando ele se declara câmera virtual.
+        if camera_label.strip() and not face_guard.physical_camera_label(camera_label):
             return JSONResponse({"erro": "use uma câmera física; câmera virtual bloqueada"}, status_code=400)
+        engine = str(payload.get("engine") or "mediapipe")[:20]
         try:
-            session = gesture_engine.start()
+            session = gesture_engine.start(engine)
             await event_bus.publish(
-                "GESTURE_SESSION_STARTED", {"frame_storage": False}, source="gesture_controller"
+                "GESTURE_SESSION_STARTED",
+                {"frame_storage": False, "engine": session["session_engine"]},
+                source="gesture_controller",
             )
             return session
         except RuntimeError as exc:
@@ -1440,6 +1455,53 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             return JSONResponse({"erro": str(exc)}, status_code=403)
         except ValueError as exc:
             return JSONResponse({"erro": str(exc)}, status_code=400)
+
+    @app.post("/api/gestures/ping")
+    async def api_gestures_ping(payload: dict):
+        # Com o MediaPipe nenhum quadro chega aqui; o ping mantém a sessão viva
+        # e é por ele que a página descobre que o dono revogou a câmera.
+        try:
+            gesture_engine.touch(str(payload.get("token") or "")[:120])
+        except PermissionError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=403)
+        if not memoria.unlocked or not memoria.permission_available("gesture_camera"):
+            return JSONResponse({"erro": "permissão gestual revogada"}, status_code=403)
+        return {"ok": True, "pc_control": memoria.permission_available("gesture_pc_control")}
+
+    @app.post("/api/gestures/action")
+    async def api_gestures_action(payload: dict):
+        # Gesto do dono vira tecla de mídia/rolagem. Só nomes da lista fixa;
+        # a tecla é decidida aqui, nunca pelo cliente, e nada disso passa pela
+        # política de ferramentas do LLM.
+        action = payload.get("action")
+        if not gesture_pc.valid(action):
+            guarda.auditar("security", f"gesture_pc:{str(action)[:40]}", "DENIED: fora da lista", False, False)
+            return JSONResponse({"erro": "ação gestual desconhecida"}, status_code=400)
+        try:
+            gesture_engine.touch(str(payload.get("token") or "")[:120])
+        except PermissionError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=403)
+        if response := _memoria_pronta():
+            return response
+        if not memoria.permission_allowed("gesture_pc_control"):
+            request_item = memoria.request_permission(
+                "gesture_pc_control",
+                "Deixar gestos da mão controlarem o PC: mídia, volume e rolagem.",
+                "gesture_controller",
+            )
+            guarda.auditar("security", f"gesture_pc:{action}", "DENIED: sem permissão", False, False)
+            return JSONResponse(
+                {"erro": "permissão para controlar o PC necessária", "permission_request": request_item},
+                status_code=403,
+            )
+        if not gesture_pc.rate_allowed():
+            return JSONResponse(
+                {"erro": "gestos rápidos demais"}, status_code=429, headers={"Retry-After": "1"},
+            )
+        result = await asyncio.to_thread(gesture_pc.run, action)
+        ok = bool(result.get("ok"))
+        guarda.auditar("gesture_pc", action, str(result.get("saida") or "")[:120], ok, False)
+        return {"ok": ok, "action": action, "detail": result.get("saida")}
 
     @app.post("/api/gestures/stop")
     async def api_gestures_stop(payload: dict):
