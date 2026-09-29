@@ -432,8 +432,8 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; "
             "connect-src 'self' https://*.supabase.co wss://*.supabase.co "
             "ws://127.0.0.1:* ws://localhost:*; "
-            "frame-src 'self' https://kauaartx.vercel.app https://sistema-videos.vercel.app "
-            "https://sat-simulado.vercel.app https://university-path-six.vercel.app; "
+            # Os sites que o ARTX Hub embutia sairam junto com ele.
+            "frame-src 'self'; "
             "media-src 'self' blob:; worker-src 'self' blob:; "
             "object-src 'none'; base-uri 'none'; form-action 'self'; "
             "manifest-src 'self'; frame-ancestors 'self'"
