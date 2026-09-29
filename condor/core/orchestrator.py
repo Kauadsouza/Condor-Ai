@@ -34,7 +34,26 @@ class CondorOrchestrator:
         "condor_buscar_dispositivos": "ai_devices",
         "condor_conectar_dispositivo": "ai_devices",
         "condor_desconectar_dispositivo": "ai_devices",
+        "condor_olhar_camera": "camera",
     }
+    # Quando a permissao falta, algumas ferramentas abrem o pedido no painel
+    # Sistema em vez de so recusar: o dono libera ali e pede de novo.
+    PERMISSION_REQUESTS = {
+        "condor_olhar_camera": (
+            "Tirar uma foto só quando o dono pedir e desligar a câmera na hora.",
+            "chat_camera",
+            "A câmera está desligada pra mim. Libera a permissão 'camera' no painel "
+            "Sistema e me pede de novo que eu dou uma olhada.",
+        ),
+    }
+    CAMERA_PROMPT = (
+        "O dono pediu: \"{pedido}\". Esta é uma foto que ele pediu agora pela webcam. "
+        "Descreva com precisão só o que está visível e é relevante ao pedido: roupas "
+        "(peças, cores, caimento, se combinam), aparência geral, expressão, ambiente, "
+        "luz e objetos à mostra. Se algo não dá para ver ou está cortado, escuro ou "
+        "desfocado, diga isso. Não identifique pessoas, não chute idade nem nada que "
+        "não esteja na imagem. Responda em português, em tópicos curtos."
+    )
 
     def __init__(self, memory, context, events, projects, devices) -> None:
         self.memory = memory
@@ -43,6 +62,8 @@ class CondorOrchestrator:
         self.projects = projects
         self.devices = devices
         self._gerar_imagem: Callable[..., Awaitable[dict[str, Any]]] | None = None
+        self._capturar_camera: Callable[[], Awaitable[str]] | None = None
+        self._visao = None
         self._handlers: dict[str, Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]] = {
             "condor_estado": self._state,
             "condor_abrir_projeto": self._open_project,
@@ -58,6 +79,7 @@ class CondorOrchestrator:
             "condor_buscar_dispositivos": self._scan_devices,
             "condor_conectar_dispositivo": self._connect_device,
             "condor_desconectar_dispositivo": self._disconnect_device,
+            "condor_olhar_camera": self._look_camera,
         }
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -68,6 +90,10 @@ class CondorOrchestrator:
             return {"ok": False, "saida": f"Operacao interna desconhecida: {name}"}
         capability = self.TOOL_CAPABILITIES.get(name)
         if capability and not self.memory.permission_allowed(capability):
+            if name in self.PERMISSION_REQUESTS:
+                reason, source, message = self.PERMISSION_REQUESTS[name]
+                self.memory.request_permission(capability, reason, source)
+                return {"ok": False, "saida": message}
             return {
                 "ok": False,
                 "saida": f"Permissao {capability} bloqueada no painel Sistema.",
@@ -244,6 +270,31 @@ class CondorOrchestrator:
         return {
             "image_id": item["id"], "shown_on_screen": True, "saved_to_gallery": True,
             "model": item["modelo"], "width": item["largura"], "height": item["altura"],
+        }
+
+    def ligar_camera(self, capturar: Callable[[], Awaitable[str]], visao) -> None:
+        """O servidor injeta a ponte com a janela (uma foto) e a visão local."""
+        self._capturar_camera = capturar
+        self._visao = visao
+
+    async def _look_camera(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._capturar_camera is None or self._visao is None:
+            raise RuntimeError("camera indisponivel nesta execucao")
+        pedido = self._text(arguments, "pedido", 500, False) or "o que você vê?"
+        # A foto vive só nesta função: vai para o modelo local e some. Nem o
+        # modelo principal (que pode ser OpenAI/Claude) nem o banco recebem pixel.
+        image_b64 = await self._capturar_camera()
+        try:
+            descricao = await self._visao.analisar(image_b64, self.CAMERA_PROMPT.format(pedido=pedido))
+        except Exception as exc:
+            raise RuntimeError(f"a visao local nao conseguiu analisar a foto: {exc}") from exc
+        finally:
+            del image_b64
+        return {
+            "descricao_visual": descricao[:4000],
+            "foto_salva": False,
+            "camera_desligada": True,
+            "como_responder": "Responda como um amigo sincero e gentil, curto, só com base na descrição.",
         }
 
     async def _remember(self, arguments: dict[str, Any]) -> dict[str, Any]:
