@@ -81,7 +81,7 @@ def main() -> int:
         "messages": [{"role": "user", "content": "Em uma frase: quem é você e quem é o seu dono?"}],
     }, timeout=180)
     print("  ", resposta.get("message", {}).get("content", "").strip()[:400])
-    print(f"\nPronto. Na aba Sistema do Condor escolha MODELO LOCAL = CONDOR TREINADO.")
+    print("\nPronto. Na aba Sistema do Condor escolha MODELO LOCAL = CONDOR TREINADO.")
     return 0
 
 

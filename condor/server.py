@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -293,7 +294,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     app.state.face_guard = face_guard
     app.state.orchestrator = orchestrator
     app.state.cloud = cloud
-    app.router.add_event_handler("shutdown", device_bridge.close_all)
 
     def _mobile_snapshot() -> dict:
         state = sessao.snapshot()
@@ -2448,9 +2448,10 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             if cloud.configured and vault.unlocked and memoria.unlocked:
                 await asyncio.to_thread(cloud.safe_sync, memoria)
 
-    @app.on_event("startup")
     async def _subir():
-        sessao.guardar_loop(asyncio.get_running_loop())
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(_silenciar_reset_do_windows)
+        sessao.guardar_loop(loop)
         extrator.iniciar()
 
         vigia = asyncio.create_task(sessao.vigia(), name="condor-vigia")
@@ -2469,20 +2470,41 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         log.info("Conector de IA: %s (%s)", "ok" if ok else "PROBLEMA", detalhe)
         await conexoes.transmitir({"tipo": "estado", **sessao.snapshot()})
 
-    @app.on_event("shutdown")
     async def _descer():
         for tarefa in tuple(tarefas):
             tarefa.cancel()
         if tarefas:
             await asyncio.gather(*tuple(tarefas), return_exceptions=True)
         escuta.encerrar()
+        try:
+            await device_bridge.close_all()
+        except Exception as exc:          # a memória precisa trancar mesmo assim
+            log.warning("Falha ao fechar dispositivos: %s", exc)
         await sessao.preparar_bloqueio("servidor encerrando")
         await extrator.encerrar()
         face_guard.on_vault_lock()
         memoria.lock()
         vault.lock()
 
+    @contextlib.asynccontextmanager
+    async def _ciclo(_app):
+        await _subir()
+        try:
+            yield
+        finally:
+            await _descer()
+
+    app.router.lifespan_context = _ciclo
     return app, sessao
+
+
+def _silenciar_reset_do_windows(loop: asyncio.AbstractEventLoop, contexto: dict) -> None:
+    """A janela fechando derruba o socket e o Proactor do Windows reclama com um
+    traceback de WinError 10054 no log. Não é erro do CONDOR; o resto segue."""
+    if isinstance(contexto.get("exception"), ConnectionResetError):
+        log.debug("Conexão fechada pelo outro lado: %s", contexto.get("message"))
+        return
+    loop.default_exception_handler(contexto)
 
 
 # Mesma história do vigia: sem referência forte, um turno inteiro pode sumir

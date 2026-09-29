@@ -598,6 +598,35 @@ body.viewer-open{overflow:hidden}
 .image-viewer-bar .close{border-color:rgba(244,114,182,.35);color:var(--pink-soft)}
 .image-viewer-caption{max-width:420px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--text-mute);font-size:11px;padding:0 6px}
 @media(max-width:620px){.image-viewer-caption{display:none}}
+
+/* estilos que antes estavam inline no HTML */
+.st-1.st-1{top:18%;left:8%}
+.st-2.st-2{top:35%;left:92%;background:var(--violet);box-shadow:0 0 6px var(--violet);animation-duration:2s}
+.st-3.st-3{top:65%;left:6%;background:var(--violet-soft);box-shadow:0 0 6px var(--violet-soft);animation-duration:2.5s}
+.st-4.st-4{top:78%;left:94%;animation-duration:1.8s}
+#backBtn{display:none}
+#diagBadge{display:none}
+#typingIndicator{display:none;position:absolute;bottom:195px;left:76px}
+#tokenCount{margin-top:4px}
+#custoHoje{margin-top:4px}
+.st-5.st-5{animation-delay:0s}
+.st-6.st-6{animation-delay:.1s}
+.st-7.st-7{animation-delay:.2s}
+.st-8.st-8{animation-delay:.3s}
+.st-9.st-9{animation-delay:.4s}
+#modelName{margin-top:4px}
+.st-10.st-10{text-align:center;margin-top:6px}
+#voiceHint{font-size:9px;color:var(--text-dim);letter-spacing:2px}
+.st-11.st-11{margin-top:12px}
+.st-12.st-12{background:#48df9b}
+.st-13.st-13{background:#f5d76e}
+.st-14.st-14{background:#ff9d45}
+.st-15.st-15{background:#ff566c}
+.st-16.st-16{background:#718096}
+.st-17.st-17{display:flex;align-items:center;gap:14px}
+.st-18.st-18{display:flex;align-items:baseline;gap:8px}
+.st-19.st-19{width:100%;height:100%}
+.st-20.st-20{font-size:9px;color:var(--text-faint);letter-spacing:1.5px}
 </style>
 </head>
 <body>
@@ -628,10 +657,10 @@ body.viewer-open{overflow:hidden}
     <rect width="100%" height="100%" fill="url(#g)"/>
   </svg>
   <div class="scan-line"></div>
-  <div class="spark" style="top:18%;left:8%;"></div>
-  <div class="spark" style="top:35%;left:92%;background:var(--violet);box-shadow:0 0 6px var(--violet);animation-duration:2s;"></div>
-  <div class="spark" style="top:65%;left:6%;background:var(--violet-soft);box-shadow:0 0 6px var(--violet-soft);animation-duration:2.5s;"></div>
-  <div class="spark" style="top:78%;left:94%;animation-duration:1.8s;"></div>
+  <div class="spark st-1"></div>
+  <div class="spark st-2"></div>
+  <div class="spark st-3"></div>
+  <div class="spark st-4"></div>
 
   <!-- TOP NAV -->
   <div class="top-nav" id="topNav">
@@ -656,10 +685,10 @@ body.viewer-open{overflow:hidden}
   <button class="errors-btn" id="errosBtn">
     <span class="err-dot"></span>ERROS<span class="err-count" id="errCount">0</span>
   </button>
-  <button class="back-btn" id="backBtn" style="display:none;">
+  <button class="back-btn" id="backBtn">
     <span aria-hidden="true">←</span> VOLTAR
   </button>
-  <div class="diag-badge" id="diagBadge" style="display:none;">
+  <div class="diag-badge" id="diagBadge">
     <span class="err-dot"></span>AUTO-DIAGNÓSTICO
   </div>
 
@@ -751,7 +780,7 @@ body.viewer-open{overflow:hidden}
       </div>
       <!-- mensagens inseridas via JS -->
     </div>
-    <div id="typingIndicator" style="display:none;position:absolute;bottom:195px;left:76px;">
+    <div id="typingIndicator">
       <div class="typing">
         <div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>
         <span class="typing-lbl">PROCESSANDO RESPOSTA</span>
@@ -761,36 +790,36 @@ body.viewer-open{overflow:hidden}
       <div class="voice-row">
         <div class="voice-info">
           <div class="on" id="voiceStatus">● DORMINDO</div>
-          <div style="margin-top:4px;" id="tokenCount">0 fatos · 0 turnos</div>
-          <div style="margin-top:4px;" id="custoHoje">US$ 0.000 hoje</div>
+          <div id="tokenCount">0 fatos · 0 turnos</div>
+          <div id="custoHoje">US$ 0.000 hoje</div>
         </div>
         <div class="voice-center">
           <div class="waveform">
-            <div class="wbar ws" style="animation-delay:0s;"></div>
-            <div class="wbar wb" style="animation-delay:.1s;"></div>
-            <div class="wbar ws" style="animation-delay:.2s;"></div>
-            <div class="wbar wb" style="animation-delay:.3s;"></div>
-            <div class="wbar ws v" style="animation-delay:.4s;"></div>
+            <div class="wbar ws st-5"></div>
+            <div class="wbar wb st-6"></div>
+            <div class="wbar ws st-7"></div>
+            <div class="wbar wb st-8"></div>
+            <div class="wbar ws v st-9"></div>
           </div>
           <div class="orb-wrap" id="voiceOrb">
             <div class="orb-ring"></div><div class="orb-ring v"></div>
             <div class="orb-core" id="orbCore"><span aria-hidden="true">●</span></div>
           </div>
           <div class="waveform">
-            <div class="wbar ws v" style="animation-delay:.4s;"></div>
-            <div class="wbar wb" style="animation-delay:.3s;"></div>
-            <div class="wbar ws" style="animation-delay:.2s;"></div>
-            <div class="wbar wb" style="animation-delay:.1s;"></div>
-            <div class="wbar ws" style="animation-delay:0s;"></div>
+            <div class="wbar ws v st-9"></div>
+            <div class="wbar wb st-8"></div>
+            <div class="wbar ws st-7"></div>
+            <div class="wbar wb st-6"></div>
+            <div class="wbar ws st-5"></div>
           </div>
         </div>
         <div class="voice-info right">
           <div class="on" id="listenStatus">PRONTO</div>
-          <div style="margin-top:4px;" id="modelName">carregando...</div>
+          <div id="modelName">carregando...</div>
         </div>
       </div>
-      <div style="text-align:center;margin-top:6px;">
-        <span id="voiceHint" style="font-size:9px;color:var(--text-dim);letter-spacing:2px;">DIGA "CONDOR" PRA ME CHAMAR</span>
+      <div class="st-10">
+        <span id="voiceHint">DIGA "CONDOR" PRA ME CHAMAR</span>
       </div>
       <!-- Campo de texto -->
       <div class="chat-queue-status" id="chatQueueStatus" role="status" aria-live="polite" hidden></div>
@@ -813,7 +842,7 @@ body.viewer-open{overflow:hidden}
           <article class="core-card prog-chat" id="programChat"><header class="prog-chat-head"><div class="prog-orb" id="programOrb" data-state="idle" aria-hidden="true"><i></i></div><div><small>CONDOR</small><strong id="programChatState">PRONTO</strong></div></header><div class="prog-chat-log" id="programChatLog" aria-live="polite"></div><form class="prog-chat-compose" id="programChatForm"><button type="button" class="prog-chat-mic" id="programChatMic" aria-pressed="false" title="Falar">MIC</button><input id="programChatInput" type="text" placeholder="peça um código..." autocomplete="off" aria-label="Mensagem para o Condor"><button type="submit" class="program-ai" id="programChatSend">ENVIAR</button></form></article>
         </div>
       </div>
-      <article class="core-card full" id="deviceCommandCard" hidden><small>CONSOLE SERIAL</small><div class="device-command-panel" style="margin-top:12px"><textarea id="deviceCommand" spellcheck="false" placeholder="texto para enviar ao dispositivo conectado"></textarea><button type="button" class="program-run" id="deviceCommandSend">ENVIAR</button><div class="inline-confirm" id="deviceCommandConfirm" hidden><span id="deviceCommandConfirmText"></span><button type="button" class="program-run" id="deviceCommandConfirmYes">CONFIRMAR</button><button type="button" class="program-ai" id="deviceCommandConfirmNo">CANCELAR</button></div><div class="device-command-meta"><span id="deviceCommandTarget">ALVO · NENHUM</span><span id="deviceCommandState"></span></div></div></article>
+      <article class="core-card full" id="deviceCommandCard" hidden><small>CONSOLE SERIAL</small><div class="device-command-panel st-11"><textarea id="deviceCommand" spellcheck="false" placeholder="texto para enviar ao dispositivo conectado"></textarea><button type="button" class="program-run" id="deviceCommandSend">ENVIAR</button><div class="inline-confirm" id="deviceCommandConfirm" hidden><span id="deviceCommandConfirmText"></span><button type="button" class="program-run" id="deviceCommandConfirmYes">CONFIRMAR</button><button type="button" class="program-ai" id="deviceCommandConfirmNo">CANCELAR</button></div><div class="device-command-meta"><span id="deviceCommandTarget">ALVO · NENHUM</span><span id="deviceCommandState"></span></div></div></article>
       <div class="interaction-grid"><article class="core-card interaction-card"><small>VOZ</small><div class="interaction-visual"><div class="interaction-glyph">◉</div><div class="signal-stack" id="voiceVisual"></div></div></article><article class="core-card interaction-card" id="gestureCard"><small>GESTOS</small><p class="gesture-hint">✋ ouvir · ✊ calar · 👍 play · ↔ faixa · ☝ rolar · ✌ volume</p><div class="interaction-visual"><div><div class="interaction-glyph gesture">✋</div><video class="gesture-preview" id="gesturePreview" autoplay playsinline muted hidden></video></div><div><div class="signal-stack" id="gestureVisual"></div><div class="gesture-controls"><button type="button" id="gestureToggle">ATIVAR GESTOS</button></div></div></div></article></div>
     </div></div>
   </section>
@@ -1004,7 +1033,7 @@ body.viewer-open{overflow:hidden}
               </div>
               <div class="cx-propulsion-viewport" id="cxPropulsionViewport" aria-label="Gêmeo digital tridimensional do Laboratório de Posicionamento da Propulsão"></div>
               <div class="cx-propulsion-state-note" id="cxPropulsionViewportState">19 ZONAS CANDIDATAS · 0 UNIDADES · AS CAIXAS NÃO SÃO MOTORES</div>
-              <div class="cx-propulsion-legend"><span><i style="background:#48df9b"></i>FAVORÁVEL</span><span><i style="background:#f5d76e"></i>COM COMPENSAÇÕES</span><span><i style="background:#ff9d45"></i>ALTO RISCO</span><span><i style="background:#ff566c"></i>REJEITADA</span><span><i style="background:#718096"></i>NÃO AVALIADA</span></div>
+              <div class="cx-propulsion-legend"><span><i class="st-12"></i>FAVORÁVEL</span><span><i class="st-13"></i>COM COMPENSAÇÕES</span><span><i class="st-14"></i>ALTO RISCO</span><span><i class="st-15"></i>REJEITADA</span><span><i class="st-16"></i>NÃO AVALIADA</span></div>
             </article>
             <aside class="cx-propulsion-panel">
               <section class="cx-lab-card"><header><h3>CONFIGURAÇÃO + M01</h3><small>ENTRADAS</small></header><div class="cx-field-grid" id="cxPropulsionVehicleFields"></div></section>
@@ -1127,13 +1156,13 @@ body.viewer-open{overflow:hidden}
     <div class="err-wrap">
       <div class="err-sec">SAÚDE DO CONDOR</div>
       <div class="health-row">
-        <div style="display:flex;align-items:center;gap:14px;">
+        <div class="st-17">
           <div class="heart-wrap">
             <div class="heart-glow"></div>
             <div class="heart-core"><span aria-hidden="true">♥</span></div>
           </div>
           <div>
-            <div class="health-stat-big" style="display:flex;align-items:baseline;gap:8px;">
+            <div class="health-stat-big st-18">
               <span class="h-num" id="healthScore">--</span>
               <span class="h-pct">%</span>
             </div>
@@ -1141,7 +1170,7 @@ body.viewer-open{overflow:hidden}
           </div>
         </div>
         <div class="ekg-wrap">
-          <svg viewBox="0 0 300 56" style="width:100%;height:100%;">
+          <svg viewBox="0 0 300 56" class="st-19">
             <polyline points="0,28 30,28 50,28 60,8 70,48 80,28 100,28 120,28 130,12 140,44 150,28 180,28 200,28 210,10 220,46 230,28 260,28 280,28 300,28"
               fill="none" stroke="rgba(244,114,182,0.6)" stroke-width="1.5" stroke-linejoin="round"/>
           </svg>
@@ -1157,7 +1186,7 @@ body.viewer-open{overflow:hidden}
       </div>
       <div class="err-div"></div>
       <div class="sort-row">
-        <div style="font-size:9px;color:var(--text-faint);letter-spacing:1.5px;">ordenar</div>
+        <div class="st-20">ordenar</div>
         <div class="sort-pills">
           <button class="sp active">severidade</button>
           <button class="sp">recente</button>

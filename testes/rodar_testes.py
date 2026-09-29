@@ -3577,6 +3577,55 @@ class WakeWordTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(estados, [])
         self.assertEqual(sessao.escuta.voltou, 1)
 
+    def test_listening_survives_the_microphone_dropping(self):
+        """PC dormiu / dispositivo trocou: a escuta reabre o microfone em vez de morrer."""
+        import types
+        from unittest import mock
+        from condor.voice.wake import Escuta
+
+        abertos = []
+
+        class Gravador:
+            def __init__(self, frame_length, device_index):
+                self.frame_length = frame_length
+                self.leituras = 0
+                abertos.append(self)
+
+            def start(self):
+                pass
+
+            def read(self):
+                self.leituras += 1
+                if len(abertos) == 1:
+                    raise RuntimeError("dispositivo removido")
+                escuta.encerrar()
+                return [0] * self.frame_length
+
+            def stop(self):
+                pass
+
+            def delete(self):
+                pass
+
+        class Detector:
+            nome = "teste"
+            frame_length = 512
+            confirmar_nome = True
+            processar = staticmethod(lambda _q: False)
+            reiniciar = fechar = staticmethod(lambda: None)
+            frase_candidata = staticmethod(lambda: [])
+
+        cfg = types.SimpleNamespace(escuta=types.SimpleNamespace(indice_microfone=-1))
+        escuta = Escuta(cfg, lambda *_a, **_k: None)
+        falso = types.ModuleType("pvrecorder")
+        falso.PvRecorder = Gravador
+        with mock.patch.dict(sys.modules, {"pvrecorder": falso}), \
+                mock.patch.object(Escuta, "_criar_detector", lambda self: Detector()):
+            escuta.run()
+        self.assertEqual(len(abertos), 2)
+        self.assertEqual(abertos[1].leituras, 1)
+        self.assertFalse(escuta.ativa)
+
 
 class TrainingDatasetTests(unittest.TestCase):
     """Só respostas reais e úteis viram treino; correção do dono vale mais."""

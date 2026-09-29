@@ -222,9 +222,7 @@ class Escuta(threading.Thread):
             return
 
         try:
-            gravador = PvRecorder(frame_length=detector.frame_length,
-                                  device_index=self._cfg.escuta.indice_microfone)
-            gravador.start()
+            gravador = self._abrir_microfone(PvRecorder, detector)
         except Exception as exc:
             self.motivo_inativa = f"microfone indisponível: {exc}"
             log.error(self.motivo_inativa)
@@ -240,7 +238,18 @@ class Escuta(threading.Thread):
         estava_mudo = False
         try:
             while not self._parar.is_set():
-                quadro = gravador.read()
+                try:
+                    quadro = gravador.read()
+                except Exception as exc:
+                    # O PC dormiu ou o Windows trocou o dispositivo de áudio: sem
+                    # isto a escuta morria calada e o "Condor" parava de funcionar.
+                    log.warning("Microfone falhou (%s); reabrindo.", exc)
+                    self._fechar_gravador(gravador)
+                    gravador = self._reabrir_microfone(PvRecorder, detector)
+                    if gravador is None:
+                        break
+                    detector.reiniciar()
+                    continue
 
                 # Alguém pediu uma captura direta (senha)
                 with self._pedido_lock:
@@ -281,17 +290,48 @@ class Escuta(threading.Thread):
                         self._mudo.clear()
                     finally:
                         detector.reiniciar()
+        except Exception as exc:
+            log.exception("Escuta caiu: %s", exc)
+            self.motivo_inativa = f"escuta caiu: {exc}"
         finally:
             self.ativa = False
-            try:
-                gravador.stop()
-                gravador.delete()
-            except Exception:
-                pass
+            if gravador is not None:
+                self._fechar_gravador(gravador)
             detector.fechar()
             log.info("Escuta encerrada.")
 
     # ── Peças ──────────────────────────────────────────────────────────────
+
+    def _abrir_microfone(self, PvRecorder, detector):
+        gravador = PvRecorder(frame_length=detector.frame_length,
+                              device_index=self._cfg.escuta.indice_microfone)
+        gravador.start()
+        return gravador
+
+    @staticmethod
+    def _fechar_gravador(gravador) -> None:
+        try:
+            gravador.stop()
+        except Exception:
+            pass
+        try:
+            gravador.delete()
+        except Exception:
+            pass
+
+    def _reabrir_microfone(self, PvRecorder, detector):
+        """Tenta de novo até o microfone voltar ou a escuta ser encerrada."""
+        espera = 1.0
+        while not self._parar.wait(espera):
+            try:
+                gravador = self._abrir_microfone(PvRecorder, detector)
+            except Exception as exc:
+                log.debug("Microfone ainda indisponível: %s", exc)
+                espera = min(espera * 2, 30.0)
+                continue
+            log.info("Microfone de volta: '%s'.", getattr(gravador, "selected_device", "padrão"))
+            return gravador
+        return None
 
     def _gravar_quadros(self, gravador, primeiro_quadro: list[int] | None,
                         espera_inicio: float = 3.5) -> list[list[int]] | None:
