@@ -97,7 +97,10 @@ export async function POST(request: Request) {
         sse(controller, "done", { mindId: CONDOR_MIND_ID, messageId: saved.id, conversationId });
         controller.close();
       } catch (error) {
-        sse(controller, "error", { message: error instanceof Error ? error.message : "falha inesperada" });
+        // O texto cru do banco ou do provedor (quota, chave, modelo) fica so no
+        // log do servidor; o navegador recebe uma mensagem generica.
+        console.error("[chat] falha ao responder", error);
+        sse(controller, "error", { message: "Nao consegui concluir a resposta agora. Tente de novo." });
         controller.close();
       }
     },

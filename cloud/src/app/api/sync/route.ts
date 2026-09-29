@@ -90,5 +90,11 @@ export async function POST(request: Request) {
     }
     await supabase.from("condor_devices").update({ last_seen: new Date().toISOString() }).eq("user_id", user.id).eq("device_key", parsed.data.deviceKey);
     return NextResponse.json({ mindId: CONDOR_MIND_ID, accepted, skipped: parsed.data.events.length - accepted });
-  } catch (error) { return authFailure(error) || NextResponse.json({ error: error instanceof Error ? error.message : "sincronizacao recusada" }, { status: 500 }); }
+  } catch (error) {
+    // Erro do Postgres/PostgREST fica so no log; a resposta nao descreve o banco.
+    const negado = authFailure(error);
+    if (negado) return negado;
+    console.error("[sync] falha ao sincronizar", error);
+    return NextResponse.json({ error: "sincronizacao recusada" }, { status: 500 });
+  }
 }

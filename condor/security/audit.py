@@ -147,16 +147,22 @@ class IntegrityAudit:
         """
         if self.identity is None or not self.anchor_path.exists():
             return True
+        # Ancora ilegivel ou incompleta e adulteracao, nao "sem veredito": quem
+        # reescreve o log e troca a ancora por lixo nao pode passar (falha fechado).
         try:
             registro = json.loads(self.anchor_path.read_text(encoding="utf-8"))
             digest = str(registro["hash"])
             count = int(registro["count"])
-            payload = json.dumps(
-                {"hash": digest, "count": count}, sort_keys=True, separators=(",", ":")
-            ).encode("utf-8")
-            assinada = self.identity.verify(payload, registro["signature"])
+            assinatura = str(registro["signature"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        payload = json.dumps(
+            {"hash": digest, "count": count}, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        try:
+            assinada = self.identity.verify(payload, assinatura)
         except Exception:
-            return True          # cofre bloqueado: sem veredito, sem acusacao
+            return True          # cofre bloqueado: a chave publica nao e legivel ainda
         if not assinada:
             return False
         # Truncar o log abaixo do ponto assinado, ou trocar o evento que estava
