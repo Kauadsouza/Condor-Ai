@@ -69,10 +69,9 @@ def main() -> int:
     checks = {
         "platform": platform.platform(),
         "loopback_only": cfg.servidor.host in {"127.0.0.1", "localhost", "::1"},
-        "mobile_view_safe": (
-            cfg.visualizacao_movel.ativa
-            and cfg.visualizacao_movel.porta != cfg.servidor.porta
-            and (CODE_ROOT / "condor" / "mobile" / "index.html").is_file()
+        "phone_channel_safe": (
+            cfg.celular.porta != cfg.servidor.porta
+            and (CODE_ROOT / "condor" / "celular_ui" / "index.html").is_file()
         ),
         "state_root": str(state_root()),
         "ollama_online": bool(models),

@@ -179,8 +179,8 @@ class ServidorConfig(BaseModel):
         return value
 
 
-class VisualizacaoMovelConfig(BaseModel):
-    """Espelho sanitizado para o navegador de outro aparelho na rede privada."""
+class CelularConfig(BaseModel):
+    """Canal do iPhone. Escuta só no 127.0.0.1; o tailscale serve leva até ele."""
 
     ativa: bool = True
     porta: int = 7778
@@ -189,46 +189,7 @@ class VisualizacaoMovelConfig(BaseModel):
     @classmethod
     def _porta_valida(cls, value: int) -> int:
         if value < 1024 or value > 65535:
-            raise ValueError("A porta da visualizacao movel precisa estar entre 1024 e 65535.")
-        return value
-
-
-class CondorCloudConfig(BaseModel):
-    """Cliente privado da mente online; credenciais ficam somente no cofre."""
-
-    ativa: bool = False
-    api_url: str = ""
-    supabase_url: str = ""
-    supabase_publishable_key: str = ""
-    intervalo_sync_segundos: int = 30
-
-    @field_validator("api_url", "supabase_url")
-    @classmethod
-    def _url_cloud_segura(cls, value: str) -> str:
-        clean = value.strip().rstrip("/")
-        if not clean:
-            return ""
-        parsed = urlsplit(clean)
-        local = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-        if parsed.scheme != ("http" if local else "https"):
-            raise ValueError("Condor AI Cloud exige HTTPS; HTTP e aceito apenas no localhost.")
-        if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError("URL do Condor AI Cloud invalida.")
-        return clean
-
-    @field_validator("supabase_publishable_key")
-    @classmethod
-    def _chave_publica_limitada(cls, value: str) -> str:
-        clean = value.strip()
-        if clean and (len(clean) < 20 or len(clean) > 2048):
-            raise ValueError("Chave publica do Supabase invalida.")
-        return clean
-
-    @field_validator("intervalo_sync_segundos")
-    @classmethod
-    def _intervalo_seguro(cls, value: int) -> int:
-        if value < 15 or value > 900:
-            raise ValueError("Intervalo do Condor AI Cloud precisa ficar entre 15 e 900 segundos.")
+            raise ValueError("A porta do celular precisa estar entre 1024 e 65535.")
         return value
 
 
@@ -240,10 +201,7 @@ class Config(BaseModel):
     sessao: SessaoConfig = Field(default_factory=SessaoConfig)
     seguranca: SegurancaConfig = Field(default_factory=SegurancaConfig)
     servidor: ServidorConfig = Field(default_factory=ServidorConfig)
-    visualizacao_movel: VisualizacaoMovelConfig = Field(
-        default_factory=VisualizacaoMovelConfig
-    )
-    cloud: CondorCloudConfig = Field(default_factory=CondorCloudConfig)
+    celular: CelularConfig = Field(default_factory=CelularConfig)
     _vault: Any = PrivateAttr(default=None)
 
     def ligar_cofre(self, vault: Any) -> None:

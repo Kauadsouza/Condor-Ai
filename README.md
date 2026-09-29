@@ -16,7 +16,7 @@ Condor inverts that. The memory sits encrypted on the owner's disk; the model is
 
 ## Design principles
 
-- **One mind:** PC, mobile viewer and the optional cloud companion are interfaces to the same canonical identity.
+- **One mind:** the PC and the iPhone are two windows onto the same identity, memory and tools.
 - **Local ownership:** private state stays under the owner's control and is never committed with the source.
 - **Automation that fails closed:** computer, file and physical-device actions pass through policy and explicit approval.
 - **Model independence:** the deterministic core keeps working without a paid API.
@@ -31,9 +31,8 @@ Condor inverts that. The memory sits encrypted on the owner's disk; the model is
 - Selectable Local, OpenAI and Claude connectors, with secret redaction.
 - Local speech, optional wake word, authentication-only computer vision and private image generation.
 - Permission-scoped tools for files, applications, research and development work.
-- A **read-only** mobile viewer on the private network — no command, memory or vault routes.
+- **CONDOR on the iPhone** over Tailscale: chat, push-to-talk and hands-free "Condor", voice in your earbuds (see `CONDOR_CELULAR.md`).
 - Condor X: an experimental space for 3D design and bounded engineering simulation.
-- An optional PWA foundation (`cloud/`) for encrypted chat, notes and memory while the PC is off.
 
 ## Backup: the one irreplaceable part
 
@@ -57,7 +56,7 @@ powershell -File scripts\restore_condor_data.ps1 -BackupFile "<file.enc>" -Condo
 
 ## Security boundary
 
-The full core must stay loopback-only. **Never expose port `7777` to the internet.** The mobile viewer runs as a separate process on a separate port, is restricted to private networks, requires pairing and returns sanitised read-only data.
+The full core must stay loopback-only. **Never expose port `7777` to the internet.** The phone channel listens on loopback only; `tailscale serve` publishes it inside your private tailnet, and pairing needs a one-time QR invite plus the passphrase.
 
 Secrets, biometric templates, memory, configuration, logs and user files live outside the repository, in `~/.condor` by default. The repository restores the application, but it cannot restore that private state. Never publish or recreate an existing `~/.condor` when publishing the source.
 
@@ -75,7 +74,7 @@ Desktop UI / voice / local projects
  deterministic   local model   optional APIs
 
 Separate boundaries:
-- read-only mobile viewer
+- iPhone channel over Tailscale
 - encrypted cloud companion foundation
 ```
 
@@ -120,7 +119,6 @@ npm.cmd run build
 
 ```text
 condor/        Core, memory, security, devices, UI and project engines
-cloud/         Optional encrypted PWA companion foundation
 deploy/        Private-network deployment examples
 scripts/       Installation, diagnostics, backup and local runtime
 testes/        Security and behaviour regression suite

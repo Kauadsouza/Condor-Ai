@@ -13,7 +13,7 @@ $Compilador = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.ex
 $FrameworkDir = Split-Path -Parent $Compilador
 
 # Pastas que nunca vão para o instalador, mesmo se aparecerem no Git.
-$Fora = @(".github/", "cloud/", "testes/fixtures/", "treino/dados/")
+$Fora = @(".github/", "testes/fixtures/", "treino/dados/")
 
 Push-Location $Raiz
 try {

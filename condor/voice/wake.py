@@ -80,6 +80,41 @@ def _caminho_ascii(caminho: Path) -> str:
     return texto
 
 
+_MODELO_VOSK_COMPARTILHADO = None
+_MODELO_VOSK_LOCK = threading.Lock()
+
+
+def vosk_ouviu_condor(wav: bytes) -> bool | None:
+    """Porteiro barato para a fala que chega pronta (escuta do celular).
+
+    True/False quando o Vosk decidiu; None quando ele não está disponível —
+    aí quem chama segue direto para o Whisper, que é quem confirma de verdade.
+    """
+    global _MODELO_VOSK_COMPARTILHADO
+    try:
+        from vosk import KaldiRecognizer, Model, SetLogLevel
+        with _MODELO_VOSK_LOCK:
+            if _MODELO_VOSK_COMPARTILHADO is None:
+                modelos = sorted(PASTA_VOSK.glob("vosk-model*"))
+                if not modelos:
+                    return None
+                SetLogLevel(-1)
+                _MODELO_VOSK_COMPARTILHADO = Model(_caminho_ascii(modelos[-1]))
+            modelo = _MODELO_VOSK_COMPARTILHADO
+        with wave.open(io.BytesIO(wav), "rb") as arquivo:
+            if arquivo.getnchannels() != 1 or arquivo.getsampwidth() != 2:
+                return None
+            taxa = arquivo.getframerate()
+            pcm = arquivo.readframes(arquivo.getnframes())
+        reconhecedor = KaldiRecognizer(modelo, taxa, _GRAMATICA_VOSK)
+        reconhecedor.AcceptWaveform(pcm)
+        texto = str(json.loads(reconhecedor.FinalResult()).get("text") or "")
+        return "condor" in texto.split() or "com dor" in texto
+    except Exception as exc:
+        log.debug("Porteiro Vosk indisponível para o celular: %s", exc)
+        return None
+
+
 class _Porcupine:
     """Detector preciso; dispara no instante em que a palavra termina."""
 

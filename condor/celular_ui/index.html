@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#060a12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Condor">
+<meta name="referrer" content="no-referrer">
+<title>Condor</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icone-180.png">
+<link rel="stylesheet" href="app.css?v=1">
+</head>
+<body>
+<main class="app" id="app">
+
+  <section class="tela" id="telaCarregando">
+    <div class="orbe grande" data-estado="pensando"><i></i></div>
+    <p class="aviso">Conectando ao CONDOR...</p>
+  </section>
+
+  <section class="tela" id="telaParear" hidden>
+    <img class="logo" src="icone-180.png" alt="">
+    <h1>Parear este iPhone</h1>
+    <p class="aviso" id="parearAviso">Confirme com a sua palavra de acesso.</p>
+    <form class="cartao" id="formParear" autocomplete="off">
+      <label>NOME DO APARELHO<input id="parearNome" maxlength="40" value="iPhone"></label>
+      <label>PALAVRA DE ACESSO<input id="parearSenha" type="password" autocomplete="current-password" required maxlength="512"></label>
+      <button type="submit" id="parearBotao">PAREAR</button>
+      <p class="erro" id="parearErro" role="alert"></p>
+    </form>
+    <p class="aviso pequeno" id="parearSemCodigo" hidden>Abra a aba CELL no PC, gere o QR code e aponte a câmera do iPhone para ele.</p>
+  </section>
+
+  <section class="tela" id="telaTrancado" hidden>
+    <div class="orbe grande" data-estado="dormindo"><i></i></div>
+    <h1>CONDOR trancado</h1>
+    <p class="aviso">O PC ligou e o cofre está fechado. Destranque daqui mesmo.</p>
+    <form class="cartao" id="formDestrancar" autocomplete="off">
+      <label>PALAVRA DE ACESSO<input id="destrancarSenha" type="password" autocomplete="current-password" required maxlength="512"></label>
+      <button type="submit" id="destrancarBotao">DESTRANCAR</button>
+      <p class="erro" id="destrancarErro" role="alert"></p>
+    </form>
+  </section>
+
+  <section class="tela conversa" id="telaConversa" hidden>
+    <header class="topo">
+      <div class="orbe" id="orbe" data-estado="dormindo"><i></i></div>
+      <div class="topo-texto"><strong>CONDOR</strong><span id="estadoTexto">DORMINDO</span></div>
+      <button type="button" class="chip" id="escutaBotao" aria-pressed="false">ESCUTA "CONDOR"</button>
+    </header>
+
+    <div class="mensagens" id="mensagens" aria-live="polite"></div>
+
+    <form class="senha-pedido" id="formSenha" hidden autocomplete="off">
+      <span id="senhaMotivo">O CONDOR precisa da sua palavra de acesso para continuar.</span>
+      <input id="senhaTexto" type="password" maxlength="512" autocomplete="off" placeholder="palavra de acesso">
+      <button type="submit">APROVAR</button>
+    </form>
+
+    <form class="compor" id="formCompor" autocomplete="off">
+      <textarea id="texto" rows="1" maxlength="8000" placeholder="Mensagem para o Condor"></textarea>
+      <button type="button" class="mic" id="micBotao" aria-pressed="false" aria-label="Falar com o Condor"><i></i></button>
+      <button type="submit" class="enviar" id="enviarBotao" aria-label="Enviar">➤</button>
+    </form>
+  </section>
+
+  <div class="toque" id="toque" hidden>
+    <div class="orbe grande" data-estado="ouvindo"><i></i></div>
+    <p>Toque para ligar o som e o microfone</p>
+  </div>
+</main>
+<script src="audio.js?v=1"></script>
+<script src="app.js?v=1"></script>
+</body>
+</html>

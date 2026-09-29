@@ -91,18 +91,9 @@ adaptador do ambiente grafico instalado.
 
 Nao exponha a porta 7777 na rede. O nucleo completo permanece no loopback.
 
-## Ver no celular sem instalar aplicativo
+## CONDOR no iPhone
 
-1. Deixe o PC e o celular conectados a mesma rede Wi-Fi privada.
-2. Abra o aplicativo Condor no PC e clique em **CELULAR**.
-3. No navegador do celular, digite o endereco mostrado pelo Condor.
-4. Digite o codigo de oito numeros exibido no PC.
-
-O endereco da porta `7778` e um espelho separado e somente leitura. Ele mostra
-estado tecnico e projetos, incluindo o prototipo 3D, mas nao oferece conversa,
-memoria, arquivos, senha, cofre nem controle do PC. O codigo muda quando o
-nucleo do Condor reinicia e cinco erros de pareamento bloqueiam novas tentativas
-por dez minutos.
-
-Para visualizar fora da mesma rede, siga `deploy/wireguard/README.md` e mantenha
-o nucleo em loopback. Nunca encaminhe a porta `7777` pelo roteador.
+Na aba **CELL** do PC: entre no Tailscale, instale o Tailscale no iPhone com a
+mesma conta, clique **LIGAR** e aponte a câmera do iPhone para o QR code. O
+passo a passo e a segurança estão em `CONDOR_CELULAR.md`. Nunca encaminhe a
+porta `7777` pelo roteador.

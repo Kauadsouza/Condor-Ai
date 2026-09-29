@@ -14,7 +14,7 @@ from condor.server import montar
 import uvicorn
 
 config = Config(
-    servidor={"porta": 18777}, escuta={"ativa": False}, visualizacao_movel={"ativa": False},
+    servidor={"porta": 18777}, escuta={"ativa": False},
     cerebro={"provedor_preferido": "local", "modelo_local": "qwen3:4b-instruct", "max_tokens": 400},
     seguranca={"simulacao": True}, sessao={"abrir_janela_ao_acordar": False, "fechar_janela_ao_dormir": False},
 )

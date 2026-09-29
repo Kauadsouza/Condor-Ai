@@ -1,0 +1,110 @@
+:root {
+  --fundo: #060a12;
+  --cartao: rgba(255, 255, 255, .04);
+  --borda: rgba(255, 255, 255, .09);
+  --texto: #e6eef7;
+  --fraco: #8a97a8;
+  --ciano: #5eead4;
+  --violeta: #8b7cff;
+  --verde: #48df9b;
+  --vermelho: #ff6b81;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: radial-gradient(circle at 50% -10%, rgba(139, 124, 255, .18), transparent 55%), var(--fundo);
+  color: var(--texto);
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  overscroll-behavior: none;
+}
+[hidden] { display: none !important; }
+
+.app { height: 100dvh; display: flex; flex-direction: column; }
+.tela {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  padding: calc(env(safe-area-inset-top) + 24px) 20px calc(env(safe-area-inset-bottom) + 24px);
+  text-align: center;
+}
+.tela h1 { margin: 0; font-size: 22px; font-weight: 650; }
+.logo { width: 76px; height: 76px; border-radius: 20px; }
+.aviso { margin: 0; color: var(--fraco); font-size: 14px; max-width: 320px; }
+.aviso.pequeno { font-size: 13px; }
+
+.cartao { width: 100%; max-width: 360px; display: grid; gap: 12px; padding: 16px; border: 1px solid var(--borda); border-radius: 18px; background: var(--cartao); text-align: left; }
+.cartao label { display: grid; gap: 6px; font-size: 11px; letter-spacing: 1.2px; color: var(--fraco); }
+input, textarea {
+  width: 100%; padding: 12px 14px; border: 1px solid var(--borda); border-radius: 12px;
+  background: rgba(0, 0, 0, .35); color: var(--texto); font-family: inherit; font-size: 16px; line-height: 1.35; outline: none;
+}
+input:focus, textarea:focus { border-color: rgba(94, 234, 212, .55); }
+button { font: inherit; cursor: pointer; }
+.cartao button, .senha-pedido button {
+  padding: 13px; border: 0; border-radius: 12px; background: linear-gradient(135deg, var(--ciano), var(--violeta));
+  color: #041016; font-weight: 700; letter-spacing: 1px;
+}
+.cartao button:disabled { opacity: .5; }
+.erro { min-height: 18px; margin: 0; color: var(--vermelho); font-size: 13px; }
+
+/* Orbe: verde quando está pronto para ouvir */
+.orbe { --cor: var(--violeta); position: relative; width: 44px; height: 44px; flex: none; border-radius: 50%; }
+.orbe.grande { width: 120px; height: 120px; }
+.orbe i {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff 0 6%, var(--cor) 32%, rgba(6, 10, 18, .2) 72%);
+  box-shadow: 0 0 24px var(--cor), inset 0 0 18px rgba(255, 255, 255, .25);
+  animation: respirar 3.2s ease-in-out infinite;
+}
+.orbe[data-estado="dormindo"] { --cor: #3a4460; }
+.orbe[data-estado="ouvindo"] { --cor: var(--verde); }
+.orbe[data-estado="pensando"] { --cor: var(--violeta); }
+.orbe[data-estado="pensando"] i { animation-duration: 1s; }
+.orbe[data-estado="falando"] { --cor: var(--ciano); }
+.orbe[data-estado="falando"] i { animation-duration: .7s; }
+.orbe[data-estado="senha"] { --cor: #f5b35e; }
+@keyframes respirar { 50% { transform: scale(1.08); filter: brightness(1.2); } }
+
+/* Conversa */
+.conversa { justify-content: flex-start; align-items: stretch; gap: 0; padding: 0; text-align: left; }
+.topo {
+  display: flex; align-items: center; gap: 12px;
+  padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;
+  border-bottom: 1px solid var(--borda);
+  background: rgba(6, 10, 18, .82);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+}
+.topo-texto { flex: 1; display: grid; }
+.topo-texto strong { font-size: 15px; letter-spacing: 2px; }
+.topo-texto span { font-size: 11px; letter-spacing: 1.4px; color: var(--fraco); }
+.chip { padding: 8px 11px; border: 1px solid var(--borda); border-radius: 999px; background: transparent; color: var(--fraco); font-size: 11px; letter-spacing: 1px; }
+.chip[aria-pressed="true"] { border-color: rgba(72, 223, 155, .6); background: rgba(72, 223, 155, .12); color: var(--verde); }
+
+.mensagens { flex: 1; overflow-y: auto; padding: 14px 14px 18px; display: flex; flex-direction: column; gap: 9px; }
+.bolha { max-width: 86%; padding: 10px 13px; border-radius: 18px; white-space: pre-wrap; word-wrap: break-word; font-size: 15.5px; }
+.bolha.eu { align-self: flex-end; background: linear-gradient(135deg, rgba(94, 234, 212, .22), rgba(139, 124, 255, .25)); border-bottom-right-radius: 6px; }
+.bolha.condor { align-self: flex-start; background: var(--cartao); border: 1px solid var(--borda); border-bottom-left-radius: 6px; }
+.bolha.condor:empty::after { content: "…"; color: var(--fraco); }
+.bolha.sistema { align-self: center; max-width: 92%; background: none; color: var(--fraco); font-size: 12.5px; text-align: center; }
+.bolha[data-etiqueta]::before { content: attr(data-etiqueta); display: block; margin-bottom: 3px; font-size: 9.5px; letter-spacing: 1.2px; color: var(--fraco); }
+
+.senha-pedido { display: grid; gap: 8px; margin: 0 12px 8px; padding: 12px; border: 1px solid rgba(245, 179, 94, .4); border-radius: 14px; background: rgba(245, 179, 94, .08); font-size: 13px; }
+
+.compor {
+  display: flex; align-items: flex-end; gap: 8px;
+  padding: 8px 10px calc(env(safe-area-inset-bottom) + 8px);
+  border-top: 1px solid var(--borda); background: rgba(6, 10, 18, .9);
+}
+.compor textarea { resize: none; max-height: 120px; border-radius: 20px; padding: 10px 14px; }
+.mic, .enviar { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--borda); background: var(--cartao); color: var(--texto); font-size: 18px; }
+.enviar { background: linear-gradient(135deg, var(--ciano), var(--violeta)); color: #041016; border: 0; }
+.mic { --nivel: 0; position: relative; }
+.mic i { position: absolute; inset: 13px 16px; border-radius: 8px; background: var(--texto); }
+.mic[aria-pressed="true"] { border-color: var(--verde); background: rgba(72, 223, 155, .16); box-shadow: 0 0 calc(6px + var(--nivel) * 26px) rgba(72, 223, 155, .75); }
+.mic[aria-pressed="true"] i { background: var(--verde); }
+
+.toque {
+  position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+  background: rgba(6, 10, 18, .92); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  color: var(--texto); font-size: 15px;
+}

@@ -39,7 +39,7 @@ MARCA_INSTALADO = ".condor-instalado"
 ARQUIVO_VERSAO = ".condor-versao"
 ARQUIVO_MANIFESTO = ".condor-arquivos.json"
 # Nada disso vem do GitHub nem pode ser apagado por uma atualização.
-PRESERVAR = {".venv", "runtime", "python", "dist", "build", "__pycache__", "cloud", ".github",
+PRESERVAR = {".venv", "runtime", "python", "dist", "build", "__pycache__", ".github",
              MARCA_INSTALADO, ARQUIVO_VERSAO, ARQUIVO_MANIFESTO, "Condor.exe"}
 DEPENDENCIAS = ("pyproject.toml", "requirements.txt")
 LIMITE_PACOTE = 200 * 1024 * 1024

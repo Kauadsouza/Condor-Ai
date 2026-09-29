@@ -49,6 +49,7 @@ def chamou_condor(texto: str) -> bool:
     return "condor" in palavras
 
 CONTEXTO_PROGRAMACAO = "programacao"
+CANAL_CELULAR = "celular"
 
 
 # Instrução fixa, a única parte da aba Programação que vai no prompt do sistema.
@@ -145,6 +146,11 @@ class Sessao:
         # Para qual janela foi cada pedido de foto: só ela pode responder.
         self._fotos_socket: dict[str, str] = {}
         self._enviar_camera: Callable[[dict], Awaitable[str | None]] | None = None
+        # De onde veio o turno em andamento: "celular" manda a voz para o
+        # iPhone que perguntou, e não para as caixas do PC.
+        self._canal_turno = ""
+        self._celular_toca: Callable[[], bool] = lambda: False
+        self._entregar_celular: Callable[[dict], Awaitable[None]] | None = None
 
         guarda.registrar_pedido_senha(self._pedir_senha)
 
@@ -168,9 +174,22 @@ class Sessao:
         """Como mandar o pedido de foto para UMA janela; devolve o id dela."""
         self._enviar_camera = enviar
 
+    def ligar_celular(self, toca: Callable[[], bool],
+                      entregar: Callable[[dict], Awaitable[None]]) -> None:
+        """Como mandar a voz de um turno pedido pelo celular de volta a ele."""
+        self._celular_toca = toca
+        self._entregar_celular = entregar
+
     def _nova_fala(self) -> FalaEmFluxo | None:
         if not getattr(self.voz, "pronto", False):
             return None
+        if getattr(self, "_canal_turno", "") == CANAL_CELULAR:
+            # Pedido do celular fala no celular (e no fone, se estiver nele).
+            # Sem celular tocando, fica só o texto: o PC de casa não fala sozinho.
+            if self._entregar_celular is None or not self._celular_toca():
+                return None
+            self._fala = FalaEmFluxo(self.voz, self._entregar_celular)
+            return self._fala
         destino = getattr(self, "_entregar_audio", None) or self._avisar
         entregar = destino if (destino and self._tem_player()) else None
         self._fala = FalaEmFluxo(self.voz, entregar)
@@ -273,12 +292,13 @@ class Sessao:
     # ── O caminho comum ────────────────────────────────────────────────────
 
     async def processar(self, texto: str, por_voz: bool, *, reproduzir_voz: bool = True,
-                        contexto: str = "", alvo: dict | None = None) -> None:
+                        contexto: str = "", alvo: dict | None = None, canal: str = "") -> None:
         # asyncio.Lock e justo: pedidos simultaneos aguardam aqui na ordem em
         # que chegaram. Nada e descartado se voz, outra janela ou uma corrida de
         # rede enviar enquanto o Condor ainda esta fechando a resposta anterior.
         async with self._ocupado:
             self._contexto_turno = CONTEXTO_PROGRAMACAO if contexto == CONTEXTO_PROGRAMACAO else ""
+            self._canal_turno = CANAL_CELULAR if canal == CANAL_CELULAR else ""
             try:
                 if self._contexto_turno == CONTEXTO_PROGRAMACAO:
                     await self._processar_programacao(texto, alvo)
@@ -286,6 +306,39 @@ class Sessao:
                     await self._processar_turno(texto, por_voz, reproduzir_voz)
             finally:
                 self._contexto_turno = ""
+                self._canal_turno = ""
+
+    # ── Entrada do celular (chat e voz) ────────────────────────────────────
+
+    async def texto_do_celular(self, texto: str) -> None:
+        """Mensagem digitada no iPhone: mesma conversa, resposta em texto."""
+        texto = texto.strip()
+        if not texto:
+            return
+        # O PC mostra o que foi dito no celular; o celular já mostrou sozinho.
+        await self._evento("transcricao", texto=texto, origem=CANAL_CELULAR, digitado=True)
+        await self.processar(texto, por_voz=False, canal=CANAL_CELULAR)
+
+    async def audio_do_celular(self, wav: bytes, com_nome: bool) -> None:
+        """Fala gravada no iPhone. Resposta em voz, tocada no próprio celular.
+
+        ``com_nome``: veio da escuta contínua, então só vale se abrir chamando
+        "Condor" — o mesmo porteiro do PC (Vosk barato, Whisper confirma).
+        Pelo botão do microfone o dono já disse que é com ele.
+        """
+        if com_nome:
+            from condor.voice.wake import vosk_ouviu_condor
+            if await asyncio.to_thread(vosk_ouviu_condor, wav) is False:
+                return
+        texto = (await self.ouvidos.transcrever(wav)).strip()
+        if com_nome and not chamou_condor(texto):
+            log.info("Celular: palavra de ativação não confirmada; ignorado.")
+            return
+        if not texto:
+            await self._evento("erro", mensagem="Não entendi o áudio; fala de novo?")
+            return
+        await self._evento("transcricao", texto=texto, origem=CANAL_CELULAR)
+        await self.processar(texto, por_voz=True, canal=CANAL_CELULAR)
 
     async def _processar_programacao(self, texto: str, alvo: dict | None) -> None:
         """Chat da aba Programação: conversa à parte da principal.

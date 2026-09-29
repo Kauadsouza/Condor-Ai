@@ -32,7 +32,6 @@ import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
@@ -40,16 +39,6 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 log = logging.getLogger("condor.memoria")
 
-
-def _iso_to_timestamp(value: object) -> float:
-    """Converte data ISO da nuvem sem deixar um relogio remoto quebrar o sync."""
-    if not value:
-        return time.time()
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed.timestamp()
-    except (TypeError, ValueError, OverflowError):
-        return time.time()
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -146,29 +135,6 @@ CREATE TABLE IF NOT EXISTS memoria_pendente (
     tentativas  INTEGER NOT NULL DEFAULT 0,
     criado      REAL NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS cloud_notes (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    cloud_id   TEXT UNIQUE,
-    titulo     TEXT NOT NULL,
-    conteudo   TEXT NOT NULL,
-    origem     TEXT NOT NULL DEFAULT 'local',
-    criado     REAL NOT NULL,
-    atualizado REAL NOT NULL,
-    arquivado  INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_cloud_notes_updated
-ON cloud_notes(arquivado, atualizado DESC);
-
-CREATE TABLE IF NOT EXISTS cloud_sync_map (
-    cloud_id   TEXT PRIMARY KEY,
-    tipo       TEXT NOT NULL,
-    local_ref  TEXT NOT NULL DEFAULT '',
-    sequencia  INTEGER NOT NULL DEFAULT 0,
-    criado     REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_cloud_sync_sequence
-ON cloud_sync_map(sequencia DESC);
 
 CREATE TABLE IF NOT EXISTS sessoes (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1586,153 +1552,6 @@ class Memoria:
                 (antes, antes, max(1, min(limite, 100))),
             ).fetchall()
             return [dict(row) for row in rows]
-
-    # ── Condor AI Cloud ──────────────────────────────────────────────────
-
-    def cloud_snapshot(self, message_limit: int = 300) -> dict:
-        """Conteudo local duravel que pode ser replicado na mente privada online.
-
-        O chamador ainda precisa aplicar a politica de segredos antes de enviar.
-        A memoria continua cifrada em disco e este metodo nunca retorna acoes,
-        credenciais, arquivos ou dados biometricos.
-        """
-        if not self.unlocked:
-            raise RuntimeError("cofre bloqueado")
-        limit = max(1, min(int(message_limit), 1000))
-        with self._conn() as conn:
-            messages = [
-                dict(row) for row in conn.execute(
-                    """SELECT id,sessao,papel,conteudo,ts FROM conversas
-                       WHERE papel IN ('user','assistant')
-                         AND CAST(id AS TEXT) NOT IN (
-                           SELECT local_ref FROM cloud_sync_map WHERE tipo='message'
-                         )
-                       ORDER BY id DESC LIMIT ?""",
-                    (limit,),
-                ).fetchall()
-            ]
-            facts = [
-                dict(row) for row in conn.execute(
-                    """SELECT id,categoria,chave,valor,confianca,atualizado
-                       FROM fatos WHERE origem!='condor-cloud'
-                       ORDER BY atualizado DESC LIMIT 500"""
-                ).fetchall()
-            ]
-            notes = [
-                dict(row) for row in conn.execute(
-                    """SELECT id,cloud_id,titulo,conteudo,origem,criado,atualizado
-                       FROM cloud_notes WHERE arquivado=0 AND origem!='condor-cloud'
-                       ORDER BY atualizado DESC LIMIT 500"""
-                ).fetchall()
-            ]
-        messages.reverse()
-        return {"messages": messages, "facts": facts, "notes": notes}
-
-    def cloud_cursor(self) -> int:
-        if not self.unlocked:
-            return 0
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT valor FROM memory_meta WHERE chave='condor_cloud_cursor_v1'"
-            ).fetchone()
-        try:
-            return max(0, int(row["valor"])) if row else 0
-        except (TypeError, ValueError):
-            return 0
-
-    def set_cloud_cursor(self, cursor: int) -> None:
-        if not self.unlocked:
-            raise RuntimeError("cofre bloqueado")
-        with self._conn() as conn:
-            conn.execute(
-                """INSERT INTO memory_meta(chave,valor)
-                   VALUES('condor_cloud_cursor_v1',?)
-                   ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor""",
-                (str(max(0, int(cursor))),),
-            )
-
-    def cloud_notes(self, limit: int = 100) -> list[dict]:
-        if not self.unlocked:
-            return []
-        with self._conn() as conn:
-            return [
-                dict(row) for row in conn.execute(
-                    """SELECT id,cloud_id,titulo,conteudo,origem,criado,atualizado
-                       FROM cloud_notes WHERE arquivado=0
-                       ORDER BY atualizado DESC LIMIT ?""",
-                    (max(1, min(int(limit), 500)),),
-                ).fetchall()
-            ]
-
-
-    def importar_cloud_event(self, event: dict) -> bool:
-        """Aplica evento remoto uma unica vez e devolve se houve importacao."""
-        if not self.unlocked:
-            raise RuntimeError("cofre bloqueado")
-        sequence = max(0, int(event.get("sequence") or 0))
-        event_id = str(event.get("clientEventId") or "").strip()[:180]
-        kind = str(event.get("type") or "").strip().lower()
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        if not event_id or kind not in {"message", "fact", "note"}:
-            return False
-        with self._conn() as conn:
-            if conn.execute(
-                "SELECT 1 FROM cloud_sync_map WHERE cloud_id=?", (event_id,)
-            ).fetchone():
-                return False
-
-            local_ref = ""
-            if kind == "message":
-                role = str(payload.get("role") or "")
-                content = str(payload.get("content") or "").strip()[:8000]
-                if role not in {"user", "assistant"} or not content:
-                    return False
-                created = _iso_to_timestamp(payload.get("createdAt"))
-                cursor = conn.execute(
-                    "INSERT INTO conversas(sessao,papel,conteudo,ts) VALUES(0,?,?,?)",
-                    (role, content, created),
-                )
-                local_ref = str(cursor.lastrowid or "")
-            elif kind == "fact":
-                category = str(payload.get("category") or "pessoal")[:40]
-                key = str(payload.get("key") or "").strip()[:80]
-                value = str(payload.get("value") or "").strip()[:2000]
-                if not key or not value:
-                    return False
-                confidence = min(1.0, max(0.0, float(payload.get("confidence") or 0.8)))
-                agora = _iso_to_timestamp(payload.get("updatedAt"))
-                cursor = conn.execute(
-                    """INSERT INTO fatos(categoria,chave,valor,confianca,origem,criado,atualizado)
-                       VALUES(?,?,?,?,?,?,?)
-                       ON CONFLICT(categoria,chave) DO UPDATE SET
-                         valor=excluded.valor, confianca=excluded.confianca,
-                         origem=excluded.origem, atualizado=excluded.atualizado""",
-                    (category, key, value, confidence, "condor-cloud", agora, agora),
-                )
-                local_ref = str(cursor.lastrowid or f"{category}:{key}")
-            else:
-                title = str(payload.get("title") or "").strip()[:160]
-                body = str(payload.get("body") or "").strip()[:16000]
-                cloud_id = str(payload.get("id") or payload.get("originId") or event_id)[:180]
-                if not title or not body:
-                    return False
-                agora = _iso_to_timestamp(payload.get("updatedAt") or payload.get("createdAt"))
-                conn.execute(
-                    """INSERT INTO cloud_notes(cloud_id,titulo,conteudo,origem,criado,atualizado)
-                       VALUES(?,?,?,?,?,?)
-                       ON CONFLICT(cloud_id) DO UPDATE SET
-                         titulo=excluded.titulo, conteudo=excluded.conteudo,
-                         atualizado=excluded.atualizado, arquivado=0""",
-                    (cloud_id, title, body, "condor-cloud", agora, agora),
-                )
-                local_ref = cloud_id
-
-            conn.execute(
-                """INSERT INTO cloud_sync_map(cloud_id,tipo,local_ref,sequencia,criado)
-                   VALUES(?,?,?,?,?)""",
-                (event_id, kind, local_ref, sequence, time.time()),
-            )
-        return True
 
     def limpar_conversas(self) -> int:
         """Apaga somente mensagens; fatos, projetos e demais memórias ficam intactos."""

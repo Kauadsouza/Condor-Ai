@@ -1,196 +1,100 @@
-/** CondorCell — painel local da mente privada compartilhada com o celular. */
+/**
+ * CondorCell — o CONDOR no iPhone, pelo Tailscale.
+ *
+ * Quatro passos, cada um com o estado real do PC: Tailscale instalado, conta
+ * conectada, iPhone na mesma conta e o CONDOR publicado na rede privada. Com
+ * isso pronto, o QR code (uso único, 5 minutos) pareia o iPhone, que ainda
+ * confirma a palavra de acesso. Os aparelhos pareados podem ser revogados aqui.
+ */
 const CondorCell = (() => {
-  let conversationId = '';
-  let busy = false;
+  const $ = (id) => document.getElementById(id);
+  let dados = null;
+  let relogio = null;
 
-  const el = (id) => document.getElementById(id);
-  const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
-  })[char]);
+  const escapar = (valor) => String(valor ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
 
-  async function api(path, options = {}) {
-    await CondorSession.ready;
-    const response = await fetch(path, {
-      cache: 'no-store',
-      ...options,
-      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+  function init() {
+    $('celRefresh')?.addEventListener('click', atualizar);
+    $('celEntrar')?.addEventListener('click', () => agir('/api/celular/entrar-tailscale', 'ABRINDO O LOGIN NO NAVEGADOR...'));
+    $('celLigar')?.addEventListener('click', () => agir('/api/celular/ligar', 'LIGANDO NA REDE PRIVADA...'));
+    $('celConvite')?.addEventListener('click', () => agir('/api/celular/convite', 'GERANDO QR CODE...'));
+    $('celAparelhos')?.addEventListener('click', (evento) => {
+      const botao = evento.target.closest('[data-revogar]');
+      if (botao) agir('/api/celular/revogar', 'REVOGANDO...', { id: botao.dataset.revogar });
     });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.erro || 'Condor AI Cloud indisponível.');
-    return data;
   }
 
-  function setState(text, online = false) {
-    const state = el('cellState');
-    state?.classList.toggle('online', online);
-    const label = state?.querySelector('span');
-    if (label) label.textContent = text;
-  }
-
-  function setSetupMessage(text, error = false) {
-    const message = el('cellSetupMessage');
-    if (!message) return;
-    message.textContent = text;
-    message.classList.toggle('error', error);
-  }
-
-  function showConnected(connected) {
-    el('cellSetup').hidden = connected;
-    el('cellConnected').hidden = !connected;
-    el('cellSync').disabled = !connected || busy;
-    el('cellLogout').hidden = !connected;
-  }
-
-  function renderMessages(messages = []) {
-    const stream = el('cellChatStream');
-    if (!stream) return;
-    if (!messages.length) {
-      stream.innerHTML = '<div class="cell-empty"><strong>MESMA MENTE</strong>O que você conversar aqui também poderá aparecer no celular.</div>';
-      return;
-    }
-    stream.innerHTML = messages.map((item) => `
-      <article class="cell-bubble ${item.role === 'user' ? 'user' : ''}">
-        <small>${item.role === 'user' ? 'VOCÊ' : 'CONDOR'}</small>
-        <p>${escapeHtml(item.content)}</p>
-      </article>`).join('');
-    stream.scrollTop = stream.scrollHeight;
-  }
-
-  function renderNotes(notes = []) {
-    const list = el('cellNotesList');
-    if (!list) return;
-    el('cellNotesCount').textContent = `${notes.length} ${notes.length === 1 ? 'NOTA' : 'NOTAS'}`;
-    list.innerHTML = notes.length ? notes.map((note) => `
-      <article class="cell-note">
-        <small>${escapeHtml(new Date(note.updatedAt || note.createdAt).toLocaleString('pt-BR'))}</small>
-        <h3>${escapeHtml(note.title)}</h3><p>${escapeHtml(note.body)}</p>
-      </article>`).join('') : '<div class="cell-empty">Nenhuma anotação compartilhada.</div>';
-  }
-
-  async function loadCloudData() {
-    const [history, notes] = await Promise.all([
-      api(`/api/cloud/history${conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ''}`),
-      api('/api/cloud/notes'),
-    ]);
-    conversationId = history.conversationId || conversationId || '';
-    el('cellConversationLabel').textContent = conversationId ? 'SINCRONIZADA' : 'NOVA CONVERSA';
-    renderMessages(history.messages || []);
-    renderNotes(notes.notes || []);
+  async function pedir(caminho, corpo) {
+    const opcoes = corpo === undefined ? { cache: 'no-store' } : {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo),
+    };
+    const resposta = await fetch(caminho, opcoes);
+    const json = await resposta.json().catch(() => ({}));
+    if (!resposta.ok) throw new Error(json.erro || `falha ${resposta.status}`);
+    return json;
   }
 
   async function atualizar() {
+    try { pintar(await pedir('/api/celular')); } catch (erro) { mensagem(`INDISPONÍVEL · ${erro.message}`); }
+  }
+
+  async function agir(caminho, aviso, corpo = {}) {
+    mensagem(aviso);
     try {
-      const status = await api('/api/cloud/status');
-      const connected = Boolean(status.configured && status.authenticated);
-      showConnected(connected);
-      setState(connected ? (status.last_error ? 'CONEXÃO INTERROMPIDA' : 'MENTE CONECTADA') : 'NÃO CONECTADO', connected && !status.last_error);
-      if (status.api_url) el('cellApiUrl').value = status.api_url;
-      if (status.supabase_url) el('cellSupabaseUrl').value = status.supabase_url;
-      if (status.supabase_publishable_key) el('cellSupabaseKey').value = status.supabase_publishable_key;
-      if (connected) await loadCloudData();
-    } catch (error) {
-      showConnected(false);
-      setState('INDISPONÍVEL');
-      setSetupMessage(error.message, true);
+      const resposta = await pedir(caminho, corpo);
+      pintar(resposta);
+      if (resposta.precisa_liberar) mensagem('LIBERE O HTTPS NA PÁGINA DO TAILSCALE QUE ABRIU E CLIQUE LIGAR DE NOVO.');
+      else if (caminho.endsWith('entrar-tailscale') && resposta.link) mensagem('ENTRE NA SUA CONTA NO NAVEGADOR E VOLTE AQUI.');
+      else if (caminho.endsWith('ligar') && !resposta.ok) mensagem(`NÃO LIGOU · ${resposta.erro || 'veja o Tailscale'}`);
+      else mensagem('');
+    } catch (erro) {
+      mensagem(`ERRO · ${erro.message.toUpperCase()}`);
     }
   }
 
-  async function connect(event) {
-    event.preventDefault();
-    if (busy) return;
-    busy = true;
-    const button = el('cellConnect');
-    button.disabled = true;
-    setSetupMessage('CONECTANDO E SINCRONIZANDO...');
-    try {
-      await api('/api/cloud/configure', {
-        method: 'POST',
-        body: JSON.stringify({
-          api_url: el('cellApiUrl').value.trim(),
-          supabase_url: el('cellSupabaseUrl').value.trim(),
-          supabase_publishable_key: el('cellSupabaseKey').value.trim(),
-          email: el('cellEmail').value.trim(),
-          password: el('cellPassword').value,
-          interval_seconds: 30,
-        }),
-      });
-      el('cellPassword').value = '';
-      el('cellSupabaseKey').value = '';
-      setSetupMessage('CONECTADO. A MESMA MENTE ESTÁ ATIVA.');
-      showConnected(true);
-      setState('MENTE CONECTADA', true);
-      await loadCloudData();
-    } catch (error) {
-      el('cellPassword').value = '';
-      setSetupMessage(error.message, true);
-    } finally {
-      busy = false;
-      button.disabled = false;
+  function mensagem(texto) { const alvo = $('celMsg'); if (alvo) alvo.textContent = texto; }
+
+  function passo(id, feito, texto) {
+    const item = $(id);
+    if (!item) return;
+    item.classList.toggle('feito', feito);
+    item.querySelector('em').textContent = texto;
+  }
+
+  function pintar(novo) {
+    dados = novo;
+    const ts = novo.tailscale || {};
+    passo('celPassoInstalar', ts.instalado, ts.instalado ? 'INSTALADO' : 'BAIXE EM TAILSCALE.COM/DOWNLOAD');
+    passo('celPassoEntrar', ts.logado, ts.logado ? ts.dns.toUpperCase() : 'NÃO CONECTADO');
+    passo('celPassoLigar', novo.publicado, novo.publicado ? 'NA REDE PRIVADA' : 'DESLIGADO');
+    $('celEntrar').hidden = !ts.instalado || ts.logado;
+    $('celLigar').hidden = !ts.logado || novo.publicado;
+    $('celConvite').disabled = !novo.publicado;
+
+    const qr = $('celQr');
+    clearInterval(relogio);
+    if (novo.convite && novo.convite.qr) {
+      qr.innerHTML = `<img alt="QR code para parear o iPhone" src="${escapar(novo.convite.qr)}">`;
+      const vence = () => {
+        const resta = Math.max(0, Math.round(novo.convite.expira_em - Date.now() / 1000));
+        $('celQrHint').textContent = resta ? `APONTE A CÂMERA DO IPHONE · VALE ${Math.floor(resta / 60)}:${String(resta % 60).padStart(2, '0')}` : 'EXPIROU · GERE OUTRO';
+        if (!resta) { clearInterval(relogio); qr.innerHTML = '<span>QR</span>'; }
+      };
+      vence(); relogio = setInterval(vence, 1000);
+    } else {
+      qr.innerHTML = '<span>QR</span>';
+      $('celQrHint').textContent = novo.publicado ? 'GERE O QR CODE E APONTE A CÂMERA DO IPHONE.' : 'TERMINE OS PASSOS AO LADO PRIMEIRO.';
     }
-  }
 
-  async function sync() {
-    if (busy) return;
-    busy = true; el('cellSync').disabled = true; setState('SINCRONIZANDO...');
-    try {
-      await api('/api/cloud/sync', { method: 'POST' });
-      await loadCloudData(); setState('MENTE SINCRONIZADA', true);
-    } catch (error) { setState('FALHA NA SINCRONIZAÇÃO'); setSetupMessage(error.message, true); }
-    finally { busy = false; el('cellSync').disabled = false; }
-  }
-
-  async function send(event) {
-    event.preventDefault();
-    const input = el('cellChatInput');
-    const message = input.value.trim();
-    if (!message || busy) return;
-    busy = true; el('cellSend').disabled = true; input.value = ''; setState('CONDOR PENSANDO...');
-    const stream = el('cellChatStream');
-    if (stream.querySelector('.cell-empty')) stream.innerHTML = '';
-    stream.insertAdjacentHTML('beforeend', `<article class="cell-bubble user"><small>VOCÊ</small><p>${escapeHtml(message)}</p></article><article class="cell-bubble" id="cellThinking"><small>CONDOR</small><p>Pensando...</p></article>`);
-    stream.scrollTop = stream.scrollHeight;
-    try {
-      const result = await api('/api/cloud/chat', { method: 'POST', body: JSON.stringify({ message, conversation_id: conversationId }) });
-      conversationId = result.conversationId || conversationId;
-      el('cellThinking').querySelector('p').textContent = result.answer || 'Resposta concluída no Condor AI Cloud.';
-      await loadCloudData(); setState('MENTE SINCRONIZADA', true);
-    } catch (error) {
-      const thinking = el('cellThinking'); if (thinking) thinking.querySelector('p').textContent = `Falha: ${error.message}`;
-      setState('CONEXÃO INTERROMPIDA');
-    } finally { busy = false; el('cellSend').disabled = false; input.focus(); }
-  }
-
-  async function createNote(event) {
-    event.preventDefault();
-    const title = el('cellNoteTitle').value.trim();
-    const body = el('cellNoteBody').value.trim();
-    if (!title || !body || busy) return;
-    busy = true;
-    try {
-      await api('/api/cloud/notes', { method: 'POST', body: JSON.stringify({ title, body }) });
-      el('cellNoteTitle').value = ''; el('cellNoteBody').value = '';
-      const notes = await api('/api/cloud/notes'); renderNotes(notes.notes || []); setState('NOTA SINCRONIZADA', true);
-    } catch (error) { setState('NOTA NÃO SINCRONIZADA'); setSetupMessage(error.message, true); }
-    finally { busy = false; }
-  }
-
-  async function logout() {
-    if (busy) return;
-    busy = true;
-    try { await api('/api/cloud/logout', { method: 'POST' }); conversationId = ''; renderMessages([]); renderNotes([]); showConnected(false); setState('NÃO CONECTADO'); }
-    catch (error) { setSetupMessage(error.message, true); }
-    finally { busy = false; }
-  }
-
-  function init() {
-    el('cellSetupForm')?.addEventListener('submit', connect);
-    el('cellSync')?.addEventListener('click', sync);
-    el('cellLogout')?.addEventListener('click', logout);
-    el('cellChatForm')?.addEventListener('submit', send);
-    el('cellNoteForm')?.addEventListener('submit', createNote);
-    el('cellChatInput')?.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); el('cellChatForm').requestSubmit(); }
-    });
+    const lista = novo.aparelhos || [];
+    $('celAparelhos').innerHTML = lista.length ? lista.map((aparelho) => `
+      <div class="cel-device"><div><strong>${escapar(aparelho.nome)}</strong>
+      <span>PAREADO ${new Date(aparelho.criado * 1000).toLocaleDateString('pt-BR')} · VISTO ${new Date(aparelho.visto * 1000).toLocaleString('pt-BR')}</span></div>
+      <button type="button" data-revogar="${escapar(aparelho.id)}">REVOGAR</button></div>`).join('')
+      : '<div class="core-empty">NENHUM IPHONE PAREADO</div>';
+    $('celConectados').textContent = novo.conectados ? `${novo.conectados} CONECTADO${novo.conectados > 1 ? 'S' : ''} AGORA` : '';
   }
 
   return { init, atualizar };

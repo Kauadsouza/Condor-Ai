@@ -15,7 +15,6 @@ import json
 import logging
 import mimetypes
 import os
-import platform
 import re
 import uuid
 from pathlib import Path
@@ -28,7 +27,10 @@ from fastapi.staticfiles import StaticFiles
 from condor.actions.guard import Guarda
 from condor.brain.client import Cerebro
 from condor.brain.ollama import modelos_instalados
-from condor.cloud_sync import CloudError, CloudSyncClient
+from condor.celular import (
+    Aparelhos, CanalCelular, Pontes, entrar_tailscale, estado_tailscale,
+    montar_app_celular, publicado_no_tailscale, publicar_no_tailscale, qr_svg,
+)
 from condor.config import Config, salvar_config
 from condor.core import (
     AIGateway,
@@ -53,7 +55,6 @@ from condor.memory.extractor import (
     sanitizar_para_memoria,
 )
 from condor.memory.recall import Recall
-from condor.mobile import MobileViewer
 from condor.paths import CODE_ROOT, state_path, state_root
 from condor.security.integrity import CodeIntegrity
 from condor.security.passphrase import PassphraseRotationError, rotate_passphrase
@@ -203,7 +204,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     local_security = LocalSessionSecurity(config.servidor.host, config.servidor.porta)
     identity = DeviceIdentity(vault)
     integrity = CodeIntegrity(state_path("security", "code-manifest.json"), identity)
-    cloud = CloudSyncClient(config, vault, identity)
 
     # ── Memória ────────────────────────────────────────────────────────────
     memoria = Memoria(data_root / "memory" / "condor.memory.enc")
@@ -268,7 +268,15 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         await asyncio.sleep(0.25)
 
     conexoes = Conexoes()
-    sessao.ligar_avisos(conexoes.transmitir)
+    canal_celular = CanalCelular()
+    aparelhos = Aparelhos(state_path("security", "celulares.json"))
+
+    async def _avisar(msg: dict) -> None:
+        await conexoes.transmitir(msg)
+        await canal_celular.transmitir(msg)
+
+    sessao.ligar_avisos(_avisar)
+    sessao.ligar_celular(lambda: canal_celular.tem_player, canal_celular.entregar_voz)
     sessao.ligar_player(lambda: conexoes.tem_player, conexoes.transmitir_players)
     sessao.ligar_janelas(lambda: conexoes.total > 0)
     sessao.ligar_camera(conexoes.enviar_para_um)
@@ -294,26 +302,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     app.state.camera_bridge = camera_bridge
     app.state.face_guard = face_guard
     app.state.orchestrator = orchestrator
-    app.state.cloud = cloud
-
-    def _mobile_snapshot() -> dict:
-        state = sessao.snapshot()
-        integrity_ok = integrity.verify()[0] if vault.unlocked else None
-        return {
-            "nome": "Condor AI",
-            "estado": state["estado"],
-            "acordado": state["acordado"],
-            "cerebro_pronto": state["cerebro_pronto"],
-            "modelo": state["modelo"],
-            "provedor": state["provedor"],
-            "voz_local_pronta": state["stt_local_pronto"] and state["tts_local_pronto"],
-            "integridade_ok": integrity_ok,
-            "modo": "somente leitura",
-            "projetos": [{"id": "condor-x", "nome": "Condor X · Modelo 01", "versao": "V1"}],
-        }
-
-    mobile_viewer = MobileViewer(config.visualizacao_movel.porta, _mobile_snapshot)
-    app.state.mobile_viewer = mobile_viewer
+    app.state.canal_celular = canal_celular
 
     def _texto(payload: dict, campo: str, limite: int, obrigatorio: bool = True) -> str:
         valor = str(payload.get(campo) or "").strip()
@@ -556,114 +545,69 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             ),
         }
 
-    @app.get("/api/mobile/access")
-    async def api_mobile_access():
-        if not config.visualizacao_movel.ativa:
-            return JSONResponse({"erro": "visualizacao movel desativada"}, status_code=404)
-        return mobile_viewer.access.details()
+    # ── Celular (iPhone via Tailscale) ──────────────────────────────────
 
-    # ── Condor AI Cloud: mesma mente no PC e no celular ──────────────────
+    def _celular_resumo() -> dict:
+        tailscale = estado_tailscale()
+        porta = config.celular.porta
+        publicado = tailscale["logado"] and publicado_no_tailscale(porta)
+        convite = aparelhos.convite_aberto()
+        resumo = {
+            "tailscale": tailscale, "publicado": publicado, "aparelhos": aparelhos.listar(),
+            "conectados": canal_celular.total, "convite": None,
+        }
+        if convite:
+            link = f"{tailscale['url']}/app/#c={convite['codigo']}" if publicado else ""
+            resumo["convite"] = {**convite, "link": link, "qr": qr_svg(link) if link else ""}
+        return resumo
 
-    @app.get("/api/cloud/status")
-    async def api_cloud_status():
-        return cloud.status()
+    @app.get("/api/celular")
+    async def api_celular():
+        return await asyncio.to_thread(_celular_resumo)
 
-    @app.post("/api/cloud/configure")
-    async def api_cloud_configure(payload: dict):
-        if not vault.unlocked or not memoria.unlocked or not guarda.owner_session_active:
-            return JSONResponse(
-                {"erro": "desbloqueie a sessao do dono antes de conectar o celular"},
-                status_code=423,
-            )
-        try:
-            cloud_data = config.cloud.model_dump()
-            cloud_data.update({
-                "ativa": True,
-                "api_url": _texto(payload, "api_url", 500),
-                "supabase_url": _texto(payload, "supabase_url", 500),
-                "supabase_publishable_key": _texto(payload, "supabase_publishable_key", 2048),
-                "intervalo_sync_segundos": int(payload.get("interval_seconds") or 30),
-            })
-            config.cloud = type(config.cloud)(**cloud_data)
-            salvar_config(config)
-            await asyncio.to_thread(
-                cloud.login,
-                _texto(payload, "email", 320),
-                _texto(payload, "password", 512),
-            )
-            await asyncio.to_thread(cloud.register_device)
-            synced = await asyncio.to_thread(cloud.sync, memoria)
-            guarda.auditar("cloud", "configure", "CONNECTED", True, False)
-            return {"ok": True, "sync": synced, "status": cloud.status()}
-        except (CloudError, ValueError, TypeError) as exc:
-            guarda.auditar("cloud", "configure", "DENIED", False, False)
-            return JSONResponse({"erro": str(exc)}, status_code=400)
-
-    @app.post("/api/cloud/logout")
-    async def api_cloud_logout():
+    @app.post("/api/celular/entrar-tailscale")
+    async def api_celular_entrar():
         if not vault.unlocked or not guarda.owner_session_active:
             return JSONResponse({"erro": "sessao do dono bloqueada"}, status_code=423)
-        await asyncio.to_thread(cloud.logout)
-        return {"ok": True, "status": cloud.status()}
+        link = await asyncio.to_thread(entrar_tailscale)
+        if link:
+            try:
+                os.startfile(link)          # abre o login no navegador do PC
+            except (AttributeError, OSError):
+                pass
+        return {"ok": bool(link), "link": link, **(await asyncio.to_thread(_celular_resumo))}
 
-    @app.post("/api/cloud/sync")
-    async def api_cloud_sync():
-        if response := _memoria_pronta():
-            return response
-        if not cloud.status()["authenticated"]:
-            return JSONResponse({"erro": "Condor AI Cloud ainda nao conectado"}, status_code=409)
-        result = await asyncio.to_thread(cloud.safe_sync, memoria)
-        return result if result.get("ok") else JSONResponse(
-            {"erro": result.get("error") or "sincronizacao indisponivel"}, status_code=502
-        )
+    @app.post("/api/celular/ligar")
+    async def api_celular_ligar():
+        if not vault.unlocked or not guarda.owner_session_active:
+            return JSONResponse({"erro": "sessao do dono bloqueada"}, status_code=423)
+        resultado = await asyncio.to_thread(publicar_no_tailscale, config.celular.porta)
+        if resultado.get("precisa_liberar"):
+            try:
+                os.startfile(resultado["precisa_liberar"])
+            except (AttributeError, OSError):
+                pass
+        guarda.auditar("celular", "publicar", "OK" if resultado.get("ok") else "PENDENTE",
+                       bool(resultado.get("ok")), False)
+        return {**resultado, **(await asyncio.to_thread(_celular_resumo))}
 
-    @app.get("/api/cloud/history")
-    async def api_cloud_history(conversation_id: str = ""):
-        if not vault.unlocked:
-            return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
-        try:
-            return await asyncio.to_thread(cloud.history, conversation_id[:80])
-        except CloudError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=502)
+    @app.post("/api/celular/convite")
+    async def api_celular_convite():
+        if not vault.unlocked or not guarda.owner_session_active:
+            return JSONResponse({"erro": "sessao do dono bloqueada"}, status_code=423)
+        aparelhos.novo_convite()
+        return await asyncio.to_thread(_celular_resumo)
 
-    @app.get("/api/cloud/notes")
-    async def api_cloud_notes():
-        if not vault.unlocked:
-            return JSONResponse({"erro": "cofre bloqueado"}, status_code=423)
-        try:
-            return await asyncio.to_thread(cloud.notes)
-        except CloudError as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=502)
-
-    @app.post("/api/cloud/notes")
-    async def api_cloud_note_create(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            result = await asyncio.to_thread(
-                cloud.create_note,
-                _texto(payload, "title", 160),
-                _texto(payload, "body", 16000),
-            )
-            await asyncio.to_thread(cloud.safe_sync, memoria)
-            return result
-        except (CloudError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=502)
-
-    @app.post("/api/cloud/chat")
-    async def api_cloud_chat(payload: dict):
-        if response := _memoria_pronta():
-            return response
-        try:
-            result = await asyncio.to_thread(
-                cloud.chat,
-                _texto(payload, "message", 8000),
-                _texto(payload, "conversation_id", 80, False),
-            )
-            await asyncio.to_thread(cloud.safe_sync, memoria)
-            return result
-        except (CloudError, ValueError) as exc:
-            return JSONResponse({"erro": str(exc)}, status_code=502)
+    @app.post("/api/celular/revogar")
+    async def api_celular_revogar(payload: dict):
+        if not vault.unlocked or not guarda.owner_session_active:
+            return JSONResponse({"erro": "sessao do dono bloqueada"}, status_code=423)
+        aparelho_id = str(payload.get("id") or "")[:12]
+        if not aparelhos.revogar(aparelho_id):
+            return JSONResponse({"erro": "aparelho nao encontrado"}, status_code=404)
+        canal_celular.derrubar(aparelho_id)
+        guarda.auditar("celular", "revogar", aparelho_id, True, False)
+        return await asyncio.to_thread(_celular_resumo)
 
     @app.post("/api/seguranca/configurar")
     async def api_security_setup(payload: dict):
@@ -706,33 +650,37 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         local_security.auth_succeeded("setup")
         return {"ok": True}
 
+    async def _destrancar(passphrase: str) -> bool:
+        """Abre cofre e memória. Devolve se a trava facial ainda precisa do rosto."""
+        vault.unlock(passphrase)
+        identity.ensure()
+        memoria.unlock(base64.b64decode(vault.get("MEMORY_KEY")))
+        face_required = face_guard.after_vault_unlock()
+        if not face_required:
+            guarda.unlock_owner_session()
+        extrator.iniciar()
+        salvar_config(config)
+        if not face_required:
+            await _avisar({
+                "tipo": "conversa.historico",
+                "mensagens": _historico_para_interface(memoria),
+            })
+            await _ensure_voice()
+            connector_task = asyncio.create_task(
+                cerebro.testar_conectores(), name="condor-testar-conectores"
+            )
+            _EM_VOO.add(connector_task)
+            connector_task.add_done_callback(_EM_VOO.discard)
+            if not guarda.stopped:
+                escuta.voltar_a_ouvir()
+        return face_required
+
     @app.post("/api/seguranca/desbloquear")
     async def api_security_unlock(payload: dict):
         if response := _auth_wait("unlock"):
             return response
         try:
-            vault.unlock(_passphrase(payload))
-            identity.ensure()
-            memoria.unlock(base64.b64decode(vault.get("MEMORY_KEY")))
-            face_required = face_guard.after_vault_unlock()
-            if not face_required:
-                guarda.unlock_owner_session()
-            extrator.iniciar()
-            salvar_config(config)
-            if not face_required:
-                await conexoes.transmitir({
-                    "tipo": "conversa.historico",
-                    "mensagens": _historico_para_interface(memoria),
-                })
-            if not face_required:
-                await _ensure_voice()
-                connector_task = asyncio.create_task(
-                    cerebro.testar_conectores(), name="condor-testar-conectores"
-                )
-                _EM_VOO.add(connector_task)
-                connector_task.add_done_callback(_EM_VOO.discard)
-                if not guarda.stopped:
-                    escuta.voltar_a_ouvir()
+            face_required = await _destrancar(_passphrase(payload))
         except (ValueError, VaultError):
             return _auth_failed("unlock")
         local_security.auth_succeeded("unlock")
@@ -746,7 +694,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         face_guard.on_vault_lock()
         memoria.lock()
         vault.lock()
-        await conexoes.transmitir({"tipo": "seguranca.bloqueado"})
+        await _avisar({"tipo": "seguranca.bloqueado"})
         return {"ok": True}
 
     @app.post("/api/seguranca/trocar-frase")
@@ -2455,13 +2403,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     # nunca mais dormiria sozinho.
     tarefas: set[asyncio.Task] = set()
 
-    async def _cloud_sync_loop() -> None:
-        """Heartbeat de saida; o PC nunca fica exposto a internet."""
-        while True:
-            await asyncio.sleep(config.cloud.intervalo_sync_segundos)
-            if cloud.configured and vault.unlocked and memoria.unlocked:
-                await asyncio.to_thread(cloud.safe_sync, memoria)
-
     async def _subir():
         loop = asyncio.get_running_loop()
         loop.set_exception_handler(_silenciar_reset_do_windows)
@@ -2471,10 +2412,6 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         vigia = asyncio.create_task(sessao.vigia(), name="condor-vigia")
         tarefas.add(vigia)
         vigia.add_done_callback(tarefas.discard)
-
-        cloud_task = asyncio.create_task(_cloud_sync_loop(), name="condor-cloud-sync")
-        tarefas.add(cloud_task)
-        cloud_task.add_done_callback(tarefas.discard)
 
         await _ensure_voice()
         if not escuta.ativa and escuta.motivo_inativa:
@@ -2507,6 +2444,42 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             yield
         finally:
             await _descer()
+
+    def _celular_pronto() -> bool:
+        return vault.unlocked and memoria.unlocked and guarda.owner_session_active \
+            and not face_guard.access_blocked
+
+    def _celular_motivo() -> str:
+        if not vault.unlocked or not memoria.unlocked:
+            return "trancado"
+        if face_guard.access_blocked or not guarda.owner_session_active:
+            return "O PC está esperando a trava facial; confirme o rosto lá."
+        return ""
+
+    async def _destrancar_pelo_celular(senha: str) -> dict:
+        if _celular_pronto():
+            return {"ok": True}
+        allowed, _espera = local_security.auth_allowed("unlock")
+        if not allowed:
+            return {"ok": False, "erro": "muitas tentativas; espere alguns minutos"}
+        try:
+            await _destrancar(senha)
+        except (ValueError, VaultError):
+            local_security.auth_failed("unlock")
+            guarda.auditar("security", "unlock_celular", "DENIED", False, True)
+            return {"ok": False, "erro": "palavra de acesso incorreta"}
+        local_security.auth_succeeded("unlock")
+        guarda.auditar("security", "unlock_celular", "OK", True, True)
+        return {"ok": True}
+
+    app.state.celular_app = montar_app_celular(aparelhos, canal_celular, Pontes(
+        pronto=_celular_pronto, motivo=_celular_motivo,
+        destrancar=_destrancar_pelo_celular,
+        senha_confere=lambda senha: guarda.owner.verify(senha),
+        texto=sessao.texto_do_celular, audio=sessao.audio_do_celular,
+        senha=sessao.responder_senha, calar=sessao.interromper_fala,
+        estado=sessao.snapshot, historico=lambda: _historico_para_interface(memoria),
+    ), config.celular.porta)
 
     app.router.lifespan_context = _ciclo
     return app, sessao
@@ -2582,6 +2555,11 @@ async def _tratar(msg: dict, sessao: Sessao, socket: WebSocket) -> None:
             await socket.send_text(json.dumps(erro, ensure_ascii=False))
             return
         alvo = _alvo_programacao(msg.get("alvo")) if contexto else None
+        app_do_socket = (getattr(socket, "scope", None) or {}).get("app")
+        canal_celular = getattr(getattr(app_do_socket, "state", None), "canal_celular", None)
+        # Senha ou chave colada no PC não vai parar na tela do celular.
+        if texto and not contexto and canal_celular is not None and not contem_segredo(texto):
+            await canal_celular.transmitir({"tipo": "transcricao", "texto": texto, "origem": "pc"})
         if texto:
             # Solto numa tarefa pra não travar o WebSocket enquanto ele pensa —
             # é o que mantém a interface respondendo durante a resposta.
@@ -2648,42 +2626,40 @@ async def rodar(app: FastAPI, config: Config) -> None:
                           timeout_keep_alive=5)
     servidor = uvicorn.Server(cfg)
     servidor.install_signal_handlers = lambda: None
-    mobile_server = None
-    mobile_task = None
-    if config.visualizacao_movel.ativa:
-        mobile_cfg = uvicorn.Config(
-            app.state.mobile_viewer.app,
-            host="0.0.0.0",
-            port=config.visualizacao_movel.porta,
+    celular_server = None
+    celular_task = None
+    if config.celular.ativa:
+        celular_cfg = uvicorn.Config(
+            app.state.celular_app,
+            host="127.0.0.1",
+            port=config.celular.porta,
             log_config=None,
             log_level="error",
             server_header=False,
             date_header=False,
-            limit_concurrency=24,
+            ws_max_size=1_800_000,
+            ws_ping_interval=20,
+            ws_ping_timeout=40,
+            limit_concurrency=32,
             backlog=16,
-            timeout_keep_alive=4,
+            timeout_keep_alive=5,
+            proxy_headers=False,
         )
-        mobile_server = uvicorn.Server(mobile_cfg)
-        mobile_server.install_signal_handlers = lambda: None
+        celular_server = uvicorn.Server(celular_cfg)
+        celular_server.install_signal_handlers = lambda: None
 
-        async def _serve_mobile() -> None:
+        async def _servir_celular() -> None:
             try:
-                await mobile_server.serve()
+                await celular_server.serve()
             except Exception:
-                log.exception(
-                    "A visualizacao movel nao iniciou na porta %s",
-                    config.visualizacao_movel.porta,
-                )
+                log.exception("O canal do celular nao iniciou na porta %s", config.celular.porta)
 
-        mobile_task = asyncio.create_task(_serve_mobile())
-        log.info(
-            "Visualizacao movel somente leitura preparada na porta %s",
-            config.visualizacao_movel.porta,
-        )
+        celular_task = asyncio.create_task(_servir_celular())
+        log.info("Canal do celular pronto em 127.0.0.1:%s", config.celular.porta)
 
     try:
         await servidor.serve()
     finally:
-        if mobile_server is not None and mobile_task is not None:
-            mobile_server.should_exit = True
-            await mobile_task
+        if celular_server is not None and celular_task is not None:
+            celular_server.should_exit = True
+            await celular_task

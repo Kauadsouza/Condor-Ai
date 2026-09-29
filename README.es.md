@@ -16,7 +16,7 @@ Condor invierte eso. La memoria se queda cifrada en el disco del dueño; el mode
 
 ## Principios de diseño
 
-- **Una sola mente:** PC, visor móvil y el acompañante opcional en la nube son interfaces de la misma identidad canónica.
+- **Una sola mente:** el PC y el iPhone son dos ventanas de la misma identidad, memoria y herramientas.
 - **Propiedad local:** el estado privado queda bajo control del dueño y nunca se versiona junto al código.
 - **Automatización que falla cerrada:** las acciones sobre el ordenador, los archivos y los dispositivos físicos pasan por política y aprobación explícita.
 - **Independencia del modelo:** el núcleo determinista sigue funcionando sin API de pago.
@@ -31,9 +31,8 @@ Condor invierte eso. La memoria se queda cifrada en el disco del dueño; el mode
 - Conectores Local, OpenAI y Claude seleccionables, con redacción de secretos.
 - Voz local, palabra de activación opcional, visión por ordenador solo para autenticación y generación privada de imágenes.
 - Herramientas con permisos acotados para archivos, aplicaciones, investigación y desarrollo.
-- Visor móvil **de solo lectura** en la red privada, sin rutas de comando, memoria ni caja fuerte.
+- **CONDOR en el iPhone** vía Tailscale: chat, micrófono y escucha "Condor", con la voz en los auriculares (ver `CONDOR_CELULAR.md`).
 - Condor X: espacio experimental de diseño 3D y simulación de ingeniería acotada.
-- Base opcional de PWA (`cloud/`) para conversación, notas y memoria cifradas con el PC apagado.
 
 ## Copia de seguridad: la única parte insustituible
 
@@ -57,7 +56,7 @@ powershell -File scripts\restore_condor_data.ps1 -BackupFile "<archivo.enc>" -Co
 
 ## Frontera de seguridad
 
-El núcleo completo debe permanecer solo en loopback. **Nunca expongas el puerto `7777` a internet.** El visor móvil corre como proceso y puerto separados, está restringido a redes privadas, exige emparejamiento y devuelve solo datos saneados de lectura.
+El núcleo completo debe permanecer solo en loopback. **Nunca expongas el puerto `7777` a internet.** El canal del celular escucha solo en loopback; `tailscale serve` lo publica dentro de tu red privada, y emparejar exige el QR de un solo uso y la frase de acceso.
 
 Secretos, plantillas biométricas, memoria, configuración, registros y archivos del usuario viven fuera del repositorio, en `~/.condor` por defecto. El repositorio restaura la aplicación, pero no ese estado privado. Nunca publiques ni recrees un `~/.condor` existente al publicar el código.
 
@@ -75,7 +74,7 @@ Interfaz de escritorio / voz / proyectos locales
  determinista   modelo local   APIs opcionales
 
 Fronteras separadas:
-- visor móvil de solo lectura
+- canal del iPhone vía Tailscale
 - base del acompañante en la nube, cifrada
 ```
 
@@ -120,7 +119,6 @@ npm.cmd run build
 
 ```text
 condor/        Núcleo, memoria, seguridad, dispositivos, interfaz y motores de proyecto
-cloud/         Base opcional del acompañante PWA cifrado
 deploy/        Ejemplos de despliegue en red privada
 scripts/       Instalación, diagnóstico, copia de seguridad y ejecución local
 testes/        Suite de regresión de seguridad y comportamiento

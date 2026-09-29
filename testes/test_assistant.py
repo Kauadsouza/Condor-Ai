@@ -76,7 +76,7 @@ class AssistantAPITests(unittest.TestCase):
         from fastapi.testclient import TestClient
         from condor.server import montar
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ,{'CONDOR_HOME':directory}):
-            app, session=montar(Config(escuta={'ativa':False}, visualizacao_movel={'ativa':False}))
+            app, session=montar(Config(escuta={'ativa':False}))
             client=TestClient(app,base_url='http://127.0.0.1:7777')
             self.assertIn(client.post('/api/voice/synthesize',json={'texto':'hello'}).status_code,{401,403})
             token=(Path(directory)/'security'/'ui-token').read_text().strip()
@@ -113,11 +113,11 @@ class AssistantAPITests(unittest.TestCase):
             memory.abrir_sessao();memory.salvar_turno('user','previous conversation')
             memory.arquivar_conversa()
             self.assertEqual(memory.historico(),[])
-            self.assertEqual(len(memory.cloud_snapshot()['messages']),1)
+            self.assertEqual(len(memory.arquivo_conversas(limite=50)),1)
             memory.salvar_turno('user','new conversation');memory.lock()
             reopened=Memoria(path);reopened.unlock(key)
             self.assertEqual(reopened.historico(),[{'role':'user','content':'new conversation'}])
-            self.assertEqual(len(reopened.cloud_snapshot()['messages']),2)
+            self.assertEqual(len(reopened.arquivo_conversas(limite=50)),2)
             archive=reopened.arquivo_conversas(limite=1)
             self.assertEqual(archive[0]['conteudo'],'new conversation')
             self.assertEqual(reopened.arquivo_conversas(antes=archive[0]['id'])[0]['conteudo'],'previous conversation')

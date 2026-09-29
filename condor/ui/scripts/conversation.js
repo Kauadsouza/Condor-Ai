@@ -63,7 +63,7 @@ const CondorConversa = (() => {
 
     CondorWS.ao('transcricao', (m) => {
       if (!turnoAtivo) turnoAtivo = { texto: m.texto, tipo: 'voz' };
-      adicionarUsuario(m.texto); mostrarDigitando(true); atualizarFila();
+      adicionarUsuario(m.origem === 'celular' ? `📱 ${m.texto}` : m.texto); mostrarDigitando(true); atualizarFila();
     });
     CondorWS.ao('conversa.historico', carregarHistorico);
     CondorWS.ao('conversa.limpa', limparTela);
