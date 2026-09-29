@@ -391,8 +391,12 @@ def publicar_no_tailscale(porta: int) -> dict:
     uma vez só para o dono clicar; a configuração fica gravada e sobrevive a
     reinícios.
     """
-    if publicado_no_tailscale(porta):
+    aponta, no_endereco_atual = _serve_aponta_para(porta)
+    if no_endereco_atual:
         return {"ok": True, "precisa_liberar": ""}
+    if aponta:
+        # Publicação que sobrou de outra conta: refaz no endereço de agora.
+        _rodar_tailscale("serve", "reset", timeout=10)
     # Se o HTTPS ainda não foi liberado, o comando imprime o link e fica
     # esperando; quando o dono libera, ele mesmo termina de publicar.
     link = _esperar_link("serve", "--bg", "--yes", f"http://127.0.0.1:{porta}", espera=15)
@@ -403,9 +407,21 @@ def publicar_no_tailscale(porta: int) -> dict:
     return {"ok": False, "precisa_liberar": "", "erro": "o Tailscale não confirmou a publicação"}
 
 
-def publicado_no_tailscale(porta: int) -> bool:
+def _serve_aponta_para(porta: int) -> tuple[bool, bool]:
+    """(algum serve leva à porta, e é no endereço ATUAL deste PC).
+
+    Trocar de conta do Tailscale muda o endereço (tailXXXX.ts.net), mas a
+    publicação antiga continua gravada: o QR levava a um endereço que ninguém
+    atendia e a página não carregava.
+    """
     _, saida = _rodar_tailscale("serve", "status", "--json", timeout=8)
-    return f"127.0.0.1:{porta}" in saida or f"localhost:{porta}" in saida
+    aponta = f"127.0.0.1:{porta}" in saida or f"localhost:{porta}" in saida
+    dns = str(estado_tailscale().get("dns") or "").lower()
+    return aponta, bool(aponta and dns and f"{dns}:443" in saida.lower())
+
+
+def publicado_no_tailscale(porta: int) -> bool:
+    return _serve_aponta_para(porta)[1]
 
 
 def qr_svg(texto: str) -> str:
