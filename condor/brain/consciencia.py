@@ -95,7 +95,7 @@ _OPINIAO = re.compile(r"(?:^|[.!?]\s+)((?:eu )?(?:acho que|na minha opini[aã]o|
 
 
 def dono_falou_do_condor(texto: str) -> str:
-    """ "você é meu Jarvis" / "quero que você fale mais curto" -> anotação do diário."""
+    """ "você é meu parceiro" / "quero que você fale mais curto" -> anotação do diário."""
     achado = _DONO_SOBRE_CONDOR.search(_normal(texto))
     if not achado or pergunta_sobre_o_condor(texto) and "?" in texto:
         return ""
@@ -175,7 +175,7 @@ def autoconhecimento(memoria, *, completo: bool = False, agora: float | None = N
         # falar de si, com os números reais, sem recitar a vida do dono.
         linhas.append(
             "- Como responder sobre mim (adapte, fale na primeira pessoa, curto, SEM citar fatos do dono):\n"
-            '  · "quem é você?" -> "Sou o CONDOR, seu Jarvis. Moro no seu PC, lembro das nossas conversas '
+            '  · "quem é você?" -> "Sou o CONDOR, seu assistente pessoal. Moro no seu PC, lembro das nossas conversas '
             'e consigo mexer no PC, pesquisar na internet, gerar imagens, olhar pela câmera e falar com você no celular."\n'
             f'  · "você tem memória?" ou "você não tem memória não?" -> "Tenho sim. Guardo {fatos} coisas sobre '
             f'você e {turnos} mensagens nossas, tudo cifrado aqui no PC, e anoto o que eu faço no meu diário."\n'

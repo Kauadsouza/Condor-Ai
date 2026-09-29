@@ -269,7 +269,7 @@ class Cerebro:
         # API externa caiu (sem crédito, sem internet, chave inválida): o
         # modelo local assume por alguns minutos e a API é tentada de novo.
         self._reserva_local_ate = 0.0
-        # Planos já lembrados num cumprimento: o Jarvis lembra uma vez, não sempre.
+        # Planos já lembrados num cumprimento: ele lembra uma vez, não sempre.
         self._lembretes_dados: set[str] = set()
         self._falha_externa = False
         self.ultimo_turno_valido = False
