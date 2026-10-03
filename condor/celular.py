@@ -702,6 +702,19 @@ def montar_app_celular(aparelhos: Aparelhos, canal: CanalCelular, pontes: Pontes
             return negado
         return {"fatos": await _rodar(_extra("fatos"))}
 
+    @app.get("/api/memoria/mapa")
+    async def memoria_mapa(request: Request):
+        if (negado := _negado(request)):
+            return negado
+        return {"mapa": await _rodar(_extra("mapa")), "fluxo": await _rodar(_extra("fluxo"))}
+
+    @app.get("/api/treino")
+    async def treino(request: Request, pendentes: int = 0):
+        if (negado := _negado(request)):
+            return negado
+        return {"resumo": await _rodar(_extra("treino_resumo")),
+                "exemplos": await _rodar(_extra("treino_exemplos"), bool(pendentes))}
+
     @app.post("/api/memoria/esquecer")
     async def esquecer(request: Request):
         if (negado := _negado(request)):
@@ -718,13 +731,18 @@ def montar_app_celular(aparelhos: Aparelhos, canal: CanalCelular, pontes: Pontes
             return negado
         dados = await _corpo(request)
         exemplo_id = str(dados.get("id") or "")[:40]
+        correcao = str(dados.get("correcao") or "").strip()
         try:
             nota = int(dados.get("nota", 0))
         except (TypeError, ValueError):
             return JSONResponse({"erro": "nota inválida"}, status_code=400)
-        if not exemplo_id or nota not in {-1, 0, 1}:
+        if not exemplo_id or nota not in {-1, 0, 1} or len(correcao) > 6000:
             return JSONResponse({"erro": "avaliação inválida"}, status_code=400)
-        return {"ok": bool(await _rodar(_extra("avaliar"), exemplo_id, nota))}
+        try:
+            ok = await _rodar(_extra("avaliar"), exemplo_id, nota, correcao)
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=400)
+        return {"ok": bool(ok)}
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):

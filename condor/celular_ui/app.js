@@ -4,13 +4,14 @@
  * - Mensagem, foto (a visão local analisa no PC) e microfone.
  * - Escuta: diga "Condor, na escuta" e converse; depois de 2 minutos sem falar
  *   com ele, precisa chamar de novo. Quem decide é o PC (mesma regra lá).
- * - Menu: nova conversa, conversas anteriores, galeria e memória.
- * - Segure (ou toque) numa mensagem: copiar, apagar, 👍/👎.
+ * - Menu: nova conversa, conversas anteriores, galeria, memória (mapa igual
+ *   ao do PC) e treino.
+ * - Segure (ou toque) numa mensagem: copiar, apagar, 👍/👎 e melhorar a resposta.
  */
 (() => {
   const $ = (id) => document.getElementById(id);
   const telas = ['telaCarregando', 'telaParear', 'telaTrancado', 'telaConversa'];
-  const vistas = { vistaChat: 'CONDOR', vistaAnteriores: 'ANTERIORES', vistaGaleria: 'GALERIA', vistaMemoria: 'MEMÓRIA' };
+  const vistas = { vistaChat: 'CONDOR', vistaAnteriores: 'ANTERIORES', vistaGaleria: 'GALERIA', vistaMemoria: 'MEMÓRIA', vistaTreino: 'TREINO' };
   const ROTULOS = { dormindo: 'DORMINDO', ouvindo: 'OUVINDO', pensando: 'PENSANDO', falando: 'FALANDO', senha: 'APROVAÇÃO' };
 
   let codigoConvite = '';
@@ -283,6 +284,7 @@
     const condor = div.dataset.quem === 'condor';
     folha.querySelector('[data-acao="gostei"]').hidden = !(condor && div.dataset.treino);
     folha.querySelector('[data-acao="naogostei"]').hidden = !(condor && div.dataset.treino);
+    folha.querySelector('[data-acao="melhorar"]').hidden = !(condor && div.dataset.treino);
     folha.hidden = false;
     if (navigator.vibrate) navigator.vibrate(12);
   }
@@ -296,12 +298,55 @@
     if (!div || acao === 'fechar') return;
     if (acao === 'copiar') {
       try { await navigator.clipboard.writeText(div.dataset.bruto || ''); avisar('Copiado'); } catch (_) { avisar('Não deu para copiar'); }
-    } else if (acao === 'gostei' || acao === 'naogostei') {
-      const r = await pedir('/api/avaliar', { id: div.dataset.treino, nota: acao === 'gostei' ? 1 : -1 });
+    } else if (acao === 'gostei') {
+      const r = await pedir('/api/avaliar', { id: div.dataset.treino, nota: 1 });
       avisar(r.ok ? 'Obrigado, anotei para o treino' : 'Não salvei a avaliação');
+    } else if (acao === 'naogostei' || acao === 'melhorar') {
+      // Não gostou: já abre para escrever como deveria ser. Sem correção vale só o 👎.
+      abrirCorrecao({ id: div.dataset.treino, pedido: pedidoAntes(div), resposta: div.dataset.bruto || '', soNota: acao === 'naogostei' });
     } else if (acao === 'apagar') {
       confirmar('Apagar esta mensagem? Ela some do PC e do celular e ele esquece essa troca.', () => apagar(div));
     }
+  });
+
+  function pedidoAntes(div) {
+    let anterior = div.previousElementSibling;
+    while (anterior && anterior.dataset.quem !== 'eu') anterior = anterior.previousElementSibling;
+    return anterior ? anterior.dataset.bruto || '' : '';
+  }
+
+  // ── Corrigir uma resposta (vira exemplo de treino) ──────────────────────
+
+  let correcaoAtual = null;
+  function abrirCorrecao(item) {
+    correcaoAtual = item;
+    $('corrigirPedido').textContent = item.pedido ? `Você: ${item.pedido.slice(0, 300)}` : '';
+    $('corrigirPedido').hidden = !item.pedido;
+    $('corrigirTexto').value = item.correcao || item.resposta || '';
+    $('corrigir').hidden = false;
+    $('corrigirTexto').focus();
+  }
+  $('corrigirCancelar').addEventListener('click', async () => {
+    const item = correcaoAtual;
+    $('corrigir').hidden = true; correcaoAtual = null;
+    if (item && item.soNota) {
+      const r = await pedir('/api/avaliar', { id: item.id, nota: -1 });
+      avisar(r.ok ? 'Anotei que não ficou bom' : 'Não salvei a avaliação');
+      if (item.aoSalvar) item.aoSalvar();
+    }
+  });
+  $('formCorrigir').addEventListener('submit', async (evento) => {
+    evento.preventDefault();
+    const item = correcaoAtual;
+    if (!item) return;
+    const texto = $('corrigirTexto').value.trim();
+    // Texto igual à resposta dele não é correção: fica só o 👎.
+    const correcao = texto && texto !== String(item.resposta || '').trim() ? texto : '';
+    const r = await pedir('/api/avaliar', { id: item.id, nota: -1, correcao });
+    if (!r.ok) { avisar(r.json.erro ? `Não salvei: ${r.json.erro}` : 'Não salvei a correção'); return; }
+    $('corrigir').hidden = true; correcaoAtual = null;
+    avisar(correcao ? 'Correção salva. Ele aprende com isso' : 'Anotei que não ficou bom');
+    if (item.aoSalvar) item.aoSalvar();
   });
 
   async function apagar(div) {
@@ -505,6 +550,7 @@
     if (vista === 'vistaAnteriores') carregarAnteriores(true);
     if (vista === 'vistaGaleria') carregarGaleria(true);
     if (vista === 'vistaMemoria') carregarMemoria();
+    if (vista === 'vistaTreino') carregarTreino();
     if (vista === 'vistaChat') rolar();
   }
 
@@ -552,38 +598,135 @@
   }
   $('galeriaMais').addEventListener('click', () => carregarGaleria(false));
 
-  let fatos = [];
   async function carregarMemoria() {
-    const r = await pedir('/api/memoria');
-    if (!r.ok) { $('memoriaLista').textContent = r.json.erro || 'Indisponível agora.'; return; }
-    fatos = r.json.fatos || [];
+    const r = await pedir('/api/memoria/mapa');
+    if (!r.ok) { $('memoriaMapa').textContent = r.json.erro || 'Indisponível agora.'; return; }
+    CondorMemoriaCel.carregar(r.json);
     desenharMemoria();
   }
   function desenharMemoria() {
     const busca = $('memoriaBusca').value.trim().toLowerCase();
     const lista = $('memoriaLista');
     lista.innerHTML = '';
-    const visiveis = fatos.filter((f) => !busca || `${f.categoria} ${f.valor}`.toLowerCase().includes(busca));
+    const visiveis = CondorMemoriaCel.fatos()
+      .filter((f) => !busca || `${f.categoria} ${f.chave} ${f.valor}`.toLowerCase().includes(busca))
+      .sort((x, y) => String(x.categoria).localeCompare(String(y.categoria)));
     let categoria = '';
     visiveis.forEach((fato) => {
       if (fato.categoria !== categoria) {
         categoria = fato.categoria;
-        const titulo = document.createElement('h3'); titulo.textContent = String(categoria || 'geral').toUpperCase();
+        const titulo = document.createElement('h3'); titulo.textContent = CondorMemoriaCel.nome(categoria);
         lista.appendChild(titulo);
       }
       const linha = document.createElement('div'); linha.className = 'fato';
       const texto = document.createElement('span'); texto.textContent = fato.valor;
       const botao = document.createElement('button'); botao.type = 'button'; botao.textContent = 'Esquecer';
-      botao.addEventListener('click', () => confirmar(`Esquecer isto?\n"${fato.valor}"`, async () => {
-        const resposta = await pedir('/api/memoria/esquecer', { id: fato.id });
-        if (resposta.ok && resposta.json.ok) { fatos = fatos.filter((f) => f.id !== fato.id); desenharMemoria(); avisar('Esquecido'); }
-        else avisar('Não consegui esquecer');
-      }));
+      botao.addEventListener('click', () => esquecerFato(fato));
       linha.append(texto, botao);
       lista.appendChild(linha);
     });
     if (!visiveis.length) lista.textContent = busca ? 'Nada com isso.' : 'Ele ainda não guardou nada sobre você.';
   }
+  function esquecerFato(fato) {
+    confirmar(`Esquecer isto?\n"${fato.valor}"`, async () => {
+      const resposta = await pedir('/api/memoria/esquecer', { id: fato.id });
+      if (resposta.ok && resposta.json.ok) { CondorMemoriaCel.esquecido(fato.id); desenharMemoria(); avisar('Esquecido'); }
+      else avisar('Não consegui esquecer');
+    });
+  }
+
+  let fatoAberto = null;
+  CondorMemoriaCel.init({
+    aoMostrarLista: desenharMemoria,
+    aoAbrirFato(fato, ligacoes) {
+      fatoAberto = fato;
+      $('fatoTitulo').textContent = fato.valor;
+      $('fatoMeta').innerHTML = '';
+      [[CondorMemoriaCel.nome(fato.categoria), 'ÁREA'], [String(fato.chave || '').replaceAll('_', ' '), 'CHAVE'],
+        [fato.origem || '—', 'ORIGEM'], [fato.acessos || 0, 'USOS']].forEach(([valor, rotulo]) => {
+        const caixa = document.createElement('div');
+        const s = document.createElement('span'); s.textContent = rotulo;
+        const b = document.createElement('b'); b.textContent = valor;
+        caixa.append(s, b); $('fatoMeta').appendChild(caixa);
+      });
+      const lista = $('fatoLigacoes');
+      lista.innerHTML = '';
+      ligacoes.slice(0, 8).forEach(({ ligacao, fato: outro }) => {
+        const linha = document.createElement('div'); linha.className = 'fluxo';
+        const r = document.createElement('b'); r.textContent = String(ligacao.rotulo || 'LIGADO').toUpperCase();
+        const v = document.createElement('span'); v.textContent = outro.valor;
+        linha.append(r, v); lista.appendChild(linha);
+      });
+      if (!ligacoes.length) lista.textContent = 'Sem ligações com outras memórias ainda.';
+      $('fatoFolha').hidden = false;
+    },
+  });
+  $('fatoFechar').addEventListener('click', () => { $('fatoFolha').hidden = true; fatoAberto = null; });
+  $('fatoEsquecer').addEventListener('click', () => {
+    const fato = fatoAberto;
+    $('fatoFolha').hidden = true; fatoAberto = null;
+    if (fato) esquecerFato(fato);
+  });
+
+  // ── Treino: avaliar e corrigir pelo celular ─────────────────────────────
+
+  let treinoPendentes = true;
+  async function carregarTreino() {
+    const r = await pedir(`/api/treino?pendentes=${treinoPendentes ? 1 : 0}`);
+    const lista = $('treinoLista');
+    if (!r.ok) { lista.textContent = r.json.erro || 'Indisponível agora.'; return; }
+    const resumo = r.json.resumo || {};
+    $('treinoNumeros').innerHTML = '';
+    [[resumo.total || 0, 'EXEMPLOS'], [resumo.positivos || 0, 'BONS'], [resumo.negativos || 0, 'RUINS'],
+      [resumo.corrigidos || 0, 'CORRIGIDOS'], [resumo.prontos || 0, 'PRONTOS']].forEach(([valor, rotulo]) => {
+      const caixa = document.createElement('div');
+      const b = document.createElement('b'); b.textContent = valor;
+      const s = document.createElement('span'); s.textContent = rotulo;
+      caixa.append(b, s); $('treinoNumeros').appendChild(caixa);
+    });
+    lista.innerHTML = '';
+    (r.json.exemplos || []).forEach((ex) => lista.appendChild(cartaoTreino(ex)));
+    if (!lista.childElementCount) {
+      lista.textContent = treinoPendentes ? 'Tudo avaliado. Converse mais com ele e volte aqui.' : 'Nenhuma resposta guardada para treino ainda.';
+    }
+  }
+
+  function cartaoTreino(ex) {
+    const cartao = document.createElement('div');
+    cartao.className = `treino${ex.nota > 0 ? ' bom' : ex.nota < 0 ? ' ruim' : ''}`;
+    const pedido = document.createElement('p'); pedido.className = 'treino-pedido';
+    const voce = document.createElement('b'); voce.textContent = 'Você';
+    pedido.append(voce, document.createTextNode(String(ex.pedido || '').slice(0, 400)));
+    const resposta = document.createElement('div'); resposta.className = 'treino-resposta corpo';
+    resposta.innerHTML = CondorTexto.html(String(ex.resposta || '').slice(0, 1500));
+    cartao.append(pedido, resposta);
+    if (ex.correcao) {
+      const correcao = document.createElement('div'); correcao.className = 'treino-correcao';
+      const rotulo = document.createElement('b'); rotulo.textContent = 'Como deveria ser';
+      const texto = document.createElement('span'); texto.textContent = ex.correcao;
+      correcao.append(rotulo, texto); cartao.appendChild(correcao);
+    }
+    const acoes = document.createElement('div'); acoes.className = 'treino-acoes';
+    const botao = (rotulo, classe, acao) => {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = rotulo;
+      if (classe) b.className = classe;
+      b.addEventListener('click', acao); acoes.appendChild(b);
+    };
+    botao('👍 Boa', ex.nota > 0 ? 'ativa' : '', async () => {
+      const r = await pedir('/api/avaliar', { id: ex.id, nota: 1 });
+      if (r.ok) { avisar('Anotado como boa'); carregarTreino(); } else avisar('Não salvei');
+    });
+    botao('👎 Ruim', ex.nota < 0 && !ex.correcao ? 'ativa' : '', () => abrirCorrecao({ id: ex.id, pedido: ex.pedido, resposta: ex.resposta, soNota: true, aoSalvar: carregarTreino }));
+    botao('✏️ Corrigir', ex.correcao ? 'ativa' : '', () => abrirCorrecao({ id: ex.id, pedido: ex.pedido, resposta: ex.resposta, correcao: ex.correcao, aoSalvar: carregarTreino }));
+    cartao.appendChild(acoes);
+    return cartao;
+  }
+
+  document.querySelectorAll('[data-treino-filtro]').forEach((b) => b.addEventListener('click', () => {
+    treinoPendentes = b.dataset.treinoFiltro === '1';
+    document.querySelectorAll('[data-treino-filtro]').forEach((x) => x.classList.toggle('ativa', x === b));
+    carregarTreino();
+  }));
   $('memoriaBusca').addEventListener('input', desenharMemoria);
 
   // ── Imagem em tela cheia ────────────────────────────────────────────────

@@ -2180,6 +2180,12 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
                        "content": sanitizar_para_memoria(str(apagada["content"] or ""))[:4000]})
         return True
 
+    def _avaliar_pelo_celular(exemplo_id: str, nota: int, correcao: str = "") -> bool:
+        # Mesma regra do PC: senha ou chave numa correção nunca vira treino.
+        if correcao and contem_segredo(correcao):
+            raise ValueError("a correção parece conter um segredo")
+        return memoria.avaliar_exemplo(exemplo_id, nota, correcao)
+
     async def _esquecer_fato(fato_id: int) -> bool:
         ok = memoria.esquecer_fato(fato_id)
         if ok:
@@ -2237,7 +2243,11 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
             "ler_imagem": memoria.ler_imagem,
             "fatos": lambda: memoria.fatos_recentes(150, None),
             "esquecer_fato": _esquecer_fato,
-            "avaliar": lambda exemplo_id, nota: memoria.avaliar_exemplo(exemplo_id, nota, ""),
+            "avaliar": _avaliar_pelo_celular,
+            "mapa": memoria.mapa_memoria,
+            "fluxo": lambda: memoria.fluxo_recente(10),
+            "treino_resumo": memoria.resumo_treino,
+            "treino_exemplos": lambda pendentes: memoria.exemplos_recentes(40, pendentes),
             "foto": lambda texto, foto: sessao.foto_do_celular(texto, foto, provider._visao.analisar),
         },
     ), config.celular.porta)

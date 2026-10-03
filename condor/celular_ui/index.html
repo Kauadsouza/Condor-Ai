@@ -11,7 +11,7 @@
 <title>Condor</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icone-180.png">
-<link rel="stylesheet" href="app.css?v=4">
+<link rel="stylesheet" href="app.css?v=5">
 </head>
 <body>
 <main class="app" id="app">
@@ -90,10 +90,36 @@
       <button type="button" class="mais" id="galeriaMais" hidden>CARREGAR MAIS</button>
     </div>
 
-    <!-- Memória -->
+    <!-- Memória: o mesmo mapa orbital do PC -->
     <div class="vista lista" id="vistaMemoria" hidden>
-      <input class="busca" id="memoriaBusca" type="search" placeholder="Procurar no que ele sabe de você">
-      <div class="lista-itens" id="memoriaLista"></div>
+      <div class="painel-num" id="memoriaNumeros"></div>
+      <div class="abas" role="tablist">
+        <button type="button" class="ativa" data-memoria-modo="mapa">MAPA</button>
+        <button type="button" data-memoria-modo="lista">LISTA</button>
+      </div>
+      <div class="filtros" id="memoriaFiltros"></div>
+      <div id="memoriaMapaBloco">
+        <div class="mapa-area" id="memoriaMapa"></div>
+        <div class="mapa-zoom"><button type="button" data-zoom="-">−</button><button type="button" data-zoom="0">CENTRO</button><button type="button" data-zoom="+">+</button></div>
+        <p class="legenda-mapa">NÚCLEO → ÁREAS → MEMÓRIAS · toque numa memória</p>
+      </div>
+      <div id="memoriaListaBloco" hidden>
+        <input class="busca" id="memoriaBusca" type="search" placeholder="Procurar no que ele sabe de você">
+        <div class="lista-itens" id="memoriaLista"></div>
+      </div>
+      <h3 class="secao">APRENDENDO AGORA</h3>
+      <div class="lista-itens" id="memoriaFluxo"></div>
+    </div>
+
+    <!-- Treino: avaliar e corrigir as respostas dele -->
+    <div class="vista lista" id="vistaTreino" hidden>
+      <div class="painel-num" id="treinoNumeros"></div>
+      <p class="explica">Avalie as respostas: 👍 ensina o que está bom; 👎 com a correção ensina como ele deveria ter respondido. Quando juntar bastante, isso vira o treino do modelo.</p>
+      <div class="abas" role="tablist">
+        <button type="button" class="ativa" data-treino-filtro="1">PARA AVALIAR</button>
+        <button type="button" data-treino-filtro="0">TODAS</button>
+      </div>
+      <div class="lista-itens" id="treinoLista"></div>
     </div>
   </section>
 
@@ -106,6 +132,7 @@
     <button type="button" data-vista="vistaAnteriores">Conversas anteriores</button>
     <button type="button" data-vista="vistaGaleria">Galeria</button>
     <button type="button" data-vista="vistaMemoria">Memória</button>
+    <button type="button" data-vista="vistaTreino">Treino</button>
     <p class="dica">Diga <b>"Condor, na escuta"</b> para começar a conversar por voz. Depois é só falar, até 2 minutos de silêncio.</p>
   </nav>
 
@@ -115,8 +142,31 @@
       <button type="button" data-acao="copiar">Copiar</button>
       <button type="button" data-acao="gostei" hidden>👍 Gostei</button>
       <button type="button" data-acao="naogostei" hidden>👎 Não gostei</button>
+      <button type="button" data-acao="melhorar" hidden>✏️ Melhorar a resposta</button>
       <button type="button" data-acao="apagar" class="perigo">Apagar mensagem</button>
       <button type="button" data-acao="fechar">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- Corrigir uma resposta (vira exemplo de treino) -->
+  <div class="folha" id="corrigir" hidden>
+    <form class="folha-caixa" id="formCorrigir">
+      <p>Como ele deveria ter respondido? Escreva do seu jeito; isso ensina o Condor.</p>
+      <small class="pedido-original" id="corrigirPedido"></small>
+      <textarea id="corrigirTexto" rows="7" maxlength="6000"></textarea>
+      <button type="submit" class="destaque-botao">Salvar como deveria ser</button>
+      <button type="button" id="corrigirCancelar">Cancelar</button>
+    </form>
+  </div>
+
+  <!-- Uma memória do mapa -->
+  <div class="folha" id="fatoFolha" hidden>
+    <div class="folha-caixa">
+      <h4 id="fatoTitulo"></h4>
+      <div class="fato-meta" id="fatoMeta"></div>
+      <div class="lista-itens" id="fatoLigacoes"></div>
+      <button type="button" class="perigo" id="fatoEsquecer">Esquecer esta memória</button>
+      <button type="button" id="fatoFechar">Fechar</button>
     </div>
   </div>
 
@@ -144,6 +194,7 @@
 </main>
 <script src="audio.js?v=4"></script>
 <script src="texto.js?v=1"></script>
-<script src="app.js?v=4"></script>
+<script src="memoria.js?v=1"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

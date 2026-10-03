@@ -593,13 +593,10 @@ class Sessao:
         referencia = "" if (leve or sobre_ele) else await self.recall.contexto_para(texto)
         self._salvar_turno_seguro("user", texto)
 
-        # Voz: cada frase pronta já vai sendo falada enquanto o resto é gerado.
-        fala = self._nova_fala() if (por_voz and reproduzir_voz) else None
-
+        # Pensa, prepara e só depois fala (escolha do dono): a voz começa com a
+        # resposta inteira já pronta e polida, nunca no meio da geração.
         async def on_token(t: str) -> None:
             await self._evento("resposta.token", texto=t)
-            if fala is not None:
-                fala.alimentar(t)
 
         ferramentas_usadas = 0
         anteriores = [dict(m) for m in self.historico[:-1]]
@@ -618,18 +615,12 @@ class Sessao:
                     argumentos_por_id.get(str(ev.get("id") or ""), "")))
             await self._evento(ev.pop("tipo"), **ev)
 
-        try:
-            # "Quem é você?" responde só à pergunta: com a conversa inteira o
-            # modelo pequeno recitava o que tinha acabado de ouvir.
-            resposta = await self.cerebro.responder(
-                self.historico[-1:] if sobre_ele else self.historico,
-                memoria_relevante=referencia, modo_voz=por_voz,
-                on_token=on_token, on_evento=on_evento, conversa_leve=leve)
-        except BaseException:
-            if fala is not None:
-                fala.cancelar()
-                self._fala = None
-            raise
+        # "Quem é você?" responde só à pergunta: com a conversa inteira o
+        # modelo pequeno recitava o que tinha acabado de ouvir.
+        resposta = await self.cerebro.responder(
+            self.historico[-1:] if sobre_ele else self.historico,
+            memoria_relevante=referencia, modo_voz=por_voz,
+            on_token=on_token, on_evento=on_evento, conversa_leve=leve)
 
         treino_id = self._registrar_exemplo(
             texto, resposta, referencia, anteriores, por_voz, ferramentas_usadas,
@@ -651,12 +642,10 @@ class Sessao:
         self.extrator.enfileirar(texto, resposta)
         self._anotar("opiniao", consciencia.opiniao_do_condor(texto, resposta))
 
-        if fala is not None:
-            if resposta:
+        if por_voz and reproduzir_voz and resposta:
+            fala = self._nova_fala()
+            if fala is not None:
                 await self._falar_ate_o_fim(fala, resposta)
-            else:
-                fala.cancelar()
-                self._fala = None
 
         self.ultimo_contato = time.time()
         await self._mudar_estado(OUVINDO)

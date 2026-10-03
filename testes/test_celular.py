@@ -302,7 +302,7 @@ class AppCelularIgualAoPCTests(unittest.TestCase):
         async def foto(texto, b64):
             self.chamadas.append(("foto", (texto, len(b64))))
 
-        pontes = self.nucleo.pontes()
+        pontes = self.pontes = self.nucleo.pontes()
         pontes.extras = {
             "historico_ids": anotar("historico_ids", [{"id": 7, "role": "user", "content": "oi"}]),
             "apagar_mensagem": anotar("apagar_mensagem", True),
@@ -313,6 +313,11 @@ class AppCelularIgualAoPCTests(unittest.TestCase):
             "fatos": anotar("fatos", [{"id": 1, "categoria": "pessoal", "valor": "Você se chama Kauã"}]),
             "esquecer_fato": anotar("esquecer_fato", True),
             "avaliar": anotar("avaliar", True),
+            "mapa": anotar("mapa", {"fatos": [{"id": 1, "categoria": "pessoal", "chave": "nome", "valor": "Kauã"}],
+                                    "associacoes_sugeridas": [], "inteligencia": {"fatos": 1}}),
+            "fluxo": anotar("fluxo", [{"categoria": "pessoal", "texto": "Kauã", "ts": 1.0}]),
+            "treino_resumo": anotar("treino_resumo", {"total": 2, "positivos": 1}),
+            "treino_exemplos": anotar("treino_exemplos", [{"id": "ex1", "pedido": "oi", "resposta": "olá", "nota": 0}]),
             "foto": foto,
         }
         self.app = montar_app_celular(self.aparelhos, self.canal, pontes, 7778)
@@ -330,7 +335,8 @@ class AppCelularIgualAoPCTests(unittest.TestCase):
     def test_everything_needs_pairing_and_an_open_vault(self):
         rotas = (("get", "/api/historico"), ("post", "/api/mensagem/apagar"), ("post", "/api/conversa/nova"),
                  ("get", "/api/anteriores"), ("get", "/api/imagens"), ("get", "/api/imagens/img_" + "a" * 20),
-                 ("get", "/api/memoria"), ("post", "/api/memoria/esquecer"), ("post", "/api/avaliar"))
+                 ("get", "/api/memoria"), ("post", "/api/memoria/esquecer"), ("post", "/api/avaliar"),
+                 ("get", "/api/memoria/mapa"), ("get", "/api/treino"))
         for metodo, rota in rotas:
             r = getattr(self.cliente, metodo)(rota, **({"json": {}} if metodo == "post" else {}),
                                               headers={"Origin": HOST})
@@ -360,6 +366,37 @@ class AppCelularIgualAoPCTests(unittest.TestCase):
         nomes = [nome for nome, _ in self.chamadas]
         self.assertEqual(nomes, ["historico_ids", "apagar_mensagem", "nova_conversa", "anteriores", "imagens",
                                  "ler_imagem", "fatos", "esquecer_fato", "avaliar"])
+
+    def test_memory_map_and_training_from_the_phone(self):
+        self.parear()
+        h = {"Origin": HOST}
+        memoria = self.cliente.get("/api/memoria/mapa").json()
+        self.assertEqual(memoria["mapa"]["fatos"][0]["chave"], "nome")
+        self.assertEqual(memoria["fluxo"][0]["texto"], "Kauã")
+        treino = self.cliente.get("/api/treino?pendentes=1").json()
+        self.assertEqual(treino["resumo"]["total"], 2)
+        self.assertEqual(treino["exemplos"][0]["id"], "ex1")
+        self.assertEqual(self.chamadas[-1], ("treino_exemplos", (True,)))
+        self.cliente.get("/api/treino")
+        self.assertEqual(self.chamadas[-1], ("treino_exemplos", (False,)))
+        # Corrigir: a resposta como deveria ser vai junto com o 👎.
+        self.assertTrue(self.cliente.post("/api/avaliar", json={"id": "ex1", "nota": -1, "correcao": " Assim. "},
+                                          headers=h).json()["ok"])
+        self.assertEqual(self.chamadas[-1], ("avaliar", ("ex1", -1, "Assim.")))
+        self.assertEqual(self.cliente.post("/api/avaliar", json={"id": "ex1", "nota": -1, "correcao": "x" * 6001},
+                                           headers=h).status_code, 400)
+
+    def test_correction_with_a_secret_is_refused(self):
+        self.parear()
+
+        def recusa(*_):
+            raise ValueError("a correção parece conter um segredo")
+
+        self.pontes.extras["avaliar"] = recusa
+        r = self.cliente.post("/api/avaliar", json={"id": "ex1", "nota": -1, "correcao": "senha: 123"},
+                              headers={"Origin": HOST})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("segredo", r.json()["erro"])
 
     def test_photo_goes_to_the_local_vision(self):
         self.parear()

@@ -23,11 +23,17 @@ A mesma mente do PC no celular, por chat e por voz. Com fone conectado
   sem repetir o nome, até 2 minutos de silêncio. "Condor" sozinho ou "Condor,
   abre X" sem "na escuta" é ignorado. O iPhone não deixa site ouvir com a tela
   bloqueada, então a tela fica acesa enquanto a escuta está ligada.
+- **Voz:** ele pensa e prepara a resposta inteira primeiro; o texto aparece
+  enquanto ele escreve e a voz começa só com a resposta pronta.
 - **Menu ☰:** Nova conversa (a anterior fica guardada), Conversas anteriores,
-  Galeria (toque para ver grande; toque duplo aproxima) e Memória (procurar e
-  esquecer o que ele sabe de você).
+  Galeria (toque para ver grande; toque duplo aproxima), Memória e Treino.
+- **Memória:** o mesmo mapa do PC (núcleo → áreas → memórias, com as ligações).
+  Toque numa área para filtrar, numa memória para ver detalhes ou esquecer;
+  + e − aproximam (com zoom, arraste com o dedo). LISTA tem a busca.
+- **Treino:** as respostas dele para você avaliar: 👍 Boa, 👎 Ruim ou ✏️ Corrigir
+  (escreva como ele deveria ter respondido). Isso vira o treino do modelo.
 - **Segure uma mensagem:** copiar, apagar (some do PC e do celular e ele esquece
-  aquela troca) e 👍/👎 nas respostas.
+  aquela troca), 👍/👎 e ✏️ Melhorar a resposta.
 - Funciona em casa e na rua (4G), desde que o PC esteja ligado, acordado e com
   internet. Se o PC acabou de ligar e o CONDOR está trancado, destranque pelo
   próprio celular com a palavra de acesso.

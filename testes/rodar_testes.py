@@ -3514,6 +3514,13 @@ class TrainingDatasetTests(unittest.TestCase):
             self.assertTrue(memory.avaliar_exemplo(ruim, -1, "Hoje você tem a reunião da Loog às 15h."))
             resumo = memory.resumo_treino()
             self.assertEqual((resumo["total"], resumo["prontos"]), (4, 3))
+            # Treino pelo celular: "para avaliar" mostra só o que ninguém julgou ainda.
+            pendentes = {e["id"] for e in memory.exemplos_recentes(so_pendentes=True)}
+            self.assertNotIn(bom, pendentes)
+            self.assertNotIn(ruim, pendentes)
+            self.assertIn(neutro_local, pendentes)
+            todos = {e["id"]: e for e in memory.exemplos_recentes()}
+            self.assertEqual(todos[ruim]["correcao"], "Hoje você tem a reunião da Loog às 15h.")
             with self.assertRaises(ValueError):
                 memory.avaliar_exemplo(neutro_local, 5)
 

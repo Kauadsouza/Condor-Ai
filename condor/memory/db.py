@@ -1001,6 +1001,17 @@ class Memoria:
             )
             return cur.rowcount > 0
 
+    def exemplos_recentes(self, limite: int = 40, so_pendentes: bool = False) -> list[dict]:
+        """Respostas recentes para o dono avaliar ou corrigir (pelo celular também)."""
+        filtro = "WHERE nota = 0 AND correcao = ''" if so_pendentes else ""
+        with self._conn(persistir=False) as conn:
+            rows = conn.execute(
+                f"SELECT id, pedido, resposta, correcao, nota, por_voz, criado FROM treino_exemplos "
+                f"{filtro} ORDER BY criado DESC LIMIT ?",
+                (max(1, min(int(limite), 200)),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def resumo_treino(self) -> dict:
         with self._conn() as conn:
             def n(where: str = "1=1") -> int:
