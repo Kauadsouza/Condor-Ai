@@ -27,7 +27,7 @@ jobs:
       - run: python testes/test_assistant.py
       - run: python -m pip install "pytest==9.1.1"
       - run: python -m pytest -q testes/test_camera.py testes/test_gestos.py testes/test_programacao.py testes/test_seguranca.py testes/test_celular.py testes/test_consciencia.py
-      - run: node --test testes/voice_lifecycle.cjs testes/celular_audio.cjs testes/intencao_imagem.cjs
+      - run: node --test testes/voice_lifecycle.cjs testes/celular_audio.cjs testes/intencao_imagem.cjs testes/celular_texto.cjs
       - run: python -m pip install "bandit==1.9.4" "pip-audit==2.10.1"
       - run: python -m bandit -r condor condor_app.pyw condor_window.pyw -lll
       - run: python -m pip_audit -r requirements.txt

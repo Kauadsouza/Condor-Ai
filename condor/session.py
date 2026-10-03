@@ -49,6 +49,48 @@ def chamou_condor(texto: str) -> bool:
     palavras = re.findall(r"[a-zà-ÿ]+", str(texto or "").casefold())[:4]
     return "condor" in palavras
 
+def _palavras(texto: str) -> list[str]:
+    import unicodedata
+    sem_acento = "".join(c for c in unicodedata.normalize("NFKD", str(texto or "").casefold())
+                         if not unicodedata.combining(c))
+    return re.findall(r"[a-z]+", sem_acento)
+
+
+def chamou_na_escuta(texto: str) -> bool:
+    """A frase de ativação (escolha do dono): "Condor, na escuta" — "ei Condor,
+    tá na escuta?" também vale. "Condor" sozinho ou "Condor, abre o Spotify" não."""
+    palavras = _palavras(texto)[:10]
+    if "condor" not in palavras:
+        return False
+    depois = palavras[palavras.index("condor") + 1:][:4]
+    return "escuta" in depois
+
+
+_SO_ENFEITE = {"na", "ta", "esta", "voce", "vc", "ai", "ei", "oi", "e", "condor", "escuta", "o", "me",
+               "tu", "aqui", "ae", "hein", "hey"}
+
+
+def so_ativacao(texto: str) -> bool:
+    """Só a frase de ativação, sem pedido junto ("Condor, na escuta?")."""
+    return chamou_na_escuta(texto) and all(p in _SO_ENFEITE for p in _palavras(texto))
+
+
+# O Whisper "ouve" frases prontas no ruído (TV, vento, teclado). Com a conversa
+# aberta isso viraria pergunta para o Condor; essas são descartadas.
+_ALUCINACOES = ("obrigado", "obrigada", "tchau", "musica", "legendas", "amara", "inscreva",
+                "legenda", "transcricao")
+
+
+def fala_vazia(texto: str) -> bool:
+    palavras = _palavras(texto)
+    if not palavras:
+        return True
+    if len(palavras) <= 3 and any(p.startswith(_ALUCINACOES) for p in palavras):
+        return True
+    return "amara" in palavras or ("legendas" in palavras and "comunidade" in palavras)
+
+
+RESPOSTA_ATIVACAO = "Tô na escuta, pode falar."
 CONTEXTO_PROGRAMACAO = "programacao"
 CANAL_CELULAR = "celular"
 
@@ -253,44 +295,70 @@ class Sessao:
             self.preparar_bloqueio(f"trava facial: {motivo}"), self._loop
         )
 
-    def ao_ouvir(self, wav: bytes, confirmar_nome: bool = False) -> None:
+    def ao_ouvir(self, wav: bytes, confirmar_nome: bool = False, livre: bool = False) -> None:
         """Chamado DE DENTRO da thread do microfone. Só empurra pro laço
         de eventos e sai — nada pesado pode rodar aqui."""
         if self._loop is None:
             return
         asyncio.run_coroutine_threadsafe(
-            self._processar_voz(wav, confirmar_nome=confirmar_nome), self._loop
+            self._processar_voz(wav, confirmar_nome=confirmar_nome, livre=livre), self._loop
         )
 
-    async def _processar_voz(self, wav: bytes, confirmar_nome: bool = False) -> None:
+    def conversa_aberta(self) -> bool:
+        """Depois de "Condor, na escuta": aberta até 2 min sem falar com ele."""
+        return bool(self.acordado and self.segundos_restantes() > 0)
+
+    def conversa_aberta_no_pc(self) -> bool:
+        # Com o celular escutando, quem conversa é o celular.
+        return self.conversa_aberta() and not getattr(self, "_celular_escutando", lambda: False)()
+
+    async def _processar_voz(self, wav: bytes, confirmar_nome: bool = False,
+                             livre: bool = False) -> None:
+        """Fala captada pelo microfone do PC.
+
+        Fora de conversa, só "Condor, na escuta" ativa (o detector só separa a
+        frase; o Whisper confirma). Com a conversa aberta, qualquer fala vale —
+        ``livre`` é a fala gravada nesse modo, sem o nome.
+        """
         try:
             if getattr(self, "_celular_escutando", lambda: False)():
                 # Ele está falando com o celular (escuta ligada lá): o celular
                 # responde; o PC não responde a mesma frase pelas caixas.
                 log.info("Celular escutando; o microfone do PC fica quieto.")
                 return
-            if confirmar_nome:
-                # Detector sem chave: "com dor" e "Condor" soam iguais. Só
-                # responde se o Whisper confirmar que o nome foi dito, e sem
-                # mudar a tela antes disso (nada pisca num alarme falso).
-                texto = await self.ouvidos.transcrever(wav)
-                if not chamou_condor(texto):
-                    log.info("Palavra de ativação não confirmada; ignorado.")
+            # Nada muda na tela antes de confirmar: alarme falso não pisca.
+            texto = (await self.ouvidos.transcrever(wav)).strip()
+            if livre or self.conversa_aberta():
+                if fala_vazia(texto):
                     return
-                await self._mudar_estado(PENSANDO)
-            else:
-                await self._mudar_estado(PENSANDO)
-                texto = await self.ouvidos.transcrever(wav)
-
-            if not texto:
-                log.info("Chamou mas não entendi nada.")
-                await self._mudar_estado(OUVINDO if self.acordado else DORMINDO)
+            elif not chamou_na_escuta(texto):
+                log.info("Não disse \"Condor, na escuta\"; ignorado.")
                 return
-
             await self._evento("transcricao", texto=texto)
+            if so_ativacao(texto):
+                await self._confirmar_escuta("")
+                return
             await self.processar(texto, por_voz=True)
         finally:
             self.escuta.voltar_a_ouvir()
+
+    async def _confirmar_escuta(self, canal: str) -> None:
+        """ "Condor, na escuta?" sozinho: responde na hora, sem esperar o modelo,
+        e abre a conversa."""
+        async with self._ocupado:
+            self._canal_turno = CANAL_CELULAR if canal == CANAL_CELULAR else ""
+            try:
+                if not self.acordado:
+                    await self.acordar()
+                self.ultimo_contato = time.time()
+                await self._evento("resposta.fim", texto=RESPOSTA_ATIVACAO, fontes=[])
+                fala = self._nova_fala()
+                if fala is not None:
+                    await self._falar_ate_o_fim(fala, RESPOSTA_ATIVACAO)
+                self.ultimo_contato = time.time()
+                await self._mudar_estado(OUVINDO)
+            finally:
+                self._canal_turno = ""
 
     # ── Entrada de texto (vem da janela) ───────────────────────────────────
 
@@ -302,7 +370,8 @@ class Sessao:
     # ── O caminho comum ────────────────────────────────────────────────────
 
     async def processar(self, texto: str, por_voz: bool, *, reproduzir_voz: bool = True,
-                        contexto: str = "", alvo: dict | None = None, canal: str = "") -> None:
+                        contexto: str = "", alvo: dict | None = None, canal: str = "",
+                        anexo: str = "") -> None:
         # asyncio.Lock e justo: pedidos simultaneos aguardam aqui na ordem em
         # que chegaram. Nada e descartado se voz, outra janela ou uma corrida de
         # rede enviar enquanto o Condor ainda esta fechando a resposta anterior.
@@ -313,7 +382,7 @@ class Sessao:
                 if self._contexto_turno == CONTEXTO_PROGRAMACAO:
                     await self._processar_programacao(texto, alvo)
                 else:
-                    await self._processar_turno(texto, por_voz, reproduzir_voz)
+                    await self._processar_turno(texto, por_voz, reproduzir_voz, anexo)
             finally:
                 self._contexto_turno = ""
                 self._canal_turno = ""
@@ -336,19 +405,60 @@ class Sessao:
         "Condor" — o mesmo porteiro do PC (Vosk barato, Whisper confirma).
         Pelo botão do microfone o dono já disse que é com ele.
         """
-        if com_nome:
+        aberta = self.conversa_aberta()
+        if com_nome and not aberta:
             from condor.voice.wake import vosk_ouviu_condor
             if await asyncio.to_thread(vosk_ouviu_condor, wav) is False:
                 return
         texto = (await self.ouvidos.transcrever(wav)).strip()
-        if com_nome and not chamou_condor(texto):
-            log.info("Celular: palavra de ativação não confirmada; ignorado.")
-            return
+        if com_nome:
+            # Escuta contínua: fora de conversa só "Condor, na escuta" ativa;
+            # com a conversa aberta qualquer fala vale, menos ruído.
+            if aberta and fala_vazia(texto):
+                return
+            if not aberta and not chamou_na_escuta(texto):
+                log.info("Celular: não disse \"Condor, na escuta\"; ignorado.")
+                return
         if not texto:
             await self._evento("erro", mensagem="Não entendi o áudio; fala de novo?")
             return
         await self._evento("transcricao", texto=texto, origem=CANAL_CELULAR)
+        if so_ativacao(texto):
+            await self._confirmar_escuta(CANAL_CELULAR)
+            return
         await self.processar(texto, por_voz=True, canal=CANAL_CELULAR)
+
+    async def foto_do_celular(self, texto: str, foto_b64: str,
+                              analisar: Callable[[str, str], Awaitable[str]]) -> None:
+        """Foto mandada do iPhone (como no ChatGPT). A visão LOCAL descreve aqui
+        no PC; só o texto da descrição segue, marcado como dado, para o cérebro.
+        A foto não é guardada."""
+        pedido = texto.strip() or "O que você acha desta foto?"
+        try:
+            valida = self._foto_valida(foto_b64)
+        except ValueError as exc:
+            await self._evento("erro", mensagem=f"Foto não aceita: {exc}.")
+            return
+        await self._evento("transcricao", texto=f"{pedido} [foto]", origem=CANAL_CELULAR, digitado=True)
+        await self._mudar_estado(PENSANDO)
+        try:
+            descricao = (await analisar(valida, pedido)).strip()
+        except Exception as exc:
+            log.warning("Visão local falhou na foto do celular: %s", exc)
+            await self._evento("erro", mensagem="Não consegui olhar a foto agora (visão local indisponível).")
+            await self._mudar_estado(OUVINDO if self.acordado else DORMINDO)
+            return
+        anexo = (f"\n\n{MARCA_DADOS}\n<foto_enviada_pelo_dono>\n{descricao[:3000]}\n"
+                 "</foto_enviada_pelo_dono>")
+        await self.processar(f"{pedido} [foto]", por_voz=False, canal=CANAL_CELULAR, anexo=anexo)
+
+    def esquecer_mensagem(self, papel: str, conteudo: str) -> None:
+        """Mensagem apagada sai também da conversa em andamento: ele esquece."""
+        for i in range(len(self.historico) - 1, -1, -1):
+            item = self.historico[i]
+            if item.get("role") == papel and str(item.get("content") or "").startswith(conteudo[:200]):
+                del self.historico[i]
+                return
 
     async def _processar_programacao(self, texto: str, alvo: dict | None) -> None:
         """Chat da aba Programação: conversa à parte da principal.
@@ -404,7 +514,8 @@ class Sessao:
         await self._mudar_estado(OUVINDO)
         await self._evento("custo", **self.memoria.custo_hoje())
 
-    async def _processar_turno(self, texto: str, por_voz: bool, reproduzir_voz: bool) -> None:
+    async def _processar_turno(self, texto: str, por_voz: bool, reproduzir_voz: bool,
+                               anexo: str = "") -> None:
         if not self.acordado:
             await self.acordar()
         self.ultimo_contato = time.time()
@@ -463,7 +574,7 @@ class Sessao:
             await self._evento("custo", **self.memoria.custo_hoje())
             return
 
-        self.historico.append({"role": "user", "content": texto})
+        self.historico.append({"role": "user", "content": texto + anexo})
         self._podar_historico()
 
         # A memória é sempre do Condor. O provedor ativo recebe somente os

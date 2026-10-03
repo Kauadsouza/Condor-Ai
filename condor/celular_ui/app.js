@@ -1,15 +1,16 @@
 /**
- * CONDOR no iPhone: a mesma conversa do PC, por texto ou voz.
+ * CONDOR no iPhone: a mesma conversa do PC, com tudo que o chat do PC tem.
  *
- * - Mensagem: escreve e envia; a resposta vem em texto.
- * - Microfone: toca, fala, ele percebe quando você parou e responde em voz.
- * - Escuta "Condor": com a tela aberta, fale "Condor, ..." a qualquer hora.
- *   O iPhone não deixa site ouvir com a tela bloqueada; por isso a tela fica
- *   acesa enquanto a escuta está ligada.
+ * - Mensagem, foto (a visão local analisa no PC) e microfone.
+ * - Escuta: diga "Condor, na escuta" e converse; depois de 2 minutos sem falar
+ *   com ele, precisa chamar de novo. Quem decide é o PC (mesma regra lá).
+ * - Menu: nova conversa, conversas anteriores, galeria e memória.
+ * - Segure (ou toque) numa mensagem: copiar, apagar, 👍/👎.
  */
 (() => {
   const $ = (id) => document.getElementById(id);
   const telas = ['telaCarregando', 'telaParear', 'telaTrancado', 'telaConversa'];
+  const vistas = { vistaChat: 'CONDOR', vistaAnteriores: 'ANTERIORES', vistaGaleria: 'GALERIA', vistaMemoria: 'MEMÓRIA' };
   const ROTULOS = { dormindo: 'DORMINDO', ouvindo: 'OUVINDO', pensando: 'PENSANDO', falando: 'FALANDO', senha: 'APROVAÇÃO' };
 
   let codigoConvite = '';
@@ -20,12 +21,12 @@
   let wakeLock = null;
   let somLiberado = false;
   let estado = 'dormindo';
-  // Fluxo de conversa: logo depois que ele responde em voz, dá para seguir
-  // falando sem chamar "Condor" de novo.
-  const JANELA_CONVERSA_MS = 10000;
-  let conversaAte = 0;
+  let acordado = false;          // conversa aberta no PC (até 2 min sem falar)
+  let fotoAnexada = '';          // JPEG base64 pronto para ir junto
+  let mensagemDaFolha = null;
+  let confirmarAcao = null;
 
-  // ── Telas ───────────────────────────────────────────────────────────────
+  // ── Utilidades ──────────────────────────────────────────────────────────
 
   function mostrar(id) { telas.forEach((tela) => { $(tela).hidden = tela !== id; }); }
 
@@ -37,10 +38,27 @@
     return { ok: resposta.ok, status: resposta.status, json };
   }
 
+  function avisar(texto) {
+    const caixa = $('avisoFlutuante');
+    caixa.textContent = texto;
+    caixa.hidden = false;
+    clearTimeout(avisar.relogio);
+    avisar.relogio = setTimeout(() => { caixa.hidden = true; }, 2200);
+  }
+
+  function confirmar(texto, acao) {
+    $('confirmaTexto').textContent = texto;
+    confirmarAcao = acao;
+    $('confirma').hidden = false;
+  }
+  $('confirmaSim').addEventListener('click', async () => { $('confirma').hidden = true; const a = confirmarAcao; confirmarAcao = null; if (a) await a(); });
+  $('confirmaNao').addEventListener('click', () => { $('confirma').hidden = true; confirmarAcao = null; });
+
+  // ── Entrada, pareamento e destrancar ───────────────────────────────────
+
   async function iniciar() {
     const hash = new URLSearchParams(location.hash.slice(1));
-    codigoConvite = hash.get('c') || '';
-    if (codigoConvite) history.replaceState(null, '', location.pathname);   // o código não fica no histórico
+    if (hash.get('c')) { codigoConvite = hash.get('c'); history.replaceState(null, '', location.pathname); }
 
     let eu;
     try { eu = await pedir('/api/eu'); } catch (_) { return falhaRede(); }
@@ -90,7 +108,7 @@
     } finally { $('destrancarBotao').disabled = false; }
   });
 
-  // ── Conversa ────────────────────────────────────────────────────────────
+  // ── Conexão ao vivo ─────────────────────────────────────────────────────
 
   function entrarNaConversa() {
     mostrar('telaConversa');
@@ -110,7 +128,7 @@
     socket.onclose = (evento) => {
       socket = null;
       if (evento.code !== 1000) setTimeout(() => diag(`conexão caiu (${evento.code})`), 1500);
-      if (evento.code === 1008) { iniciar(); return; }        // pareamento revogado ou expirado
+      if (evento.code === 1008) { iniciar(); return; }
       tentativas += 1;
       pintarEstado('dormindo', 'RECONECTANDO');
       // Pelo caminho completo: se o PC trancou ou reiniciou, cai na tela de destrancar.
@@ -125,32 +143,34 @@
 
   function tratar(msg) {
     switch (msg.tipo) {
-      case 'estado': pintarEstado(msg.estado); break;
-      case 'conversa.historico': {
-        // Reconectou no meio de uma resposta: redesenha a conversa sem perder a
-        // bolha que ainda está chegando (antes ela sumia da tela).
-        const emAndamento = bolhaAtual;
-        $('mensagens').innerHTML = '';
-        (msg.mensagens || []).forEach((m) => bolha(m.role === 'user' ? 'eu' : 'condor', m.content));
-        if (emAndamento) $('mensagens').appendChild(emAndamento);
-        rolar();
+      case 'estado':
+        if (typeof msg.acordado === 'boolean') acordado = msg.acordado;
+        pintarEstado(msg.estado);
         break;
-      }
-      case 'conversa.limpa': $('mensagens').innerHTML = ''; break;
+      case 'acordou': acordado = true; pintarEstado(estado); break;
+      case 'dormiu': acordado = false; pintarEstado('dormindo'); break;
+      case 'conversa.historico': desenharHistorico(msg.mensagens || []); break;
+      case 'conversa.limpa': $('mensagens').innerHTML = ''; bolhaAtual = null; sistema('Nova conversa.'); break;
+      case 'mensagem.apagada': tirarMensagem(msg); break;
       case 'transcricao':
         if (msg.digitado && msg.origem === 'celular') break;       // já apareceu quando você enviou
-        bolha('eu', msg.texto, msg.origem === 'pc' ? 'NO PC' : '');
+        bolha('eu', msg.texto, { etiqueta: msg.origem === 'pc' ? 'NO PC' : '' });
         break;
       case 'resposta.token':
-        if (!bolhaAtual) bolhaAtual = bolha('condor', '');
-        bolhaAtual.textContent += msg.texto || '';
+        if (!bolhaAtual) bolhaAtual = bolha('condor', '', { aoVivo: true });
+        bolhaAtual.dataset.bruto = (bolhaAtual.dataset.bruto || '') + (msg.texto || '');
+        pintarTexto(bolhaAtual);
         rolar();
         break;
       case 'resposta.fim':
-        if (!bolhaAtual) bolhaAtual = bolha('condor', '');
-        bolhaAtual.textContent = msg.texto || bolhaAtual.textContent;
+        if (!bolhaAtual) bolhaAtual = bolha('condor', '', { aoVivo: true });
+        bolhaAtual.dataset.bruto = msg.texto || bolhaAtual.dataset.bruto || '';
+        if (msg.treino_id) bolhaAtual.dataset.treino = msg.treino_id;
+        pintarTexto(bolhaAtual);
+        mostrarFontes(bolhaAtual, msg.fontes);
         bolhaAtual = null; rolar();
         break;
+      case 'imagem.nova': bolhaImagem(msg.id, msg.pedido); break;
       case 'ferramenta.inicio': pintarEstado('pensando', (msg.rotulo || 'TRABALHANDO').toUpperCase()); break;
       case 'erro': case 'ocupado': bolhaAtual = null; sistema(msg.mensagem || 'Algo deu errado.'); break;
       case 'senha.pedido': $('formSenha').hidden = false; $('senhaMotivo').textContent = msg.motivo || $('senhaMotivo').textContent; $('senhaTexto').focus(); break;
@@ -158,47 +178,200 @@
       case 'voz.audio': CondorAudio.receber(msg); break;
       case 'voz.parar': CondorAudio.parar(); break;
       case 'seguranca.bloqueado': if (socket) socket.close(); mostrar('telaTrancado'); break;
-      case 'dormiu': pintarEstado('dormindo'); break;
       default: break;
     }
   }
 
-  function bolha(quem, texto, etiqueta = '') {
+  // ── Mensagens ───────────────────────────────────────────────────────────
+
+  function desenharHistorico(mensagens) {
+    // Reconectou no meio de uma resposta: não perde a bolha que ainda chega.
+    const emAndamento = bolhaAtual;
+    $('mensagens').innerHTML = '';
+    mensagens.forEach((m) => bolha(m.role === 'user' ? 'eu' : 'condor', m.content, { id: m.id }));
+    if (emAndamento) $('mensagens').appendChild(emAndamento);
+    rolar();
+  }
+
+  function bolha(quem, texto, opcoes = {}) {
     const div = document.createElement('div');
     div.className = `bolha ${quem}`;
-    div.textContent = texto;
-    if (etiqueta) div.dataset.etiqueta = etiqueta;
+    div.dataset.quem = quem;
+    if (opcoes.id) div.dataset.id = opcoes.id;
+    if (opcoes.etiqueta) div.dataset.etiqueta = opcoes.etiqueta;
+    div.dataset.bruto = texto || '';
+    if (opcoes.foto) {
+      const img = document.createElement('img');
+      img.className = 'miniatura'; img.src = opcoes.foto; img.alt = 'Foto enviada';
+      div.appendChild(img);
+    }
+    const corpo = document.createElement('div');
+    corpo.className = 'corpo';
+    div.appendChild(corpo);
+    pintarTexto(div);
+    if (quem !== 'sistema') ligarAcoes(div);
     $('mensagens').appendChild(div);
     rolar();
     return div;
   }
 
+  function pintarTexto(div) {
+    const corpo = div.querySelector('.corpo');
+    if (!corpo) return;
+    // Mensagem do dono fica como ele escreveu; a do Condor ganha formatação.
+    if (div.dataset.quem === 'condor') corpo.innerHTML = CondorTexto.html(div.dataset.bruto);
+    else corpo.textContent = div.dataset.bruto;
+  }
+
+  function mostrarFontes(div, fontes) {
+    if (!Array.isArray(fontes) || !fontes.length) return;
+    const host = document.createElement('div');
+    host.className = 'fontes';
+    fontes.slice(0, 8).forEach((fonte, i) => {
+      try {
+        const url = new URL(String(fonte.url || ''));
+        if (!['http:', 'https:'].includes(url.protocol)) return;
+        const link = document.createElement('a');
+        link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        link.textContent = `${i + 1}. ${fonte.titulo || fonte.title || url.hostname}`;
+        host.appendChild(link);
+      } catch (_) { /* fonte inválida */ }
+    });
+    if (host.childElementCount) div.appendChild(host);
+  }
+
+  function bolhaImagem(id, pedido) {
+    if (!/^img_[0-9a-f]{20}$/.test(String(id || ''))) return;
+    const div = document.createElement('div');
+    div.className = 'bolha condor imagem';
+    div.dataset.quem = 'imagem';
+    const img = document.createElement('img');
+    img.src = `/api/imagens/${id}`; img.alt = pedido || 'Imagem criada pelo Condor'; img.loading = 'lazy';
+    img.addEventListener('click', () => abrirVisor(img.src, pedido));
+    div.appendChild(img);
+    if (pedido) { const legenda = document.createElement('small'); legenda.textContent = pedido; div.appendChild(legenda); }
+    $('mensagens').appendChild(div);
+    rolar();
+  }
+
   function sistema(texto) { bolha('sistema', texto); }
   function rolar() { const lista = $('mensagens'); lista.scrollTop = lista.scrollHeight; }
 
-  function pintarEstado(novo, rotulo) {
-    estado = novo || estado;
-    const livre = escutaLigada && Date.now() < conversaAte && !CondorAudio.estaTocando();
-    const visual = escutaLigada && (estado === 'dormindo' || livre) ? 'ouvindo' : estado;
-    $('orbe').dataset.estado = visual;
-    const padrao = livre ? 'PODE FALAR' : (escutaLigada && estado === 'dormindo' ? 'DIGA "CONDOR"' : ROTULOS[estado] || estado.toUpperCase());
-    $('estadoTexto').textContent = rotulo || padrao;
+  function tirarMensagem(msg) {
+    const porId = msg.id && $('mensagens').querySelector(`.bolha[data-id="${Number(msg.id)}"]`);
+    if (porId) { porId.remove(); return; }
+    const quem = msg.role === 'user' ? 'eu' : 'condor';
+    const alvo = String(msg.content || '').trim();
+    const achada = [...$('mensagens').querySelectorAll(`.bolha.${quem}`)].reverse()
+      .find((b) => (b.dataset.bruto || '').trim() === alvo);
+    if (achada) achada.remove();
   }
+
+  // ── Ações de uma mensagem ───────────────────────────────────────────────
+
+  function ligarAcoes(div) {
+    let relogio = null;
+    div.addEventListener('touchstart', () => { relogio = setTimeout(() => abrirFolha(div), 450); }, { passive: true });
+    ['touchend', 'touchmove', 'touchcancel'].forEach((nome) => div.addEventListener(nome, () => clearTimeout(relogio), { passive: true }));
+    div.addEventListener('contextmenu', (evento) => { evento.preventDefault(); abrirFolha(div); });
+    div.addEventListener('dblclick', () => abrirFolha(div));
+  }
+
+  function abrirFolha(div) {
+    mensagemDaFolha = div;
+    const folha = $('folha');
+    const condor = div.dataset.quem === 'condor';
+    folha.querySelector('[data-acao="gostei"]').hidden = !(condor && div.dataset.treino);
+    folha.querySelector('[data-acao="naogostei"]').hidden = !(condor && div.dataset.treino);
+    folha.hidden = false;
+    if (navigator.vibrate) navigator.vibrate(12);
+  }
+
+  $('folha').addEventListener('click', async (evento) => {
+    const botao = evento.target.closest('[data-acao]');
+    if (!botao && evento.target !== $('folha')) return;
+    const acao = botao ? botao.dataset.acao : 'fechar';
+    const div = mensagemDaFolha;
+    $('folha').hidden = true;
+    if (!div || acao === 'fechar') return;
+    if (acao === 'copiar') {
+      try { await navigator.clipboard.writeText(div.dataset.bruto || ''); avisar('Copiado'); } catch (_) { avisar('Não deu para copiar'); }
+    } else if (acao === 'gostei' || acao === 'naogostei') {
+      const r = await pedir('/api/avaliar', { id: div.dataset.treino, nota: acao === 'gostei' ? 1 : -1 });
+      avisar(r.ok ? 'Obrigado, anotei para o treino' : 'Não salvei a avaliação');
+    } else if (acao === 'apagar') {
+      confirmar('Apagar esta mensagem? Ela some do PC e do celular e ele esquece essa troca.', () => apagar(div));
+    }
+  });
+
+  async function apagar(div) {
+    let id = Number(div.dataset.id || 0);
+    if (!id) {
+      // Mensagem desta sessão ainda sem número: procura no histórico do PC.
+      const r = await pedir('/api/historico');
+      const papel = div.dataset.quem === 'eu' ? 'user' : 'assistant';
+      const alvo = (div.dataset.bruto || '').trim();
+      const achada = (r.json.mensagens || []).slice().reverse()
+        .find((m) => m.role === papel && String(m.content || '').trim().startsWith(alvo.slice(0, 200)));
+      id = achada ? Number(achada.id) : 0;
+    }
+    if (!id) { div.remove(); avisar('Removida da tela'); return; }
+    const r = await pedir('/api/mensagem/apagar', { id });
+    if (r.ok) { div.remove(); avisar('Mensagem apagada'); } else avisar('Não consegui apagar');
+  }
+
+  // ── Escrever, foto e senha ──────────────────────────────────────────────
 
   $('formCompor').addEventListener('submit', (evento) => {
     evento.preventDefault();
     const campo = $('texto');
     const texto = campo.value.trim();
-    if (!texto) return;
-    if (!enviar({ tipo: 'texto', texto })) { sistema('Sem conexão com o PC agora.'); return; }
-    bolha('eu', texto);
-    campo.value = ''; ajustarCampo();
+    if (!texto && !fotoAnexada) return;
+    const msg = { tipo: 'texto', texto };
+    if (fotoAnexada) msg.foto = fotoAnexada;
+    if (!enviar(msg)) { sistema('Sem conexão com o PC agora.'); return; }
+    bolha('eu', texto || (fotoAnexada ? 'O que você acha desta foto?' : ''),
+      { foto: fotoAnexada ? `data:image/jpeg;base64,${fotoAnexada}` : '' });
+    campo.value = ''; ajustarCampo(); tirarFoto();
   });
   $('texto').addEventListener('keydown', (evento) => {
     if (evento.key === 'Enter' && !evento.shiftKey) { evento.preventDefault(); $('formCompor').requestSubmit(); }
   });
   function ajustarCampo() { const campo = $('texto'); campo.style.height = 'auto'; campo.style.height = `${Math.min(120, campo.scrollHeight)}px`; }
   $('texto').addEventListener('input', ajustarCampo);
+
+  $('fotoBotao').addEventListener('click', () => $('fotoArquivo').click());
+  $('fotoArquivo').addEventListener('change', async () => {
+    const arquivo = $('fotoArquivo').files[0];
+    $('fotoArquivo').value = '';
+    if (!arquivo) return;
+    try {
+      fotoAnexada = await reduzirFoto(arquivo);
+      $('anexoFoto').src = `data:image/jpeg;base64,${fotoAnexada}`;
+      $('anexo').hidden = false;
+      $('texto').focus();
+    } catch (_) { avisar('Não consegui abrir essa foto'); }
+  });
+  $('anexoTirar').addEventListener('click', tirarFoto);
+  function tirarFoto() { fotoAnexada = ''; $('anexo').hidden = true; $('anexoFoto').removeAttribute('src'); }
+
+  // Foto do iPhone tem 12 MP: reduz para 1280 px em JPEG antes de mandar.
+  function reduzirFoto(arquivo) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(arquivo);
+      const img = new Image();
+      img.onload = () => {
+        const escala = Math.min(1, 1280 / Math.max(img.width, img.height));
+        const tela = document.createElement('canvas');
+        tela.width = Math.round(img.width * escala); tela.height = Math.round(img.height * escala);
+        tela.getContext('2d').drawImage(img, 0, 0, tela.width, tela.height);
+        URL.revokeObjectURL(url);
+        resolve(tela.toDataURL('image/jpeg', 0.82).split(',')[1]);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('foto')); };
+      img.src = url;
+    });
+  }
 
   $('formSenha').addEventListener('submit', (evento) => {
     evento.preventDefault();
@@ -208,13 +381,24 @@
     $('formSenha').hidden = true;
   });
 
-  // ── Som e microfone ────────────────────────────────────────────────────
+  // ── Estado e escuta ─────────────────────────────────────────────────────
+
+  function pintarEstado(novo, rotulo) {
+    estado = novo || estado;
+    const livre = escutaLigada && acordado && !CondorAudio.estaTocando() && estado !== 'pensando';
+    const visual = escutaLigada && (estado === 'dormindo' || livre) ? 'ouvindo' : estado;
+    $('orbe').dataset.estado = visual;
+    let padrao = ROTULOS[estado] || String(estado).toUpperCase();
+    if (livre) padrao = 'PODE FALAR';
+    else if (escutaLigada && !acordado && estado === 'dormindo') padrao = 'DIGA "CONDOR, NA ESCUTA"';
+    $('estadoTexto').textContent = rotulo || padrao;
+  }
 
   $('toque').addEventListener('click', async () => {
     try { await CondorAudio.ligar(); somLiberado = true; enviar({ tipo: 'voz.player', ativo: true }); } catch (_) { /* tenta no próximo toque */ }
     $('toque').hidden = true;
     CondorAudio.retomar();                 // voz que o iOS segurou continua de onde parou
-    // Abriu o app, um toque e já está ouvindo "Condor", se a escuta estava ligada da última vez.
+    // Abriu o app, um toque e já está ouvindo, se a escuta estava ligada da última vez.
     if (!escutaLigada && lembrarEscuta()) await ligarEscuta();
   });
 
@@ -227,17 +411,12 @@
   }
 
   CondorAudio.ouvinte = (wav, meta) => {
-    // Dentro da janela de conversa não precisa dizer "Condor" de novo.
-    const comNome = meta.comNome && Date.now() >= conversaAte;
-    if (!enviar({ tipo: 'audio', wav, com_nome: comNome })) sistema('Sem conexão com o PC agora.');
-    else if (!comNome) { conversaAte = 0; pintarEstado('pensando'); }
+    // Escuta contínua manda tudo com com_nome: o PC decide se a conversa está
+    // aberta ou se precisa de "Condor, na escuta". Pelo botão vai direto.
+    if (!enviar({ tipo: 'audio', wav, com_nome: meta.comNome })) sistema('Sem conexão com o PC agora.');
+    else if (!meta.comNome) pintarEstado('pensando');
   };
-  CondorAudio.aoFimFala = () => {
-    if (!escutaLigada) return;
-    conversaAte = Date.now() + JANELA_CONVERSA_MS;
-    pintarEstado(estado);
-    setTimeout(() => pintarEstado(estado), JANELA_CONVERSA_MS + 100);
-  };
+  CondorAudio.aoFimFala = () => pintarEstado(estado);
   CondorAudio.aoPrecisarToque = () => { $('toque').hidden = false; };
   CondorAudio.aoErro = (texto) => diag(texto);
   CondorAudio.aoMudarNivel = (nivel, falando) => {
@@ -302,17 +481,126 @@
   }
   function soltarTela() { try { wakeLock?.release(); } catch (_) { /* ok */ } wakeLock = null; }
 
-  document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible') {
-      conectar();
-      // Voltando do segundo plano o iOS pode ter pausado o som: só um toque religa.
-      if (somLiberado && !CondorAudio.ativo()) $('toque').hidden = false;
-      if (escutaLigada) { await manterTelaAcesa(); try { await CondorAudio.ligarEscuta(); } catch (_) { desligarEscuta(); } }
-    }
+  // ── Menu e outras telas ─────────────────────────────────────────────────
+
+  function abrirMenu(aberto) { $('gaveta').hidden = !aberto; $('veu').hidden = !aberto; }
+  $('menuBotao').addEventListener('click', () => abrirMenu(true));
+  $('veu').addEventListener('click', () => abrirMenu(false));
+  $('menuFechar').addEventListener('click', () => abrirMenu(false));
+  $('gaveta').addEventListener('click', (evento) => {
+    const botao = evento.target.closest('[data-vista]');
+    if (botao) { abrirMenu(false); irPara(botao.dataset.vista); }
+  });
+  $('menuNova').addEventListener('click', () => {
+    abrirMenu(false);
+    confirmar('Começar uma conversa nova? A atual fica guardada em "Conversas anteriores" e ele não esquece nada do que sabe de você.', async () => {
+      const r = await pedir('/api/conversa/nova', {});
+      if (r.ok) irPara('vistaChat'); else avisar('Não consegui começar outra conversa');
+    });
   });
 
-  // Erro no celular vai para o log do PC: sem isto, "falou e sumiu" não
-  // deixava rastro nenhum para descobrir o motivo.
+  function irPara(vista) {
+    Object.keys(vistas).forEach((id) => { $(id).hidden = id !== vista; });
+    $('tituloVista').textContent = vistas[vista];
+    if (vista === 'vistaAnteriores') carregarAnteriores(true);
+    if (vista === 'vistaGaleria') carregarGaleria(true);
+    if (vista === 'vistaMemoria') carregarMemoria();
+    if (vista === 'vistaChat') rolar();
+  }
+
+  let anterioresProximo = null;
+  async function carregarAnteriores(doZero) {
+    if (doZero) { $('anterioresLista').innerHTML = ''; anterioresProximo = null; }
+    const r = await pedir(`/api/anteriores${anterioresProximo ? `?antes=${anterioresProximo}` : ''}`);
+    if (!r.ok) { $('anterioresLista').textContent = r.json.erro || 'Indisponível agora.'; return; }
+    let diaAnterior = $('anterioresLista').dataset.ultimoDia || '';
+    (r.json.itens || []).forEach((item) => {
+      const dia = new Date(item.ts * 1000).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: 'short' });
+      if (dia !== diaAnterior) {
+        const titulo = document.createElement('h3'); titulo.textContent = dia; $('anterioresLista').appendChild(titulo);
+        diaAnterior = dia;
+      }
+      const linha = document.createElement('div');
+      linha.className = `antiga ${item.papel === 'user' ? 'eu' : 'condor'}`;
+      const quem = document.createElement('b'); quem.textContent = item.papel === 'user' ? 'Você' : 'Condor';
+      const texto = document.createElement('span'); texto.textContent = String(item.conteudo || '').slice(0, 600);
+      linha.append(quem, texto);
+      $('anterioresLista').appendChild(linha);
+    });
+    $('anterioresLista').dataset.ultimoDia = diaAnterior;
+    anterioresProximo = r.json.proximo;
+    $('anterioresMais').hidden = !anterioresProximo;
+    if (!$('anterioresLista').childElementCount) $('anterioresLista').textContent = 'Nenhuma conversa guardada ainda.';
+  }
+  $('anterioresMais').addEventListener('click', () => carregarAnteriores(false));
+
+  let galeriaProximo = null;
+  async function carregarGaleria(doZero) {
+    if (doZero) { $('galeriaGrade').innerHTML = ''; galeriaProximo = null; }
+    const r = await pedir(`/api/imagens${galeriaProximo ? `?antes=${galeriaProximo}` : ''}`);
+    if (!r.ok) { $('galeriaGrade').textContent = r.json.erro || 'Indisponível agora.'; return; }
+    (r.json.itens || []).forEach((item) => {
+      if (!/^img_[0-9a-f]{20}$/.test(String(item.id || ''))) return;
+      const img = document.createElement('img');
+      img.src = `/api/imagens/${item.id}`; img.loading = 'lazy'; img.alt = item.pedido || 'Imagem';
+      img.addEventListener('click', () => abrirVisor(img.src, item.pedido));
+      $('galeriaGrade').appendChild(img);
+    });
+    galeriaProximo = r.json.proximo;
+    $('galeriaMais').hidden = !galeriaProximo;
+    if (!$('galeriaGrade').childElementCount) $('galeriaGrade').textContent = 'Nenhuma imagem ainda. Peça: "Condor, gera uma imagem de...".';
+  }
+  $('galeriaMais').addEventListener('click', () => carregarGaleria(false));
+
+  let fatos = [];
+  async function carregarMemoria() {
+    const r = await pedir('/api/memoria');
+    if (!r.ok) { $('memoriaLista').textContent = r.json.erro || 'Indisponível agora.'; return; }
+    fatos = r.json.fatos || [];
+    desenharMemoria();
+  }
+  function desenharMemoria() {
+    const busca = $('memoriaBusca').value.trim().toLowerCase();
+    const lista = $('memoriaLista');
+    lista.innerHTML = '';
+    const visiveis = fatos.filter((f) => !busca || `${f.categoria} ${f.valor}`.toLowerCase().includes(busca));
+    let categoria = '';
+    visiveis.forEach((fato) => {
+      if (fato.categoria !== categoria) {
+        categoria = fato.categoria;
+        const titulo = document.createElement('h3'); titulo.textContent = String(categoria || 'geral').toUpperCase();
+        lista.appendChild(titulo);
+      }
+      const linha = document.createElement('div'); linha.className = 'fato';
+      const texto = document.createElement('span'); texto.textContent = fato.valor;
+      const botao = document.createElement('button'); botao.type = 'button'; botao.textContent = 'Esquecer';
+      botao.addEventListener('click', () => confirmar(`Esquecer isto?\n"${fato.valor}"`, async () => {
+        const resposta = await pedir('/api/memoria/esquecer', { id: fato.id });
+        if (resposta.ok && resposta.json.ok) { fatos = fatos.filter((f) => f.id !== fato.id); desenharMemoria(); avisar('Esquecido'); }
+        else avisar('Não consegui esquecer');
+      }));
+      linha.append(texto, botao);
+      lista.appendChild(linha);
+    });
+    if (!visiveis.length) lista.textContent = busca ? 'Nada com isso.' : 'Ele ainda não guardou nada sobre você.';
+  }
+  $('memoriaBusca').addEventListener('input', desenharMemoria);
+
+  // ── Imagem em tela cheia ────────────────────────────────────────────────
+
+  function abrirVisor(src, legenda) {
+    $('visorImg').src = src;
+    $('visorImg').classList.remove('zoom');
+    $('visorLegenda').textContent = legenda || '';
+    $('visor').hidden = false;
+  }
+  $('visorFechar').addEventListener('click', () => { $('visor').hidden = true; });
+  // Toque duplo aproxima; dois dedos também funcionam (zoom do próprio iPhone).
+  $('visorImg').addEventListener('dblclick', () => $('visorImg').classList.toggle('zoom'));
+
+  // ── Diagnóstico e manutenção ────────────────────────────────────────────
+
+  // Erro no celular vai para o log do PC: dá para descobrir o motivo depois.
   const diagsEnviados = new Set();
   function diag(texto) {
     const linha = String(texto || '').slice(0, 280);
@@ -322,6 +610,15 @@
   }
   window.addEventListener('error', (evento) => diag(`erro: ${evento.message} @${evento.lineno}`));
   window.addEventListener('unhandledrejection', (evento) => diag(`promessa: ${evento.reason && (evento.reason.message || evento.reason)}`));
+
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible') {
+      conectar();
+      // Voltando do segundo plano o iOS pode ter pausado o som: só um toque religa.
+      if (somLiberado && !CondorAudio.ativo()) $('toque').hidden = false;
+      if (escutaLigada) { await manterTelaAcesa(); try { await CondorAudio.ligarEscuta(); } catch (_) { desligarEscuta(); } }
+    }
+  });
 
   setInterval(() => enviar({ tipo: 'ping' }), 25000);
   iniciar();

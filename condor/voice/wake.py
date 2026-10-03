@@ -205,6 +205,9 @@ class Escuta(threading.Thread):
         self.motivo_inativa = ""
         self.palavra = ""
         self.motor = ""
+        # Depois de "Condor, na escuta" a sessão fica aberta por 2 min: aí
+        # qualquer fala dele é gravada, sem esperar o nome de novo.
+        self.conversa_aberta: Callable[[], bool] = lambda: False
 
     # ── Controle externo ───────────────────────────────────────────────────
 
@@ -271,6 +274,8 @@ class Escuta(threading.Thread):
                  getattr(gravador, "selected_device", "padrão"))
 
         estava_mudo = False
+        voz_seguida = 0
+        antes: collections.deque[list[int]] = collections.deque(maxlen=12)   # ~0,4 s antes da fala
         try:
             while not self._parar.is_set():
                 try:
@@ -303,6 +308,31 @@ class Escuta(threading.Thread):
                 if estava_mudo:
                     detector.reiniciar()   # descarta o que ouviu enquanto ele falava
                     estava_mudo = False
+                    voz_seguida = 0
+
+                if self._conversa_aberta_seguro():
+                    # Conversa aberta: começa a gravar quando ele começa a falar.
+                    if _volume(quadro) > self._cfg.voz.limiar_silencio * 1.5:
+                        voz_seguida += 1
+                        antes.append(quadro)
+                    else:
+                        voz_seguida = 0
+                        antes.append(quadro)
+                    if voz_seguida >= 3:
+                        self._mudo.set()
+                        try:
+                            resto = self._gravar_quadros(gravador, None, espera_inicio=0.6)
+                            quadros = list(antes) + (resto or [])
+                            self._ao_ouvir(_para_wav(quadros), confirmar_nome=False, livre=True)
+                        except Exception as exc:
+                            log.error("Falha ao gravar a fala: %s", exc)
+                            self._mudo.clear()
+                        finally:
+                            antes.clear()
+                            voz_seguida = 0
+                            detector.reiniciar()
+                    continue
+                voz_seguida = 0
 
                 if detector.processar(quadro):
                     log.info("Chamou (%s).", detector.nome)
@@ -336,6 +366,12 @@ class Escuta(threading.Thread):
             log.info("Escuta encerrada.")
 
     # ── Peças ──────────────────────────────────────────────────────────────
+
+    def _conversa_aberta_seguro(self) -> bool:
+        try:
+            return bool(self.conversa_aberta())
+        except Exception:
+            return False
 
     def _abrir_microfone(self, PvRecorder, detector):
         gravador = PvRecorder(frame_length=detector.frame_length,

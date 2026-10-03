@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-<meta name="theme-color" content="#060a12">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -12,7 +11,7 @@
 <title>Condor</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icone-180.png">
-<link rel="stylesheet" href="app.css?v=1">
+<link rel="stylesheet" href="app.css?v=4">
 </head>
 <body>
 <main class="app" id="app">
@@ -46,34 +45,105 @@
     </form>
   </section>
 
-  <section class="tela conversa" id="telaConversa" hidden>
+  <section class="tela principal" id="telaConversa" hidden>
     <header class="topo">
+      <button type="button" class="icone" id="menuBotao" aria-label="Menu">☰</button>
       <div class="orbe" id="orbe" data-estado="dormindo"><i></i></div>
-      <div class="topo-texto"><strong>CONDOR</strong><span id="estadoTexto">DORMINDO</span></div>
-      <button type="button" class="chip" id="escutaBotao" aria-pressed="false">ESCUTA "CONDOR"</button>
+      <div class="topo-texto"><strong id="tituloVista">CONDOR</strong><span id="estadoTexto">DORMINDO</span></div>
+      <button type="button" class="chip" id="escutaBotao" aria-pressed="false">ESCUTA</button>
     </header>
 
-    <div class="mensagens" id="mensagens" aria-live="polite"></div>
+    <!-- Conversa -->
+    <div class="vista" id="vistaChat">
+      <div class="mensagens" id="mensagens" aria-live="polite"></div>
 
-    <form class="senha-pedido" id="formSenha" hidden autocomplete="off">
-      <span id="senhaMotivo">O CONDOR precisa da sua palavra de acesso para continuar.</span>
-      <input id="senhaTexto" type="password" maxlength="512" autocomplete="off" placeholder="palavra de acesso">
-      <button type="submit">APROVAR</button>
-    </form>
+      <form class="senha-pedido" id="formSenha" hidden autocomplete="off">
+        <span id="senhaMotivo">O CONDOR precisa da sua palavra de acesso para continuar.</span>
+        <input id="senhaTexto" type="password" maxlength="512" autocomplete="off" placeholder="palavra de acesso">
+        <button type="submit">APROVAR</button>
+      </form>
 
-    <form class="compor" id="formCompor" autocomplete="off">
-      <textarea id="texto" rows="1" maxlength="8000" placeholder="Mensagem para o Condor"></textarea>
-      <button type="button" class="mic" id="micBotao" aria-pressed="false" aria-label="Falar com o Condor"><i></i></button>
-      <button type="submit" class="enviar" id="enviarBotao" aria-label="Enviar">➤</button>
-    </form>
+      <div class="anexo" id="anexo" hidden>
+        <img id="anexoFoto" alt="Foto que vai junto">
+        <span>Foto pronta para enviar</span>
+        <button type="button" class="icone" id="anexoTirar" aria-label="Tirar a foto">✕</button>
+      </div>
+
+      <form class="compor" id="formCompor" autocomplete="off">
+        <button type="button" class="redondo" id="fotoBotao" aria-label="Mandar foto">＋</button>
+        <input type="file" id="fotoArquivo" accept="image/*" hidden>
+        <textarea id="texto" rows="1" maxlength="8000" placeholder="Mensagem para o Condor"></textarea>
+        <button type="button" class="redondo mic" id="micBotao" aria-pressed="false" aria-label="Falar com o Condor"><i></i></button>
+        <button type="submit" class="redondo enviar" id="enviarBotao" aria-label="Enviar">➤</button>
+      </form>
+    </div>
+
+    <!-- Conversas anteriores -->
+    <div class="vista lista" id="vistaAnteriores" hidden>
+      <div class="lista-itens" id="anterioresLista"></div>
+      <button type="button" class="mais" id="anterioresMais" hidden>CARREGAR MAIS ANTIGAS</button>
+    </div>
+
+    <!-- Galeria -->
+    <div class="vista lista" id="vistaGaleria" hidden>
+      <div class="galeria" id="galeriaGrade"></div>
+      <button type="button" class="mais" id="galeriaMais" hidden>CARREGAR MAIS</button>
+    </div>
+
+    <!-- Memória -->
+    <div class="vista lista" id="vistaMemoria" hidden>
+      <input class="busca" id="memoriaBusca" type="search" placeholder="Procurar no que ele sabe de você">
+      <div class="lista-itens" id="memoriaLista"></div>
+    </div>
   </section>
+
+  <!-- Menu lateral -->
+  <div class="veu" id="veu" hidden></div>
+  <nav class="gaveta" id="gaveta" aria-label="Menu" hidden>
+    <div class="gaveta-topo"><img class="logo pequeno" src="icone-180.png" alt=""><button type="button" class="icone" id="menuFechar" aria-label="Fechar menu">✕</button></div>
+    <button type="button" class="destaque" id="menuNova">＋ Nova conversa</button>
+    <button type="button" data-vista="vistaChat">Conversa atual</button>
+    <button type="button" data-vista="vistaAnteriores">Conversas anteriores</button>
+    <button type="button" data-vista="vistaGaleria">Galeria</button>
+    <button type="button" data-vista="vistaMemoria">Memória</button>
+    <p class="dica">Diga <b>"Condor, na escuta"</b> para começar a conversar por voz. Depois é só falar, até 2 minutos de silêncio.</p>
+  </nav>
+
+  <!-- Ações de uma mensagem -->
+  <div class="folha" id="folha" hidden>
+    <div class="folha-caixa">
+      <button type="button" data-acao="copiar">Copiar</button>
+      <button type="button" data-acao="gostei" hidden>👍 Gostei</button>
+      <button type="button" data-acao="naogostei" hidden>👎 Não gostei</button>
+      <button type="button" data-acao="apagar" class="perigo">Apagar mensagem</button>
+      <button type="button" data-acao="fechar">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- Confirmação -->
+  <div class="folha" id="confirma" hidden>
+    <div class="folha-caixa">
+      <p id="confirmaTexto"></p>
+      <button type="button" class="perigo" id="confirmaSim">Confirmar</button>
+      <button type="button" id="confirmaNao">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- Imagem em tela cheia -->
+  <div class="visor" id="visor" hidden>
+    <div class="visor-area" id="visorArea"><img id="visorImg" alt=""></div>
+    <p class="visor-legenda" id="visorLegenda"></p>
+    <button type="button" class="icone visor-fechar" id="visorFechar" aria-label="Fechar">✕</button>
+  </div>
 
   <div class="toque" id="toque" hidden>
     <div class="orbe grande" data-estado="ouvindo"><i></i></div>
     <p>Toque para ligar o som e o microfone</p>
   </div>
+  <div class="aviso-flutuante" id="avisoFlutuante" role="status" hidden></div>
 </main>
-<script src="audio.js?v=3"></script>
-<script src="app.js?v=3"></script>
+<script src="audio.js?v=4"></script>
+<script src="texto.js?v=1"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

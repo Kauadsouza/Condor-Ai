@@ -234,8 +234,9 @@ class AppCelularTests(unittest.TestCase):
         cabecalho = {"Origin": HOST, "Host": "pc-kaua.tail1234.ts.net", "Cookie": f"{COOKIE}={self.token}"}
         with cliente.websocket_connect("/ws", headers=cabecalho) as ws:
             ws.receive_text(); ws.receive_text()
-            ws.send_text(json.dumps({"tipo": "texto", "texto": "primeiro"}))
-            ws.send_text(json.dumps({"tipo": "texto", "texto": "segundo"}))
+            # Como no PC: até 3 entram na fila; o quarto em seguida é recusado.
+            for n in ("primeiro", "segundo", "terceiro", "quarto"):
+                ws.send_text(json.dumps({"tipo": "texto", "texto": n}))
             self.assertEqual(json.loads(ws.receive_text())["tipo"], "ocupado")
             meu_id = self.canal._sockets[0].state.celular_id
             self.assertEqual(self.canal.alvo_voz, meu_id)
@@ -278,6 +279,97 @@ class AppCelularTests(unittest.TestCase):
         aparelho = self.aparelhos.listar()[0]
         self.aparelhos.revogar(aparelho["id"])
         self.assertEqual(self.cliente.get("/api/eu").status_code, 401)
+
+
+class AppCelularIgualAoPCTests(unittest.TestCase):
+    """O celular tem o que o chat do PC tem: histórico, apagar, nova conversa,
+    anteriores, galeria, memória, 👍/👎 e foto."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.aparelhos = Aparelhos(Path(self.tmp.name) / "celulares.json")
+        self.canal = CanalCelular()
+        self.nucleo = Nucleo()
+        self.chamadas = []
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 20
+
+        def anotar(nome, retorno=None):
+            def funcao(*args):
+                self.chamadas.append((nome, args))
+                return retorno
+            return funcao
+
+        async def foto(texto, b64):
+            self.chamadas.append(("foto", (texto, len(b64))))
+
+        pontes = self.nucleo.pontes()
+        pontes.extras = {
+            "historico_ids": anotar("historico_ids", [{"id": 7, "role": "user", "content": "oi"}]),
+            "apagar_mensagem": anotar("apagar_mensagem", True),
+            "nova_conversa": anotar("nova_conversa"),
+            "anteriores": anotar("anteriores", [{"id": 3, "papel": "user", "conteudo": "antiga", "ts": 1.0}]),
+            "imagens": anotar("imagens", [{"id": "img_" + "a" * 20, "pedido": "gato", "criado": 2.0}]),
+            "ler_imagem": anotar("ler_imagem", png),
+            "fatos": anotar("fatos", [{"id": 1, "categoria": "pessoal", "valor": "Você se chama Kauã"}]),
+            "esquecer_fato": anotar("esquecer_fato", True),
+            "avaliar": anotar("avaliar", True),
+            "foto": foto,
+        }
+        self.app = montar_app_celular(self.aparelhos, self.canal, pontes, 7778)
+        self.cliente = TestClient(self.app, base_url=HOST)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def parear(self):
+        convite = self.aparelhos.novo_convite()
+        r = self.cliente.post("/api/parear", json={"codigo": convite["codigo"], "senha": SENHA},
+                              headers={"Origin": HOST})
+        self.token = r.headers["set-cookie"].split("=", 1)[1].split(";", 1)[0]
+
+    def test_everything_needs_pairing_and_an_open_vault(self):
+        rotas = (("get", "/api/historico"), ("post", "/api/mensagem/apagar"), ("post", "/api/conversa/nova"),
+                 ("get", "/api/anteriores"), ("get", "/api/imagens"), ("get", "/api/imagens/img_" + "a" * 20),
+                 ("get", "/api/memoria"), ("post", "/api/memoria/esquecer"), ("post", "/api/avaliar"))
+        for metodo, rota in rotas:
+            r = getattr(self.cliente, metodo)(rota, **({"json": {}} if metodo == "post" else {}),
+                                              headers={"Origin": HOST})
+            self.assertEqual(r.status_code, 401, rota)
+        self.parear()
+        self.nucleo.destrancado = False
+        self.assertEqual(self.cliente.get("/api/memoria").status_code, 423)
+        self.assertEqual(self.chamadas, [])
+
+    def test_phone_does_what_the_pc_chat_does(self):
+        self.parear()
+        h = {"Origin": HOST}
+        self.assertEqual(self.cliente.get("/api/historico").json()["mensagens"][0]["id"], 7)
+        self.assertTrue(self.cliente.post("/api/mensagem/apagar", json={"id": 7}, headers=h).json()["ok"])
+        self.assertEqual(self.cliente.post("/api/mensagem/apagar", json={"id": "x"}, headers=h).status_code, 400)
+        self.assertTrue(self.cliente.post("/api/conversa/nova", json={}, headers=h).json()["ok"])
+        self.assertEqual(self.cliente.get("/api/anteriores").json()["itens"][0]["conteudo"], "antiga")
+        self.assertEqual(self.cliente.get("/api/imagens").json()["itens"][0]["pedido"], "gato")
+        imagem = self.cliente.get("/api/imagens/img_" + "a" * 20)
+        self.assertEqual(imagem.headers["content-type"], "image/png")
+        self.assertEqual(self.cliente.get("/api/imagens/../../segredo").status_code, 404)
+        self.assertEqual(self.cliente.get("/api/imagens/img_nada").status_code, 400)
+        self.assertEqual(self.cliente.get("/api/memoria").json()["fatos"][0]["valor"], "Você se chama Kauã")
+        self.assertTrue(self.cliente.post("/api/memoria/esquecer", json={"id": 1}, headers=h).json()["ok"])
+        self.assertTrue(self.cliente.post("/api/avaliar", json={"id": "ex1", "nota": 1}, headers=h).json()["ok"])
+        self.assertEqual(self.cliente.post("/api/avaliar", json={"id": "ex1", "nota": 5}, headers=h).status_code, 400)
+        nomes = [nome for nome, _ in self.chamadas]
+        self.assertEqual(nomes, ["historico_ids", "apagar_mensagem", "nova_conversa", "anteriores", "imagens",
+                                 "ler_imagem", "fatos", "esquecer_fato", "avaliar"])
+
+    def test_photo_goes_to_the_local_vision(self):
+        self.parear()
+        cabecalho = {"Origin": HOST, "Host": "pc-kaua.tail1234.ts.net", "Cookie": f"{COOKIE}={self.token}"}
+        with self.cliente.websocket_connect("/ws", headers=cabecalho) as ws:
+            ws.receive_text(); ws.receive_text()
+            ws.send_text(json.dumps({"tipo": "texto", "texto": "tô bem vestido?", "foto": "QUJD" * 100}))
+            ws.send_text(json.dumps({"tipo": "ping"}))
+            self.assertEqual(json.loads(ws.receive_text())["tipo"], "pong")
+        self.assertEqual(self.chamadas, [("foto", ("tô bem vestido?", 400))])
 
 
 class FiltroDeEventosTests(unittest.TestCase):
@@ -324,6 +416,14 @@ class SessaoCelularTests(unittest.IsolatedAsyncioTestCase):
         sessao._entregar_celular = None
         sessao._tem_player = lambda: True
         sessao._avisar = None
+        sessao.acordado = False
+        sessao.ultimo_contato = 0.0
+
+        class Cfg:
+            class sessao:
+                timeout_segundos = 120
+
+        sessao._cfg = Cfg()
 
         class Voz:
             pronto = True
@@ -370,7 +470,7 @@ class SessaoCelularTests(unittest.IsolatedAsyncioTestCase):
 
         class Ouvidos:
             async def transcrever(self, _wav):
-                return "Condor, abre o Spotify"
+                return "Condor, na escuta, abre o Spotify"
 
         async def processar(texto, por_voz, **kw):
             processados.append(texto)
@@ -397,7 +497,7 @@ class SessaoCelularTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sessao.escuta.voltou, 1)          # e o microfone do PC volta a ouvir
         escutando[0] = False
         await sessao._processar_voz(b"wav", confirmar_nome=True)
-        self.assertEqual(processados, ["Condor, abre o Spotify"])
+        self.assertEqual(processados, ["Condor, na escuta, abre o Spotify"])
 
     async def test_phone_turn_without_phone_player_stays_silent(self):
         sessao = self._sessao()
@@ -433,15 +533,61 @@ class SessaoCelularTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("condor.voice.wake.vosk_ouviu_condor", return_value=None):
             sessao.ouvidos.texto = "estou vendo um vídeo aqui"
             await sessao.audio_do_celular(b"wav", com_nome=True)
+            # Só o nome não ativa mais (escolha do dono): precisa de "na escuta".
             sessao.ouvidos.texto = "Condor, que horas são?"
+            await sessao.audio_do_celular(b"wav", com_nome=True)
+            sessao.ouvidos.texto = "Condor"
+            await sessao.audio_do_celular(b"wav", com_nome=True)
+            sessao.ouvidos.texto = "Condor, na escuta, que horas são?"
             await sessao.audio_do_celular(b"wav", com_nome=True)
             sessao.ouvidos.texto = "abre o spotify"
             await sessao.audio_do_celular(b"wav", com_nome=False)   # botão do microfone
+            # Conversa aberta: qualquer fala vale, sem o nome; ruído não.
+            sessao.acordado = True
+            sessao.ultimo_contato = __import__("time").time()
+            sessao.ouvidos.texto = "e amanhã vai chover?"
+            await sessao.audio_do_celular(b"wav", com_nome=True)
+            sessao.ouvidos.texto = "Obrigado."
+            await sessao.audio_do_celular(b"wav", com_nome=True)
+            sessao.acordado = False
         with mock.patch("condor.voice.wake.vosk_ouviu_condor", return_value=False):
             await sessao.audio_do_celular(b"wav", com_nome=True)    # porteiro barrou
-        self.assertEqual(turnos, [("Condor, que horas são?", True, "celular"),
-                                  ("abre o spotify", True, "celular")])
-        self.assertEqual(eventos, ["transcricao", "transcricao"])
+        self.assertEqual(turnos, [("Condor, na escuta, que horas são?", True, "celular"),
+                                  ("abre o spotify", True, "celular"),
+                                  ("e amanhã vai chover?", True, "celular")])
+        self.assertEqual(eventos, ["transcricao"] * 3)
+
+    async def test_wake_phrase_alone_answers_at_once_and_opens_the_conversation(self):
+        sessao = self._sessao()
+        eventos = []
+
+        class Ouvidos:
+            async def transcrever(self, _wav):
+                return "Condor, tá na escuta?"
+
+        async def evento(tipo, **dados):
+            eventos.append((tipo, dados.get("texto")))
+
+        async def mudar(_novo):
+            pass
+
+        async def acordar():
+            sessao.acordado = True
+
+        class Memoria:
+            unlocked = True
+
+        sessao.ouvidos = Ouvidos()
+        sessao._evento = evento
+        sessao._mudar_estado = mudar
+        sessao.acordar = acordar
+        sessao._ocupado = __import__("asyncio").Lock()
+        sessao.memoria = Memoria()
+        sessao._entregar_celular = None
+        sessao._celular_toca = lambda: False
+        await sessao.audio_do_celular(b"wav", com_nome=True)
+        self.assertIn(("resposta.fim", "Tô na escuta, pode falar."), eventos)
+        self.assertTrue(sessao.conversa_aberta())
 
 
 if __name__ == "__main__":

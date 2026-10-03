@@ -66,6 +66,17 @@ const CondorConversa = (() => {
       adicionarUsuario(m.origem === 'celular' ? `📱 ${m.texto}` : m.texto); mostrarDigitando(true); atualizarFila();
     });
     CondorWS.ao('conversa.historico', carregarHistorico);
+    // Mensagem apagada pelo celular: some daqui também.
+    CondorWS.ao('mensagem.apagada', (m) => {
+      const classe = m.role === 'user' ? '.msg-user' : '.msg-ai';
+      const alvo = String(m.content || '').trim();
+      const bolhas = [...area().querySelectorAll(`.msg-row ${classe}`)].reverse();
+      const achada = bolhas.find((b) => {
+        const texto = (b.querySelector('.msg-text')?.innerText || '').replace(/^📱\s*/, '').trim();
+        return texto === alvo || (alvo.length > 40 && texto.startsWith(alvo.slice(0, 40)));
+      });
+      achada?.closest('.msg-row')?.remove();
+    });
     CondorWS.ao('conversa.limpa', limparTela);
     CondorWS.ao('resposta.token', (m) => { if (!deOutroPainel(m)) acrescentar(m.texto); });
     CondorWS.ao('resposta.fim', (m) => {

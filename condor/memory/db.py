@@ -1454,6 +1454,28 @@ class Memoria:
                 (limite,)).fetchall()
             return [{"role": r["papel"], "content": r["conteudo"]} for r in reversed(rows)]
 
+    def historico_com_ids(self, limite: int = 80) -> list[dict]:
+        """A conversa atual com o id de cada mensagem (para apagar uma só)."""
+        with self._conn(persistir=False) as conn:
+            rows = conn.execute(
+                """SELECT id, papel, conteudo, ts FROM conversas
+                   WHERE ts >= COALESCE((SELECT CAST(valor AS REAL) FROM memory_meta
+                     WHERE chave='active_conversation_since'), 0)
+                   ORDER BY ts DESC LIMIT ?""",
+                (max(1, min(int(limite), 300)),)).fetchall()
+            return [{"id": r["id"], "role": r["papel"], "content": r["conteudo"], "ts": r["ts"]}
+                    for r in reversed(rows)]
+
+    def apagar_turno(self, turno_id: int) -> dict | None:
+        """Apaga uma mensagem da conversa. Devolve o que foi apagado."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT papel, conteudo FROM conversas WHERE id=?",
+                               (int(turno_id),)).fetchone()
+            if row is None:
+                return None
+            conn.execute("DELETE FROM conversas WHERE id=?", (int(turno_id),))
+            return {"role": row["papel"], "content": row["conteudo"]}
+
     def ultimo_turno_em(self) -> float:
         """Quando foi a última mensagem da conversa (0 se não houver)."""
         with self._conn() as conn:

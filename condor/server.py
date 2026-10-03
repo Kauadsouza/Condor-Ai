@@ -115,14 +115,16 @@ def _falha_operacional(acao: dict) -> bool:
 
 
 def _historico_para_interface(memoria: Memoria, limite: int = 24) -> list[dict]:
+    """A conversa atual para as telas, com o id de cada mensagem (apagar uma)."""
     if not memoria.unlocked:
         return []
     return [
         {
+            "id": item.get("id"),
             "role": item.get("role"),
             "content": sanitizar_para_memoria(str(item.get("content") or ""))[:4000],
         }
-        for item in memoria.historico(limite=limite)
+        for item in memoria.historico_com_ids(limite=limite)
         if item.get("role") in {"user", "assistant"}
     ]
 
@@ -237,6 +239,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     sessao = Sessao(config, memoria, cerebro, recall, extrator,
                     guarda, escuta, ouvidos, voz)
     sessao_ref["s"] = sessao
+    escuta.conversa_aberta = sessao.conversa_aberta_no_pc
     def _face_locked(reason: str) -> None:
         escuta.silenciar()
         sessao.bloquear_por_presenca(reason)
@@ -255,6 +258,7 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         if escuta.ident is not None:
             escuta = Escuta(config, lambda wav, **kw: sessao_ref["s"].ao_ouvir(wav, **kw))
             sessao.escuta = escuta
+            escuta.conversa_aberta = sessao.conversa_aberta_no_pc
         escuta.start()
         await asyncio.sleep(0.25)
 
@@ -278,6 +282,17 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
     event_bus.subscribe(
         "*", lambda event: conexoes.transmitir({"tipo": "core.event", "event": event})
     )
+
+    async def _imagem_para_o_celular(event: dict) -> None:
+        payload = event.get("payload") or {}
+        imagem = payload.get("image") or {}
+        if payload.get("image_id"):
+            await canal_celular.transmitir({
+                "tipo": "imagem.nova", "id": payload["image_id"],
+                "pedido": str(imagem.get("pedido") or "")[:300],
+            })
+
+    event_bus.subscribe("IMAGE_GENERATED", _imagem_para_o_celular)
 
     # ── App ────────────────────────────────────────────────────────────────
     app = FastAPI(title="CONDOR", docs_url=None, redoc_url=None)
@@ -2154,6 +2169,27 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         finally:
             await _descer()
 
+    async def _apagar_mensagem(mensagem_id: int) -> bool:
+        """Apaga uma mensagem: some das telas e sai do que ele lembra da conversa."""
+        apagada = memoria.apagar_turno(mensagem_id)
+        if apagada is None:
+            return False
+        sessao.esquecer_mensagem(apagada["role"], apagada["content"])
+        guarda.auditar("chat", "apagar_mensagem", f"mensagem {mensagem_id}", True, False)
+        await _avisar({"tipo": "mensagem.apagada", "id": mensagem_id, "role": apagada["role"],
+                       "content": sanitizar_para_memoria(str(apagada["content"] or ""))[:4000]})
+        return True
+
+    async def _esquecer_fato(fato_id: int) -> bool:
+        ok = memoria.esquecer_fato(fato_id)
+        if ok:
+            guarda.auditar("memoria", "esquecer_fato", f"fato {fato_id}", True, False)
+            await event_bus.publish(
+                "MEMORY_FACT_FORGOTTEN", {"fact_id": fato_id, "stats": memoria.estatisticas()},
+                source="owner",
+            )
+        return ok
+
     def _celular_pronto() -> bool:
         return vault.unlocked and memoria.unlocked and guarda.owner_session_active \
             and not face_guard.access_blocked
@@ -2187,7 +2223,23 @@ def montar(config: Config) -> tuple[FastAPI, Sessao]:
         senha_confere=lambda senha: guarda.owner.verify(senha),
         texto=sessao.texto_do_celular, audio=sessao.audio_do_celular,
         senha=sessao.responder_senha, calar=sessao.interromper_fala,
-        estado=sessao.snapshot, historico=lambda: _historico_para_interface(memoria),
+        estado=sessao.snapshot, historico=lambda: _historico_para_interface(memoria, 60),
+        extras={
+            "historico_ids": lambda: _historico_para_interface(memoria, 80),
+            "apagar_mensagem": _apagar_mensagem,
+            # Nova conversa no celular guarda a anterior em "Conversas anteriores".
+            "nova_conversa": lambda: sessao.nova_conversa(preservar_historico=True),
+            "anteriores": lambda antes: [
+                {**item, "conteudo": sanitizar_para_memoria(str(item.get("conteudo") or ""))[:4000]}
+                for item in memoria.arquivo_conversas(antes)
+            ],
+            "imagens": lambda antes: memoria.imagens(60, antes),
+            "ler_imagem": memoria.ler_imagem,
+            "fatos": lambda: memoria.fatos_recentes(150, None),
+            "esquecer_fato": _esquecer_fato,
+            "avaliar": lambda exemplo_id, nota: memoria.avaliar_exemplo(exemplo_id, nota, ""),
+            "foto": lambda texto, foto: sessao.foto_do_celular(texto, foto, provider._visao.analisar),
+        },
     ), config.celular.porta)
 
     app.router.lifespan_context = _ciclo

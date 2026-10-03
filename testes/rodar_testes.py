@@ -3323,6 +3323,7 @@ class WakeWordTests(unittest.IsolatedAsyncioTestCase):
 
         sessao = Sessao.__new__(Sessao)
         sessao.ouvidos = Ouvidos(); sessao.escuta = Escuta(); sessao.estado = "dormindo"
+        sessao.acordado = False
         estados = []
 
         async def mudar(novo):
@@ -3334,8 +3335,75 @@ class WakeWordTests(unittest.IsolatedAsyncioTestCase):
         sessao._mudar_estado = mudar
         sessao.processar = processar
         await sessao._processar_voz(b"wav", confirmar_nome=True)
+        # "Condor" sem "na escuta" também não ativa mais (escolha do dono).
+        Ouvidos.transcrever = lambda self, _wav: __import__("asyncio").sleep(0, "Condor, abre o Spotify")
+        await sessao._processar_voz(b"wav", confirmar_nome=True)
         self.assertEqual(estados, [])
-        self.assertEqual(sessao.escuta.voltou, 1)
+        self.assertEqual(sessao.escuta.voltou, 2)
+
+    def test_open_conversation_records_speech_without_the_name(self):
+        """Depois de "Condor, na escuta", o PC grava a fala dele sem esperar o nome."""
+        import types
+        from unittest import mock
+        from condor.voice.wake import Escuta
+
+        enviados = []
+        alto, silencio = [3000] * 512, [0] * 512
+        roteiro = [silencio] * 3 + [alto] * 8 + [silencio] * 60
+
+        class Gravador:
+            frame_length = 512
+
+            def __init__(self, frame_length, device_index):
+                pass
+
+            def start(self):
+                pass
+
+            def read(self):
+                if not roteiro:
+                    escuta.encerrar()
+                    return silencio
+                return roteiro.pop(0)
+
+            def stop(self):
+                pass
+
+            def delete(self):
+                pass
+
+        class Detector:
+            nome, frame_length, confirmar_nome = "teste", 512, True
+            processar = staticmethod(lambda _q: False)
+            reiniciar = fechar = staticmethod(lambda: None)
+            frase_candidata = staticmethod(lambda: [])
+
+        cfg = types.SimpleNamespace(
+            escuta=types.SimpleNamespace(indice_microfone=-1),
+            voz=types.SimpleNamespace(limiar_silencio=380, silencio_para_parar=0.5, fala_maxima=10),
+        )
+        escuta = Escuta(cfg, lambda wav, **kw: enviados.append(kw))
+        escuta.conversa_aberta = lambda: True
+        falso = types.ModuleType("pvrecorder")
+        falso.PvRecorder = Gravador
+        with mock.patch.dict(sys.modules, {"pvrecorder": falso}), \
+                mock.patch.object(Escuta, "_criar_detector", lambda self: Detector()):
+            escuta.run()
+        self.assertEqual(enviados, [{"confirmar_nome": False, "livre": True}])
+
+    def test_only_condor_na_escuta_activates(self):
+        from condor.session import chamou_na_escuta, fala_vazia, so_ativacao
+        for frase in ("Condor, na escuta?", "Ei Condor, tá na escuta?", "Condor, você tá na escuta?",
+                      "Condor na escuta, abre o Spotify"):
+            self.assertTrue(chamou_na_escuta(frase), frase)
+        for frase in ("Condor", "Condor, abre o Spotify", "Estou com dor nas costas.",
+                      "o condor dos Andes", "escuta, Condor"):
+            self.assertFalse(chamou_na_escuta(frase), frase)
+        self.assertTrue(so_ativacao("Condor, tá na escuta?"))
+        self.assertFalse(so_ativacao("Condor na escuta, abre o Spotify"))
+        for ruido in ("Obrigado.", "Legendas pela comunidade Amara.org", ""):
+            self.assertTrue(fala_vazia(ruido), ruido)
+        self.assertFalse(fala_vazia("sim"))
 
     def test_listening_survives_the_microphone_dropping(self):
         """PC dormiu / dispositivo trocou: a escuta reabre o microfone em vez de morrer."""

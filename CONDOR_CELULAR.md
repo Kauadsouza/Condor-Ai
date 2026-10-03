@@ -15,11 +15,19 @@ A mesma mente do PC no celular, por chat e por voz. Com fone conectado
 
 ## Como usa
 
-- **Mensagem:** escreve e envia; responde em texto.
+- **Mensagem:** escreve e envia; responde em texto formatado (listas, negrito, código).
+- **Foto:** botão ＋ tira ou escolhe uma foto; a visão local analisa no PC.
 - **Microfone:** toca, fala, ele percebe quando você parou e responde em voz.
-- **Escuta "Condor":** com a tela aberta, fale "Condor, ..." quando quiser. O
-  iPhone não deixa site ouvir com a tela bloqueada, então a tela fica acesa
-  enquanto a escuta está ligada.
+- **Escuta:** com a tela aberta, diga **"Condor, na escuta"** (vale no PC também).
+  Ele responde "Tô na escuta, pode falar." e a conversa fica aberta: é só falar,
+  sem repetir o nome, até 2 minutos de silêncio. "Condor" sozinho ou "Condor,
+  abre X" sem "na escuta" é ignorado. O iPhone não deixa site ouvir com a tela
+  bloqueada, então a tela fica acesa enquanto a escuta está ligada.
+- **Menu ☰:** Nova conversa (a anterior fica guardada), Conversas anteriores,
+  Galeria (toque para ver grande; toque duplo aproxima) e Memória (procurar e
+  esquecer o que ele sabe de você).
+- **Segure uma mensagem:** copiar, apagar (some do PC e do celular e ele esquece
+  aquela troca) e 👍/👎 nas respostas.
 - Funciona em casa e na rua (4G), desde que o PC esteja ligado, acordado e com
   internet. Se o PC acabou de ligar e o CONDOR está trancado, destranque pelo
   próprio celular com a palavra de acesso.

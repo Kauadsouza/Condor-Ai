@@ -74,6 +74,55 @@ class LimpezaTabelasAntigasTests(Base):
         self.assertEqual(len(self.memoria.diario()), 1)
 
 
+class ApagarMensagemEFotoTests(Base):
+    def test_deleted_message_leaves_the_db_and_the_live_conversation(self):
+        from condor.session import Sessao
+        self.memoria.salvar_turno("user", "minha senha do banco é 1234, esquece isso")
+        self.memoria.salvar_turno("assistant", "Ok.")
+        itens = self.memoria.historico_com_ids()
+        self.assertEqual([i["role"] for i in itens], ["user", "assistant"])
+        apagada = self.memoria.apagar_turno(itens[0]["id"])
+        self.assertEqual(apagada["role"], "user")
+        self.assertIsNone(self.memoria.apagar_turno(itens[0]["id"]))
+        self.assertEqual(len(self.memoria.historico_com_ids()), 1)
+
+        sessao = Sessao.__new__(Sessao)
+        sessao.historico = [{"role": "user", "content": "minha senha do banco é 1234, esquece isso"},
+                            {"role": "assistant", "content": "Ok."}]
+        sessao.esquecer_mensagem(apagada["role"], apagada["content"])
+        self.assertEqual(sessao.historico, [{"role": "assistant", "content": "Ok."}])
+
+    def test_phone_photo_is_described_locally_and_only_the_request_is_saved(self):
+        import asyncio
+        import base64
+        from condor.session import Sessao
+        sessao = Sessao.__new__(Sessao)
+        turnos, eventos = [], []
+
+        async def processar(texto, por_voz, **kw):
+            turnos.append((texto, kw.get("canal"), kw.get("anexo")))
+
+        async def evento(tipo, **dados):
+            eventos.append((tipo, dados.get("texto")))
+
+        async def mudar(_novo):
+            pass
+
+        async def analisar(b64, pedido):
+            self.assertEqual(pedido, "tô bem vestido?")
+            return "camisa azul, calça preta"
+
+        sessao.processar, sessao._evento, sessao._mudar_estado = processar, evento, mudar
+        jpeg = base64.b64encode(b"\xff\xd8\xff" + b"0" * 100).decode()
+        asyncio.run(sessao.foto_do_celular("tô bem vestido?", jpeg, analisar))
+        texto, canal, anexo = turnos[0]
+        self.assertEqual((texto, canal), ("tô bem vestido? [foto]", "celular"))
+        self.assertIn("camisa azul", anexo)
+        self.assertIn("<foto_enviada_pelo_dono>", anexo)
+        asyncio.run(sessao.foto_do_celular("e essa?", base64.b64encode(b"GIF89a").decode(), analisar))
+        self.assertEqual(eventos[-1][0], "erro")           # só JPEG/PNG
+
+
 class DetectoresTests(unittest.TestCase):
     def test_identity_questions_are_about_him_not_the_owner(self):
         for frase in ("quem e voce ?", "Quem é você?", "o que você consegue fazer?", "você tem memória?",

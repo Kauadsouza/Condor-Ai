@@ -35,7 +35,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from condor.paths import CODE_ROOT
@@ -57,6 +57,7 @@ MAX_SOCKETS = 6
 AUDIO_MAX_BYTES = 1_200_000
 WS_MAX = 1_700_000
 TEXTO_MAX = 8000
+FILA_MAX = 3          # pedidos do mesmo celular esperando a vez
 
 # O que o celular recebe do que a sessão anuncia. Só a conversa principal:
 # eventos internos (core.event, custo, aba Programação) ficam no PC.
@@ -64,7 +65,7 @@ EVENTOS_DO_CELULAR = {
     "estado", "acordou", "dormiu", "transcricao", "resposta.token", "resposta.fim",
     "erro", "ocupado", "ferramenta.inicio", "ferramenta.fim", "senha.pedido",
     "senha.fim", "voz.parar", "conversa.historico", "conversa.limpa",
-    "seguranca.bloqueado", "memoria.aprendeu",
+    "seguranca.bloqueado", "memoria.aprendeu", "imagem.nova", "mensagem.apagada",
 }
 
 
@@ -461,7 +462,8 @@ class Pontes:
                  texto: Callable[[str], Awaitable[None]],
                  audio: Callable[[bytes, bool], Awaitable[None]],
                  senha: Callable[[str], None], calar: Callable[[], Awaitable[None]],
-                 estado: Callable[[], dict], historico: Callable[[], list[dict]]) -> None:
+                 estado: Callable[[], dict], historico: Callable[[], list[dict]],
+                 extras: dict[str, Callable] | None = None) -> None:
         self.pronto = pronto
         self.motivo = motivo
         self.destrancar = destrancar
@@ -472,6 +474,9 @@ class Pontes:
         self.calar = calar
         self.estado = estado
         self.historico = historico
+        # Tudo que o chat do PC faz (galeria, memória, nova conversa...). Cada
+        # chave é uma função do núcleo; ausente = recurso desligado.
+        self.extras: dict[str, Callable] = dict(extras or {})
 
 
 class _Limite:
@@ -544,7 +549,9 @@ def montar_app_celular(aparelhos: Aparelhos, canal: CanalCelular, pontes: Pontes
         resposta = await call_next(request)
         resposta.headers["Cache-Control"] = "no-store"
         resposta.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            # blob: em img-src: a foto escolhida no iPhone abre como blob para
+            # ser reduzida antes de ir para o PC.
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
             "connect-src 'self'; media-src 'self' blob: data:; worker-src 'self'; "
             "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
         )
@@ -610,6 +617,114 @@ def montar_app_celular(aparelhos: Aparelhos, canal: CanalCelular, pontes: Pontes
             return JSONResponse({"erro": resultado.get("erro") or "palavra de acesso incorreta"},
                                 status_code=403)
         return {"ok": True, "pronto": pontes.pronto(), "motivo": pontes.motivo()}
+
+    # ── O que o chat do PC tem, no celular ─────────────────────────────────
+
+    def _negado(request: Request) -> JSONResponse | None:
+        if aparelho_de(request) is None:
+            return JSONResponse({"erro": "pareie o celular primeiro"}, status_code=401)
+        if not pontes.pronto():
+            return JSONResponse({"erro": pontes.motivo() or "trancado"}, status_code=423)
+        return None
+
+    def _extra(nome: str) -> Callable:
+        funcao = pontes.extras.get(nome)
+        if funcao is None:
+            raise LookupError(nome)
+        return funcao
+
+    async def _rodar(funcao: Callable, *args):
+        resultado = funcao(*args)
+        if asyncio.iscoroutine(resultado):
+            resultado = await resultado
+        return resultado
+
+    async def _corpo(request: Request) -> dict:
+        try:
+            dados = await request.json()
+        except Exception:
+            return {}
+        return dados if isinstance(dados, dict) else {}
+
+    @app.get("/api/historico")
+    async def historico_ids(request: Request):
+        if (negado := _negado(request)):
+            return negado
+        return {"mensagens": await _rodar(_extra("historico_ids"))}
+
+    @app.post("/api/mensagem/apagar")
+    async def apagar_mensagem(request: Request):
+        if (negado := _negado(request)):
+            return negado
+        try:
+            mensagem_id = int((await _corpo(request)).get("id"))
+        except (TypeError, ValueError):
+            return JSONResponse({"erro": "mensagem inválida"}, status_code=400)
+        ok = await _rodar(_extra("apagar_mensagem"), mensagem_id)
+        return JSONResponse({"ok": bool(ok)}, status_code=200 if ok else 404)
+
+    @app.post("/api/conversa/nova")
+    async def nova_conversa(request: Request):
+        if (negado := _negado(request)):
+            return negado
+        await _rodar(_extra("nova_conversa"))
+        return {"ok": True}
+
+    @app.get("/api/anteriores")
+    async def anteriores(request: Request, antes: int | None = None):
+        if (negado := _negado(request)):
+            return negado
+        itens = await _rodar(_extra("anteriores"), antes)
+        return {"itens": itens, "proximo": itens[-1]["id"] if len(itens) == 50 else None}
+
+    @app.get("/api/imagens")
+    async def imagens(request: Request, antes: float | None = None):
+        if (negado := _negado(request)):
+            return negado
+        itens = await _rodar(_extra("imagens"), antes)
+        return {"itens": itens, "proximo": itens[-1]["criado"] if len(itens) == 60 else None}
+
+    @app.get("/api/imagens/{imagem_id}")
+    async def imagem(request: Request, imagem_id: str):
+        if (negado := _negado(request)):
+            return negado
+        if not re.fullmatch(r"img_[0-9a-f]{20}", imagem_id):
+            return JSONResponse({"erro": "imagem inválida"}, status_code=400)
+        dados = await _rodar(_extra("ler_imagem"), imagem_id)
+        if not dados:
+            return JSONResponse({"erro": "imagem não encontrada"}, status_code=404)
+        return Response(dados, media_type="image/png",
+                        headers={"Cache-Control": "private, max-age=86400"})
+
+    @app.get("/api/memoria")
+    async def memoria(request: Request):
+        if (negado := _negado(request)):
+            return negado
+        return {"fatos": await _rodar(_extra("fatos"))}
+
+    @app.post("/api/memoria/esquecer")
+    async def esquecer(request: Request):
+        if (negado := _negado(request)):
+            return negado
+        try:
+            fato_id = int((await _corpo(request)).get("id"))
+        except (TypeError, ValueError):
+            return JSONResponse({"erro": "fato inválido"}, status_code=400)
+        return {"ok": bool(await _rodar(_extra("esquecer_fato"), fato_id))}
+
+    @app.post("/api/avaliar")
+    async def avaliar(request: Request):
+        if (negado := _negado(request)):
+            return negado
+        dados = await _corpo(request)
+        exemplo_id = str(dados.get("id") or "")[:40]
+        try:
+            nota = int(dados.get("nota", 0))
+        except (TypeError, ValueError):
+            return JSONResponse({"erro": "nota inválida"}, status_code=400)
+        if not exemplo_id or nota not in {-1, 0, 1}:
+            return JSONResponse({"erro": "avaliação inválida"}, status_code=400)
+        return {"ok": bool(await _rodar(_extra("avaliar"), exemplo_id, nota))}
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
@@ -685,17 +800,26 @@ def montar_app_celular(aparelhos: Aparelhos, canal: CanalCelular, pontes: Pontes
         if not pontes.pronto():
             await _responder(socket, {"tipo": "erro", "mensagem": pontes.motivo() or "Destranque o Condor."})
             return
-        if getattr(socket.state, "em_voo", False):
+        em_voo = int(getattr(socket.state, "em_voo", 0) or 0)
+        if em_voo:
             if tipo == "audio" and msg.get("com_nome") is True:
                 return        # conversa ao redor durante a resposta: nem avisa
-            await _responder(socket, {"tipo": "ocupado", "mensagem": "Espere eu terminar a resposta anterior."})
-            return
+            # Como no PC: a mensagem entra na fila e é respondida na ordem.
+            # O limite segura quem tentasse empilhar pedidos sem fim.
+            if em_voo >= FILA_MAX:
+                await _responder(socket, {"tipo": "ocupado", "mensagem": "Calma, ainda estou respondendo as anteriores."})
+                return
         if tipo == "texto":
             texto = str(msg.get("texto") or "").strip()
-            if not texto:
-                return
+            foto = msg.get("foto")
             if len(texto) > TEXTO_MAX:
                 await _responder(socket, {"tipo": "erro", "mensagem": "Mensagem grande demais."})
+                return
+            if isinstance(foto, str) and foto and "foto" in pontes.extras:
+                # Foto do iPhone: a visão local descreve aqui no PC.
+                _soltar(pontes.extras["foto"](texto, foto), socket)
+                return
+            if not texto:
                 return
             _soltar(pontes.texto(texto), socket)
             return
@@ -707,7 +831,7 @@ def montar_app_celular(aparelhos: Aparelhos, canal: CanalCelular, pontes: Pontes
         _soltar(pontes.audio(wav, msg.get("com_nome") is True), socket)
 
     def _soltar(coro: Awaitable[None], socket: WebSocket) -> None:
-        socket.state.em_voo = True
+        socket.state.em_voo = int(getattr(socket.state, "em_voo", 0) or 0) + 1
         canal.alvo_voz = getattr(socket.state, "celular_id", "")
 
         async def rodar():
@@ -718,7 +842,7 @@ def montar_app_celular(aparelhos: Aparelhos, canal: CanalCelular, pontes: Pontes
                 await _responder(socket, {"tipo": "erro",
                                           "mensagem": "Não consegui concluir esta resposta. Tente novamente."})
             finally:
-                socket.state.em_voo = False
+                socket.state.em_voo = max(0, int(getattr(socket.state, "em_voo", 1) or 1) - 1)
         tarefa = asyncio.create_task(rodar())
         _EM_VOO.add(tarefa)
         tarefa.add_done_callback(_EM_VOO.discard)
